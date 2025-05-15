@@ -1,5 +1,5 @@
 {
-  "name": "line-bot-project",
+  "name": "line-bot-project2",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -19,17 +19,18 @@
     "express": "^4.21.2",
     "limiter": "^3.0.0",
     "lru-cache": "^6.0.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "firebase-admin": "^11.10.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chung38/line-bot-project.git"
+    "url": "git+https://github.com/chung38/line-bot-project2.git"
   },
   "bugs": {
-    "url": "https://github.com/chung38/line-bot-project/issues"
+    "url": "https://github.com/chung38/line-bot-project2/issues"
   },
-  "homepage": "https://github.com/chung38/line-bot-project#readme"
+  "homepage": "https://github.com/chung38/line-bot-project2#readme"
 }
