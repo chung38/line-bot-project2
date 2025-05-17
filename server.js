@@ -5,7 +5,7 @@ import { Client, middleware } from "@line/bot-sdk";
 import bodyParser from "body-parser";
 import axios from "axios";
 import https from "node:https";
-import LRUCache from "lru-cache";
+import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 
 // 初始化 Firebase
