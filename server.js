@@ -67,7 +67,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
-  const sys = `你是一名翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang] || targetLang}，僅回傳翻譯結果。`;
+  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang] || targetLang}，請使用台灣常用語，並且僅回傳翻譯後的文字。`;
 
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
