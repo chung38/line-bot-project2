@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 勞動部宣導圖轉圖推播
+// 🔧 LINE Bot with Firestore + 勞動部宣導圖轉圖推播（使用 puppeteer 轉圖）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -10,7 +10,7 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
 import { createWriteStream } from "fs";
-import { pdfToPng } from "pdf-to-png-converter";
+import puppeteer from "puppeteer";
 import cron from "node-cron";
 import path from "path";
 
@@ -104,8 +104,12 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
     stream.on("error", reject);
   });
 
-  const images = await pdfToPng(tempPath, { viewportScale: 2.0, useSystemFonts: true });
-  const buffer = images[0].content;
+  const browser = await puppeteer.launch({ headless: "new" });
+  const page = await browser.newPage();
+  await page.goto(`file://${tempPath}`, { waitUntil: "networkidle0" });
+  const buffer = await page.screenshot({ type: "jpeg" });
+  await browser.close();
+
   cache.set(pdfUrl, buffer);
   return buffer;
 };
@@ -117,7 +121,7 @@ const sendImageToGroup = async (gid, buffer) => {
   await client.pushMessage(gid, {
     type: "image",
     originalContentUrl: `data:image/jpeg;base64,${base64}`,
-    previewImageUrl: `data:image/jpeg;base64,${preview}` // LINE 要求預覽圖
+    previewImageUrl: `data:image/jpeg;base64,${preview}`
   });
 };
 
