@@ -22,7 +22,7 @@
     "limiter": "^3.0.0",
     "lru-cache": "^10.2.1",
     "node-cron": "^3.0.3",
-    "pdf-to-png-converter": "^1.1.1"
+    "puppeteer": "^21.3.8"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
