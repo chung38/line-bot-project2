@@ -1,11 +1,10 @@
-// 🔧 LINE Bot with Firestore + 勞動部宣導圖轉圖推播（使用 puppeteer 轉圖）
+// 🔧 LINE Bot with Firestore + 勞動部宣導圖轉圖推播（使用 puppeteer 轉圖 + 翻譯功能 + Debug Log）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import bodyParser from "body-parser";
 import axios from "axios";
 import { load } from "cheerio";
-import https from "node:https";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
@@ -34,6 +33,7 @@ const groupInviter = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 const imageCache = new Map();
 
+// 翻譯功能
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -84,6 +84,7 @@ const markSent = async (gid, url) => {
 };
 
 const fetchPostersByLangAndDate = async (langName, dateStr) => {
+  console.log("📥 開始抓文宣...");
   const listRes = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(listRes.data);
   const links = [];
@@ -95,6 +96,8 @@ const fetchPostersByLangAndDate = async (langName, dateStr) => {
       links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
+  console.log("🔗 選中文宣數：", links.length);
+
   const posters = [];
   for (const item of links) {
     const detail = await axios.get(item.url);
@@ -107,10 +110,12 @@ const fetchPostersByLangAndDate = async (langName, dateStr) => {
       }
     });
   }
+  console.log("📑 最終 PDF 數：", posters.length);
   return posters;
 };
 
 const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
+  console.log("📄 轉換 PDF:", pdfUrl);
   if (!imageCache.has(langCode)) imageCache.set(langCode, new Map());
   const cache = imageCache.get(langCode);
   if (cache.has(pdfUrl)) return cache.get(pdfUrl);
@@ -131,6 +136,7 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
 };
 
 const sendImageToGroup = async (gid, buffer) => {
+  console.log("📤 傳送圖片到群組:", gid);
   const base64 = buffer.toString("base64");
   const preview = base64.slice(0, 50);
   await client.pushMessage(gid, {
