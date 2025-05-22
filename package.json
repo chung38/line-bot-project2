@@ -11,7 +11,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "A LINE Bot with translation capabilities using DeepSeek API",
+  "description": "A LINE Bot with translation capabilities using DeepSeek API and labor promotion poster delivery",
   "dependencies": {
     "@line/bot-sdk": "^9.7.1",
     "axios": "^1.8.2",
