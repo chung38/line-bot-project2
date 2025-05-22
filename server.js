@@ -117,7 +117,7 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
 // 🚀 傳圖給群組（LINE 圖片訊息）
 const sendImageToGroup = async (gid, buffer) => {
   const base64 = buffer.toString("base64");
-  const preview = base64.slice(0, 50); // fake preview
+  const preview = base64.slice(0, 50);
   await client.pushMessage(gid, {
     type: "image",
     originalContentUrl: `data:image/jpeg;base64,${base64}`,
@@ -169,6 +169,23 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
       for (const lang of langs) {
         await sendPostersByLang(gid, lang, date);
       }
+      return;
+    }
+
+    // 其他文字進入翻譯（排除 !文宣 指令）
+    if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
+      const set = groupLang.get(gid);
+      if (!set || set.size === 0) return;
+      const userName = gid;
+      const isChinese = /[\u4e00-\u9fff]/.test(txt);
+      let translated;
+      if (isChinese) {
+        const results = await Promise.all([...set].map(code => translateWithDeepSeek(txt, code)));
+        translated = results.join("\n");
+      } else {
+        translated = await translateWithDeepSeek(txt, "zh-TW");
+      }
+      await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
     }
   }));
 });
