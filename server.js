@@ -1,10 +1,9 @@
-// 🔧 LINE Bot with Firestore + 勞動部宣導圖轉圖推播（使用 puppeteer 轉圖）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import bodyParser from "body-parser";
 import axios from "axios";
-import { load as cheerioLoad } from "cheerio"; // ✅ 修正這行
+import { load as cheerioLoad } from "cheerio"; // ✅ 修正 cheerio 匯入
 import https from "node:https";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
@@ -32,15 +31,13 @@ const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "z
 const groupLang = new Map();
 const groupInviter = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
+const imageCache = new Map(); // Map<langCode, Map<pdfUrl, imageBuffer>>
 
-// 🧠 快取轉圖：Map<langCode, Map<pdfUrl, imageBuffer>>
-const imageCache = new Map();
-
-// 📁 Firestore load/save
 const loadLang = async () => {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
 };
+
 const loadInviter = async () => {
   const snap = await db.collection("groupInviters").get();
   snap.forEach(doc => groupInviter.set(doc.id, doc.data().userId));
@@ -50,12 +47,44 @@ const hasSent = async (gid, url) => {
   const doc = await db.collection("sentPosters").doc(gid).get();
   return doc.exists && doc.data().urls?.includes(url);
 };
+
 const markSent = async (gid, url) => {
   const ref = db.collection("sentPosters").doc(gid);
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 🧲 爬勞動部宣導文宣
+// 🧠 翻譯功能
+const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
+  const cacheKey = `${targetLang}:${text}`;
+  if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
+
+  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang] || targetLang}，使用台灣常用語，僅回傳翻譯後的文字。`;
+
+  try {
+    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: text }
+      ]
+    }, {
+      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+    });
+
+    const out = res.data.choices[0].message.content.trim();
+    translationCache.set(cacheKey, out);
+    return out;
+  } catch (e) {
+    if (e.response?.status === 429 && retry < 3) {
+      await new Promise(r => setTimeout(r, (retry + 1) * 2000));
+      return translateWithDeepSeek(text, targetLang, retry + 1);
+    }
+    console.error("❌ 翻譯失敗:", e.message);
+    return "（翻譯失敗）";
+  }
+};
+
+// 🧲 勞動部文宣爬蟲
 const fetchPostersByLangAndDate = async (langName, dateStr) => {
   const listRes = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = cheerioLoad(listRes.data);
@@ -90,7 +119,7 @@ const fetchPostersByLangAndDate = async (langName, dateStr) => {
   return posters;
 };
 
-// 🔄 轉 PDF 成圖片 Buffer（只轉一次/語言）
+// 🔄 PDF 轉圖（只轉一次）
 const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   if (!imageCache.has(langCode)) imageCache.set(langCode, new Map());
   const cache = imageCache.get(langCode);
@@ -109,12 +138,12 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   await page.goto(`file://${tempPath}`, { waitUntil: "networkidle0" });
   const buffer = await page.screenshot({ type: "jpeg" });
   await browser.close();
+  await fs.unlink(tempPath);
 
   cache.set(pdfUrl, buffer);
   return buffer;
 };
 
-// 🚀 傳圖給群組（LINE 圖片訊息）
 const sendImageToGroup = async (gid, buffer) => {
   const base64 = buffer.toString("base64");
   const preview = base64.slice(0, 50);
@@ -125,7 +154,6 @@ const sendImageToGroup = async (gid, buffer) => {
   });
 };
 
-// 📢 主推播函式
 const sendPostersByLang = async (gid, langCode, dateStr) => {
   const langName = LANGS[langCode];
   const posters = await fetchPostersByLangAndDate(langName, dateStr);
@@ -134,7 +162,7 @@ const sendPostersByLang = async (gid, langCode, dateStr) => {
     const buffer = await convertPdfToImageBuffer(poster.pdfUrl, langCode);
     await sendImageToGroup(gid, buffer);
     await markSent(gid, poster.pdfUrl);
-    imageCache.get(langCode)?.delete(poster.pdfUrl); // ✅ 發送成功後移除圖片快取
+    imageCache.get(langCode)?.delete(poster.pdfUrl);
   }
 };
 
@@ -148,7 +176,7 @@ cron.schedule("0 15 * * *", async () => {
   }
 });
 
-// 📨 指令：!文宣 YYYY-MM-DD
+// 📨 webhook
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(client.config), express.json(), async (req, res) => {
   res.sendStatus(200);
   await Promise.all(req.body.events.map(async event => {
@@ -156,8 +184,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
     const txt = event.message?.text?.trim();
 
     if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
-      const parts = txt.split(" ");
-      const date = parts[1];
+      const date = txt.split(" ")[1];
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return client.replyMessage(event.replyToken, {
           type: "text",
@@ -172,11 +199,9 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
       return;
     }
 
-    // 其他文字進入翻譯（排除 !文宣 指令）
     if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
       const set = groupLang.get(gid);
       if (!set || set.size === 0) return;
-      const userName = gid;
       const isChinese = /[\u4e00-\u9fff]/.test(txt);
       let translated;
       if (isChinese) {
@@ -185,12 +210,11 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
       } else {
         translated = await translateWithDeepSeek(txt, "zh-TW");
       }
-      await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
+      await client.replyMessage(event.replyToken, { type: "text", text: `【${gid}】說：\n${translated}` });
     }
   }));
 });
 
-// 🏁 啟動服務
 app.get("/", (_, res) => res.send("OK"));
 app.listen(PORT, async () => {
   await loadLang();
