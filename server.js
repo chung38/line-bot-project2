@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（抓取內頁圖檔）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（抓圖內頁 PDF）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -9,7 +9,6 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
 import cron from "node-cron";
-import path from "path";
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -30,7 +29,7 @@ const groupLang = new Map();
 const imageCache = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 🔄 DeepSeek 翻譯
+// 🔄 翻譯 DeepSeek
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -78,16 +77,17 @@ const markSent = async (gid, url) => {
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 📥 發佈日期擷取圖片
+// 📥 根據發佈日期抓圖（點進連結後擷取內頁 PDF 圖片）
 const fetchImageUrlsByDate = async (dateStr) => {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
   const links = [];
+  const formattedDate = dateStr.replace(/-/g, "/");
 
   $(".table-responsive tbody tr").each((_, tr) => {
-    const date = $(tr).find("td").eq(1).text().trim();
-    if (date === dateStr.replace(/-/g, "/")) {
+    const date = $(tr).find('td[data-label*="發佈日期"]').text().trim();
+    if (date === formattedDate) {
       const href = $(tr).find("a").attr("href");
       const title = $(tr).find("a").text().trim();
       if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
