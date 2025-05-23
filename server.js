@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（PDF→JPEG）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（直接抓 img src）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -7,11 +7,8 @@ import axios from "axios";
 import { load } from "cheerio";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
-import fs from "fs/promises";
-import { createWriteStream } from "fs";
-import path from "path";
 import cron from "node-cron";
-import puppeteer from "puppeteer";
+import path from "path";
 
 // === Firebase Init ===
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -27,16 +24,12 @@ const client = new Client({
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const SERVER_URL = process.env.SERVER_URL.replace(/\/$/, "");
-
-// ─── 靜態托管 public 資料夾 ───
-app.use("/public", express.static(path.join(process.cwd(), "public")));
 
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const groupLang = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// ——— DeepSeek 翻譯 ———
+// — DeepSeek 翻譯 —
 async function translateWithDeepSeek(text, targetLang) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
@@ -56,7 +49,7 @@ async function translateWithDeepSeek(text, targetLang) {
   }
 }
 
-// ——— 取得使用者名稱 ———
+// — 取使用者名稱 —
 async function getUserName(gid, uid) {
   try {
     const p = await client.getGroupMemberProfile(gid, uid);
@@ -66,7 +59,7 @@ async function getUserName(gid, uid) {
   }
 }
 
-// ——— Firestore 相關 ———
+// — Firestore helpers —
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
@@ -80,97 +73,63 @@ async function markSent(gid, url) {
     .set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge:true });
 }
 
-// ——— 抓取發佈日期文章 & PDF URL ———
+// — 抓發佈日期文章 & 圖片 URL —
 async function fetchImageUrlsByDate(dateStr) {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
 
+  // 先收集每篇文章的 detail page URL
   const articles = [];
   $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
     if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
-      const a = tds.eq(0).find("a");
-      articles.push({ url:`https://fw.wda.gov.tw${a.attr("href")}` });
+      const href = tds.eq(0).find("a").attr("href");
+      if (href) articles.push(`https://fw.wda.gov.tw${href}`);
     }
   });
   console.log("🔗 發佈日期文章數：", articles.length);
 
+  // 再到 detail page 抓 <img> src
   const images = [];
-  for (const art of articles) {
+  for (const url of articles) {
     try {
-      const d = await axios.get(art.url);
+      const d = await axios.get(url);
       const $$ = load(d.data);
-      $$(".text-photo a").each((_, el) => {
-        const hf = $$(el).attr("href");
-        if (hf?.includes("download-file")) {
-          images.push({ url:`https://fw.wda.gov.tw${hf}` });
+      $$(".text-photo img").each((_, img) => {
+        const src = $$(img).attr("src");
+        if (src && src.includes("download-file")) {
+          images.push(`https://fw.wda.gov.tw${src}`);
         }
       });
     } catch (e) {
-      console.error("⚠️ 讀取詳情失敗:", art.url, e.message);
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
-  console.log("📑 最終 PDF 數：", images.length);
+  console.log("📑 最終圖片數：", images.length);
   return images;
 }
 
-// ——— PDF URL → JPEG Buffer ———
-async function pdfUrlToJpegBuffer(pdfUrl) {
-  await fs.mkdir(path.join(process.cwd(),"public","temp"), { recursive:true });
-  const tmpPdf = path.join(process.cwd(),"public","temp", `${Date.now()}.pdf`);
-  const resp = await axios.get(pdfUrl, { responseType:"stream" });
-  await new Promise((r,e) => resp.data.pipe(createWriteStream(tmpPdf)).on("finish",r).on("error",e));
-
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox","--disable-setuid-sandbox"]
-  });
-  const page = await browser.newPage();
-  await page.goto(`file://${tmpPdf}`, { waitUntil:"networkidle0" });
-  const imgBuf = await page.screenshot({ type:"jpeg", fullPage:true });
-  await browser.close();
-
-  await fs.unlink(tmpPdf);
-  return imgBuf;
-}
-
-// ——— Buffer→Public URL ———
-async function bufferToPublicUrl(buffer, gid) {
-  const name = `temp/${gid}-${Date.now()}.jpg`;
-  const fp = path.join(process.cwd(),"public", name);
-  await fs.writeFile(fp, buffer);
-  return `${SERVER_URL}/public/${name}`;
-}
-
-// ——— 傳送成功後刪除暫存 ———
-async function sendImageToGroup(gid, jpegBuf) {
-  const imageUrl = await bufferToPublicUrl(jpegBuf, gid);
-  await client.pushMessage(gid, {
-    type: "image",
-    originalContentUrl: imageUrl,
-    previewImageUrl: imageUrl
-  });
-  // 刪除暫存 JPEG
-  const localPath = path.join(process.cwd(), imageUrl.split("/public/")[1]);
-  await fs.unlink(localPath);
-}
-
-// ——— 推播流程 ———
+// — 推送圖片到 LINE 群組 —
 async function sendImagesToGroup(gid, dateStr) {
-  const list = await fetchImageUrlsByDate(dateStr);
-  for (const img of list) {
-    if (await hasSent(gid, img.url)) {
-      console.log("✅ 已發送過：", img.url);
+  const imgs = await fetchImageUrlsByDate(dateStr);
+  for (const imgUrl of imgs) {
+    if (await hasSent(gid, imgUrl)) {
+      console.log("✅ 跳過已發送：", imgUrl);
       continue;
     }
-    const jpegBuf = await pdfUrlToJpegBuffer(img.url);
-    await sendImageToGroup(gid, jpegBuf);
-    await markSent(gid, img.url);
+    // 直接用 URL 推圖
+    await client.pushMessage(gid, {
+      type: "image",
+      originalContentUrl: imgUrl,
+      previewImageUrl: imgUrl
+    });
+    await markSent(gid, imgUrl);
+    console.log("📤 已推送圖片：", imgUrl);
   }
 }
 
-// ——— 排程：每日15:00自動推播 ———
+// — 排程：每日 15:00 自動推播 —
 cron.schedule("0 15 * * *", async () => {
   const today = new Date().toISOString().slice(0,10);
   for (const [gid] of groupLang.entries()) {
@@ -179,7 +138,7 @@ cron.schedule("0 15 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// ——— Webhook：處理 !文宣 指令 & 翻譯 ———
+// — Webhook：處理 !文宣 指令 & 翻譯 —
 app.post(
   "/webhook",
   bodyParser.raw({ type:"application/json" }),
