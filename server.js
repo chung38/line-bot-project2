@@ -12,7 +12,6 @@ import { createWriteStream } from "fs";
 import puppeteer from "puppeteer";
 import cron from "node-cron";
 import path from "path";
-import PQueue from "p-queue"; // 新增異步隊列
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -93,7 +92,6 @@ const markSent = async (gid, url) => {
 const fetchPostersByLangAndDate = async (langName, dateStr) => {
   console.log("📥 開始抓文宣...", { langName, dateStr });
 
-  // 將 YYYY-MM-DD 轉換為 YYYY/MM/DD
   const dateParts = dateStr.split("-");
   const formattedDate = `${dateParts[0]}/${dateParts[1]}/${dateParts[2]}`;
 
@@ -104,7 +102,7 @@ const fetchPostersByLangAndDate = async (langName, dateStr) => {
   $(".table-responsive tbody tr").each((_, tr) => {
     const title = $(tr).find("a").text().trim();
     const href = $(tr).find("a").attr("href");
-    const date = $(tr).find("td").eq(2).text().trim(); // 發佈日期在第3欄
+    const date = $(tr).find("td").eq(2).text().trim();
     if ((title.includes("多國語言版") || title.includes(langName)) && date === formattedDate) {
       links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
@@ -140,7 +138,7 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   const cache = imageCache.get(langCode);
   if (cache.has(pdfUrl)) return cache.get(pdfUrl);
 
-  const tempPath = path.resolve(`./temp_${langCode}_${Date.now()}.pdf`); // 避免檔案衝突
+  const tempPath = path.resolve(`./temp_${langCode}_${Date.now()}.pdf`);
   const res = await axios.get(pdfUrl, { responseType: "stream" });
   await new Promise((resolve, reject) => {
     const stream = res.data.pipe(createWriteStream(tempPath));
@@ -153,7 +151,7 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   await page.goto(`file://${tempPath}`, { waitUntil: "networkidle0" });
   const buffer = await page.screenshot({ type: "jpeg", fullPage: true });
   await browser.close();
-  await fs.unlink(tempPath); // 清理臨時檔案
+  await fs.unlink(tempPath);
 
   cache.set(pdfUrl, buffer);
   return buffer;
@@ -183,20 +181,26 @@ const sendPostersByLang = async (gid, langCode, dateStr) => {
     const buffer = await convertPdfToImageBuffer(poster.pdfUrl, langCode);
     await sendImageToGroup(gid, buffer);
     await markSent(gid, poster.pdfUrl);
-    imageCache.get(langCode)?.delete(poster.pdfUrl); // 發送成功後清除緩存
+    imageCache.get(langCode)?.delete(poster.pdfUrl);
   }
 };
 
-// ⏰ 每日下午三點推播（使用異步隊列）
+// ⏰ 每日推播（使用 Promise.all 配合延遲）
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const sendPostersByLangBatch = async (gid, langs, dateStr, batchSize = 5) => {
+  for (let i = 0; i < langs.length; i += batchSize) {
+    const batch = langs.slice(i, i + batchSize);
+    await Promise.all(batch.map(lang => sendPostersByLang(gid, lang, dateStr)));
+    await delay(1000); // 每批之間延遲1秒
+  }
+};
+
 cron.schedule("0 15 * * *", async () => {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const queue = new PQueue({ concurrency: 5 }); // 限制並行數為5
   for (const [gid, langs] of groupLang.entries()) {
-    for (const lang of langs) {
-      queue.add(() => sendPostersByLang(gid, lang, today));
-    }
+    await sendPostersByLangBatch(gid, [...langs], today);
   }
-  await queue.onIdle();
   console.log("⏰ 每日推播完成");
 });
 
@@ -231,7 +235,6 @@ app.post(
           return;
         }
 
-        // 🗣️ 其他文字進入翻譯流程
         if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
           const set = groupLang.get(gid);
           if (!set || set.size === 0) return;
@@ -250,13 +253,3 @@ app.post(
           });
         }
       })
-    );
-  }
-);
-
-app.get("/", (_, res) => res.send("OK"));
-app.listen(PORT, async () => {
-  await loadLang();
-  await loadInviter();
-  console.log("🚀 機器人已啟動 on", PORT);
-});
