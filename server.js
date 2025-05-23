@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（直接抓 img src）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（方案 B 只抓設定語言、改副檔名）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -8,7 +8,6 @@ import { load } from "cheerio";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import cron from "node-cron";
-import path from "path";
 
 // === Firebase Init ===
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -25,9 +24,20 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// 各語系中英文對照
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+// 反查：中文標籤 => 語系 code
+const NAME_TO_CODE = Object.entries(LANGS).reduce((m,[k,v]) => (m[v+"版"] = k, m[v]=k, m), {});
+
+// 載入各群組設定的語系
 const groupLang = new Map();
-const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
+async function loadLang() {
+  const snap = await db.collection("groupLanguages").get();
+  snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
+}
+
+// 翻譯快取
+const translationCache = new LRUCache({ max:500, ttl:24*60*60*1000 });
 
 // — DeepSeek 翻譯 —
 async function translateWithDeepSeek(text, targetLang) {
@@ -37,72 +47,65 @@ async function translateWithDeepSeek(text, targetLang) {
   try {
     const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
-      { model: "deepseek-chat", messages: [{role:"system",content:sys},{role:"user",content:text}] },
+      { model:"deepseek-chat", messages:[{role:"system",content:sys},{role:"user",content:text}] },
       { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
     const out = r.data.choices[0].message.content.trim();
-    translationCache.set(key, out);
+    translationCache.set(key,out);
     return out;
-  } catch (e) {
+  } catch(e) {
     console.error("❌ 翻譯失敗:", e.message);
     return "（翻譯暫不可用）";
   }
 }
 
-// — 取使用者名稱 —
+// — 取得使用者名稱 —
 async function getUserName(gid, uid) {
   try {
-    const p = await client.getGroupMemberProfile(gid, uid);
+    const p = await client.getGroupMemberProfile(gid,uid);
     return p.displayName;
   } catch {
     return uid;
   }
 }
 
-// — Firestore helpers —
-async function loadLang() {
-  const snap = await db.collection("groupLanguages").get();
-  snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
-}
-async function hasSent(gid, url) {
-  const doc = await db.collection("sentPosters").doc(gid).get();
-  return doc.exists && doc.data().urls?.includes(url);
-}
-async function markSent(gid, url) {
-  await db.collection("sentPosters").doc(gid)
-    .set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge:true });
-}
-
-// — 抓發佈日期文章 & 圖片 URL —
-async function fetchImageUrlsByDate(dateStr) {
-  console.log("📥 開始抓文宣...", dateStr);
+// — 根據發佈日期 & 群組設定語系，抓取對應的圖片 URL —
+async function fetchImageUrlsByDate(gid, dateStr) {
+  console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-
-  // 先收集每篇文章的 detail page URL
-  const articles = [];
-  $("table.sub-table tbody.tbody tr").each((_, tr) => {
+  // 找到當日文章
+  const detailUrls = [];
+  $("table.sub-table tbody.tbody tr").each((_,tr) => {
     const tds = $(tr).find("td");
     if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
       const href = tds.eq(0).find("a").attr("href");
-      if (href) articles.push(`https://fw.wda.gov.tw${href}`);
+      if (href) detailUrls.push("https://fw.wda.gov.tw"+href);
     }
   });
-  console.log("🔗 發佈日期文章數：", articles.length);
+  console.log("🔗 發佈日期文章數：", detailUrls.length);
 
-  // 再到 detail page 抓 <img> src
+  const wanted = groupLang.get(gid) || new Set();
   const images = [];
-  for (const url of articles) {
+  // 每篇文章裡挑出對應語系的 <img>
+  for (const url of detailUrls) {
     try {
       const d = await axios.get(url);
       const $$ = load(d.data);
-      $$(".text-photo img").each((_, img) => {
-        const src = $$(img).attr("src");
-        if (src && src.includes("download-file")) {
-          images.push(`https://fw.wda.gov.tw${src}`);
+      $$(".text-photo a").each((_,el) => {
+        const label = $$(el).find("p").text().trim();      // e.g. "中文版"、"泰文版"
+        const code  = NAME_TO_CODE[label];
+        if (code && wanted.has(code)) {
+          let imgUrl = $$(el).find("img").attr("src");
+          if (imgUrl) {
+            imgUrl = "https://fw.wda.gov.tw"+imgUrl;
+            // 改副檔名為 .jpg
+            imgUrl = imgUrl.replace(/\.pdf$/, ".jpg");
+            images.push(imgUrl);
+          }
         }
       });
-    } catch (e) {
+    } catch(e) {
       console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
@@ -110,22 +113,16 @@ async function fetchImageUrlsByDate(dateStr) {
   return images;
 }
 
-// — 推送圖片到 LINE 群組 —
+// — 推播圖片給 LINE 群組（不去重，不記錄） —
 async function sendImagesToGroup(gid, dateStr) {
-  const imgs = await fetchImageUrlsByDate(dateStr);
-  for (const imgUrl of imgs) {
-    if (await hasSent(gid, imgUrl)) {
-      console.log("✅ 跳過已發送：", imgUrl);
-      continue;
-    }
-    // 直接用 URL 推圖
+  const imgs = await fetchImageUrlsByDate(gid, dateStr);
+  for (const originalUrl of imgs) {
+    console.log("📤 推送：", originalUrl);
     await client.pushMessage(gid, {
       type: "image",
-      originalContentUrl: imgUrl,
-      previewImageUrl: imgUrl
+      originalContentUrl: originalUrl,
+      previewImageUrl:  originalUrl
     });
-    await markSent(gid, imgUrl);
-    console.log("📤 已推送圖片：", imgUrl);
   }
 }
 
@@ -144,14 +141,13 @@ app.post(
   bodyParser.raw({ type:"application/json" }),
   middleware(client.config),
   express.json(),
-  async (req, res) => {
+  async (req,res) => {
     res.sendStatus(200);
     await Promise.all(req.body.events.map(async ev => {
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
       const txt = ev.message?.text?.trim();
-
-      // 指令：!文宣 YYYY-MM-DD
+      // !文宣 YYYY-MM-DD
       if (ev.type==="message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -162,8 +158,7 @@ app.post(
         await sendImagesToGroup(gid, d);
         return;
       }
-
-      // 翻譯功能
+      // 翻譯
       if (ev.type==="message"
           && ev.message?.type==="text"
           && gid
@@ -173,8 +168,8 @@ app.post(
         const name = await getUserName(gid, uid);
         const isZh = /[\u4e00-\u9fff]/.test(txt);
         const out = isZh
-          ? (await Promise.all([...langs].map(l=>translateWithDeepSeek(txt,l)))).join("\n")
-          : await translateWithDeepSeek(txt,"zh-TW");
+          ? (await Promise.all([...langs].map(l=>translateWithDeepSeek(txt, l)))).join("\n")
+          : await translateWithDeepSeek(txt, "zh-TW");
         await client.replyMessage(ev.replyToken, {
           type:"text",
           text:`【${name}】說：\n${out}`
@@ -184,8 +179,8 @@ app.post(
   }
 );
 
-app.get("/", (_, res) => res.send("OK"));
-app.listen(PORT, async () => {
+app.get("/",(_,res)=>res.send("OK"));
+app.listen(PORT, async ()=>{
   await loadLang();
   console.log("🚀 Bot 已啟動，Listening on", PORT);
 });
