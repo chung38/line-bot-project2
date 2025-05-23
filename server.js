@@ -12,6 +12,7 @@ import { createWriteStream } from "fs";
 import puppeteer from "puppeteer";
 import cron from "node-cron";
 import path from "path";
+import PQueue from "p-queue"; // 新增異步隊列
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -22,7 +23,7 @@ const db = admin.firestore();
 // 📡 LINE Init
 const client = new Client({
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
 });
 
 const app = express();
@@ -40,15 +41,19 @@ const translateWithDeepSeek = async (text, targetLang) => {
 
   const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang] || targetLang}，請使用台灣常用語，並且僅回傳翻譯後的文字。`;
   try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: text }
-      ]
-    }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
-    });
+    const res = await axios.post(
+      "https://api.deepseek.com/v1/chat/completions",
+      {
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: text },
+        ],
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` },
+      }
+    );
     const out = res.data.choices[0].message.content.trim();
     translationCache.set(cacheKey, out);
     return out;
@@ -69,11 +74,11 @@ const getUserName = async (gid, uid) => {
 
 const loadLang = async () => {
   const snap = await db.collection("groupLanguages").get();
-  snap.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
+  snap.forEach((doc) => groupLang.set(doc.id, new Set(doc.data().langs)));
 };
 const loadInviter = async () => {
   const snap = await db.collection("groupInviters").get();
-  snap.forEach(doc => groupInviter.set(doc.id, doc.data().userId));
+  snap.forEach((doc) => groupInviter.set(doc.id, doc.data().userId));
 };
 const hasSent = async (gid, url) => {
   const doc = await db.collection("sentPosters").doc(gid).get();
@@ -87,20 +92,25 @@ const markSent = async (gid, url) => {
 // 📥 爬文宣網站取得目標PDF列表
 const fetchPostersByLangAndDate = async (langName, dateStr) => {
   console.log("📥 開始抓文宣...", { langName, dateStr });
+
+  // 將 YYYY-MM-DD 轉換為 YYYY/MM/DD
+  const dateParts = dateStr.split("-");
+  const formattedDate = `${dateParts[0]}/${dateParts[1]}/${dateParts[2]}`;
+
   const listRes = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(listRes.data);
   const links = [];
 
   $(".table-responsive tbody tr").each((_, tr) => {
-    const title = $(tr).find("a").text();
+    const title = $(tr).find("a").text().trim();
     const href = $(tr).find("a").attr("href");
-    const date = $(tr).find("td").eq(2).text().trim();
-    if ((title.includes(langName) || title.includes("多國語言版")) && date === dateStr) {
+    const date = $(tr).find("td").eq(2).text().trim(); // 發佈日期在第3欄
+    if ((title.includes("多國語言版") || title.includes(langName)) && date === formattedDate) {
       links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
 
-  console.log(`🔗 找到 ${links.length} 個標題含 ${langName} 或多語版本 的連結`);
+  console.log(`🔗 找到 ${links.length} 個符合日期 ${formattedDate} 的連結`);
 
   const posters = [];
   for (const item of links) {
@@ -108,9 +118,9 @@ const fetchPostersByLangAndDate = async (langName, dateStr) => {
       const detail = await axios.get(item.url);
       const $$ = load(detail.data);
       $$("a").each((_, a) => {
-        const label = $$(a).text();
+        const label = $$(a).text().trim();
         const href = $$(a).attr("href");
-        if (label.includes(langName) && href.includes("download-file")) {
+        if (label.includes(langName) && href && href.includes("download-file")) {
           posters.push({ title: item.title, pdfUrl: `https://fw.wda.gov.tw${href}` });
         }
       });
@@ -130,7 +140,7 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   const cache = imageCache.get(langCode);
   if (cache.has(pdfUrl)) return cache.get(pdfUrl);
 
-  const tempPath = path.resolve(`./temp_${langCode}.pdf`);
+  const tempPath = path.resolve(`./temp_${langCode}_${Date.now()}.pdf`); // 避免檔案衝突
   const res = await axios.get(pdfUrl, { responseType: "stream" });
   await new Promise((resolve, reject) => {
     const stream = res.data.pipe(createWriteStream(tempPath));
@@ -141,8 +151,9 @@ const convertPdfToImageBuffer = async (pdfUrl, langCode) => {
   const browser = await puppeteer.launch({ headless: "new" });
   const page = await browser.newPage();
   await page.goto(`file://${tempPath}`, { waitUntil: "networkidle0" });
-  const buffer = await page.screenshot({ type: "jpeg" });
+  const buffer = await page.screenshot({ type: "jpeg", fullPage: true });
   await browser.close();
+  await fs.unlink(tempPath); // 清理臨時檔案
 
   cache.set(pdfUrl, buffer);
   return buffer;
@@ -156,7 +167,7 @@ const sendImageToGroup = async (gid, buffer) => {
   await client.pushMessage(gid, {
     type: "image",
     originalContentUrl: `data:image/jpeg;base64,${base64}`,
-    previewImageUrl: `data:image/jpeg;base64,${preview}`
+    previewImageUrl: `data:image/jpeg;base64,${preview}`,
   });
 };
 
@@ -172,59 +183,76 @@ const sendPostersByLang = async (gid, langCode, dateStr) => {
     const buffer = await convertPdfToImageBuffer(poster.pdfUrl, langCode);
     await sendImageToGroup(gid, buffer);
     await markSent(gid, poster.pdfUrl);
-    imageCache.get(langCode)?.delete(poster.pdfUrl); // ✔️ 發送成功後清除
+    imageCache.get(langCode)?.delete(poster.pdfUrl); // 發送成功後清除緩存
   }
 };
 
-// ⏰ 每日下午三點推播
+// ⏰ 每日下午三點推播（使用異步隊列）
 cron.schedule("0 15 * * *", async () => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const queue = new PQueue({ concurrency: 5 }); // 限制並行數為5
   for (const [gid, langs] of groupLang.entries()) {
     for (const lang of langs) {
-      await sendPostersByLang(gid, lang, today);
+      queue.add(() => sendPostersByLang(gid, lang, today));
     }
   }
+  await queue.onIdle();
+  console.log("⏰ 每日推播完成");
 });
 
 // 📨 處理 LINE 指令
-app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(client.config), express.json(), async (req, res) => {
-  res.sendStatus(200);
+app.post(
+  "/webhook",
+  bodyParser.raw({ type: "application/json" }),
+  middleware(client.config),
+  express.json(),
+  async (req, res) => {
+    res.sendStatus(200);
 
-  await Promise.all(req.body.events.map(async event => {
-    const gid = event.source?.groupId;
-    const uid = event.source?.userId;
-    const txt = event.message?.text?.trim();
+    await Promise.all(
+      req.body.events.map(async (event) => {
+        const gid = event.source?.groupId;
+        const uid = event.source?.userId;
+        const txt = event.message?.text?.trim();
 
-    if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
-      const date = txt.split(" ")[1];
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return client.replyMessage(event.replyToken, { type: "text", text: "請輸入正確日期格式，例如：!文宣 2024-05-21" });
-      }
-      const langs = groupLang.get(gid);
-      if (!langs || langs.size === 0) return;
-      for (const lang of langs) {
-        await sendPostersByLang(gid, lang, date);
-      }
-      return;
-    }
+        if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
+          const date = txt.split(" ")[1];
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return client.replyMessage(event.replyToken, {
+              type: "text",
+              text: "請輸入正確日期格式，例如：!文宣 2024-05-21",
+            });
+          }
+          const langs = groupLang.get(gid);
+          if (!langs || langs.size === 0) return;
+          for (const lang of langs) {
+            await sendPostersByLang(gid, lang, date);
+          }
+          return;
+        }
 
-    // 🗣️ 其他文字進入翻譯流程
-    if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
-      const set = groupLang.get(gid);
-      if (!set || set.size === 0) return;
-      const userName = await getUserName(gid, uid);
-      const isChinese = /[\u4e00-\u9fff]/.test(txt);
-      let translated;
-      if (isChinese) {
-        const results = await Promise.all([...set].map(code => translateWithDeepSeek(txt, code)));
-        translated = results.join("\n");
-      } else {
-        translated = await translateWithDeepSeek(txt, "zh-TW");
-      }
-      await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
-    }
-  }));
-});
+        // 🗣️ 其他文字進入翻譯流程
+        if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
+          const set = groupLang.get(gid);
+          if (!set || set.size === 0) return;
+          const userName = await getUserName(gid, uid);
+          const isChinese = /[\u4e00-\u9fff]/.test(txt);
+          let translated;
+          if (isChinese) {
+            const results = await Promise.all([...set].map((code) => translateWithDeepSeek(txt, code)));
+            translated = results.join("\n");
+          } else {
+            translated = await translateWithDeepSeek(txt, "zh-TW");
+          }
+          await client.replyMessage(event.replyToken, {
+            type: "text",
+            text: `【${userName}】說：\n${translated}`,
+          });
+        }
+      })
+    );
+  }
+);
 
 app.get("/", (_, res) => res.send("OK"));
 app.listen(PORT, async () => {
