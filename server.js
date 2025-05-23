@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播 + DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（PDF→JPEG）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -8,8 +8,10 @@ import { load } from "cheerio";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
+import { createWriteStream } from "fs";
 import path from "path";
 import cron from "node-cron";
+import puppeteer from "puppeteer";
 
 // === Firebase Init ===
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -27,14 +29,14 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const SERVER_URL = process.env.SERVER_URL.replace(/\/$/, "");
 
-// 靜態托管 public 資料夾
+// ─── 靜態托管 public 資料夾 ───
 app.use("/public", express.static(path.join(process.cwd(), "public")));
 
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const groupLang = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 翻譯功能
+// ——— DeepSeek 翻譯 ———
 async function translateWithDeepSeek(text, targetLang) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
@@ -42,8 +44,8 @@ async function translateWithDeepSeek(text, targetLang) {
   try {
     const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
-      { model: "deepseek-chat", messages: [{ role: "system", content: sys }, { role: "user", content: text }] },
-      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` } }
+      { model: "deepseek-chat", messages: [{role:"system",content:sys},{role:"user",content:text}] },
+      { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
     const out = r.data.choices[0].message.content.trim();
     translationCache.set(key, out);
@@ -54,7 +56,7 @@ async function translateWithDeepSeek(text, targetLang) {
   }
 }
 
-// 取得使用者名稱
+// ——— 取得使用者名稱 ———
 async function getUserName(gid, uid) {
   try {
     const p = await client.getGroupMemberProfile(gid, uid);
@@ -64,7 +66,7 @@ async function getUserName(gid, uid) {
   }
 }
 
-// Firestore 相關
+// ——— Firestore 相關 ———
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
@@ -75,10 +77,10 @@ async function hasSent(gid, url) {
 }
 async function markSent(gid, url) {
   await db.collection("sentPosters").doc(gid)
-    .set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
+    .set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge:true });
 }
 
-// 抓取文章與圖片 URL
+// ——— 抓取發佈日期文章 & 圖片 URL ———
 async function fetchImageUrlsByDate(dateStr) {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -87,10 +89,9 @@ async function fetchImageUrlsByDate(dateStr) {
   const articles = [];
   $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
-    const pub = tds.eq(1).text().trim();
-    if (pub === dateStr.replace(/-/g,"/")) {
+    if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
       const a = tds.eq(0).find("a");
-      articles.push({ url: `https://fw.wda.gov.tw${a.attr("href")}` });
+      articles.push({ url:`https://fw.wda.gov.tw${a.attr("href")}` });
     }
   });
   console.log("🔗 發佈日期文章數：", articles.length);
@@ -103,41 +104,62 @@ async function fetchImageUrlsByDate(dateStr) {
       $$(".text-photo a").each((_, el) => {
         const hf = $$(el).attr("href");
         if (hf?.includes("download-file")) {
-          images.push({ url: `https://fw.wda.gov.tw${hf}` });
+          images.push({ url:`https://fw.wda.gov.tw${hf}` });
         }
       });
     } catch (e) {
       console.error("⚠️ 讀取詳情失敗:", art.url, e.message);
     }
   }
-  console.log("📑 最終圖片數：", images.length);
+  console.log("📑 最終 PDF 數：", images.length);
   return images;
 }
 
-// Buffer → public 暫存檔，回傳公開 URL
+// ——— PDF URL → JPEG Buffer ———
+async function pdfUrlToJpegBuffer(pdfUrl) {
+  // 1. 下載 PDF 到暫存
+  await fs.mkdir(path.join(process.cwd(),"public","temp"), { recursive:true });
+  const tmpPdf = path.join(process.cwd(),"public","temp", `${Date.now()}.pdf`);
+  const resp = await axios.get(pdfUrl, { responseType:"stream" });
+  await new Promise((r,e) => resp.data.pipe(createWriteStream(tmpPdf)).on("finish",r).on("error",e));
+
+  // 2. Puppeteer 轉 JPEG
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: ["--no-sandbox","--disable-setuid-sandbox"]
+  });
+  const page = await browser.newPage();
+  await page.goto(`file://${tmpPdf}`, { waitUntil:"networkidle0" });
+  const imgBuf = await page.screenshot({ type:"jpeg", fullPage:true });
+  await browser.close();
+
+  // 3. 刪除 PDF 暫存
+  await fs.unlink(tmpPdf);
+  return imgBuf;
+}
+
+// ——— Buffer→Public URL ———
 async function bufferToPublicUrl(buffer, gid) {
-  await fs.mkdir(path.join(process.cwd(), "public", "temp"), { recursive: true });
   const name = `temp/${gid}-${Date.now()}.jpg`;
-  const fp = path.join(process.cwd(), "public", name);
+  const fp = path.join(process.cwd(),"public", name);
   await fs.writeFile(fp, buffer);
   return `${SERVER_URL}/public/${name}`;
 }
 
-// 傳送成功後刪除暫存
-async function sendImageToGroup(gid, buffer) {
-  const imageUrl = await bufferToPublicUrl(buffer, gid);
+// ——— 傳送成功後刪除暫存 ———
+async function sendImageToGroup(gid, jpegBuf) {
+  const imageUrl = await bufferToPublicUrl(jpegBuf, gid);
   await client.pushMessage(gid, {
     type: "image",
     originalContentUrl: imageUrl,
     previewImageUrl: imageUrl
   });
-  // 刪檔＆清快取（補上 public 資料夾）
-  const relative = imageUrl.split("/public/")[1];
-  const localPath = path.join(process.cwd(), "public", relative);
+  // 刪檔＆快取地端清除
+  const localPath = path.join(process.cwd(), imageUrl.split("/public/")[1]);
   await fs.unlink(localPath);
 }
 
-// 推播流程
+// ——— 推播流程 ———
 async function sendImagesToGroup(gid, dateStr) {
   const list = await fetchImageUrlsByDate(dateStr);
   for (const img of list) {
@@ -145,13 +167,14 @@ async function sendImagesToGroup(gid, dateStr) {
       console.log("✅ 已發送過：", img.url);
       continue;
     }
-    const r = await axios.get(img.url, { responseType: "arraybuffer" });
-    await sendImageToGroup(gid, Buffer.from(r.data));
+    // PDF→JPEG
+    const jpegBuf = await pdfUrlToJpegBuffer(img.url);
+    await sendImageToGroup(gid, jpegBuf);
     await markSent(gid, img.url);
   }
 }
 
-// 排程：每日15:00
+// ——— 排程：每日15:00自動推播 ———
 cron.schedule("0 15 * * *", async () => {
   const today = new Date().toISOString().slice(0,10);
   for (const [gid] of groupLang.entries()) {
@@ -160,10 +183,10 @@ cron.schedule("0 15 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// Webhook：!文宣 & 翻譯
+// ——— Webhook：處理 !文宣 指令 & 翻譯 ———
 app.post(
   "/webhook",
-  bodyParser.raw({ type: "application/json" }),
+  bodyParser.raw({ type:"application/json" }),
   middleware(client.config),
   express.json(),
   async (req, res) => {
@@ -173,7 +196,8 @@ app.post(
       const uid = ev.source?.userId;
       const txt = ev.message?.text?.trim();
 
-      if (ev.type === "message" && txt?.startsWith("!文宣") && gid) {
+      // 指令：!文宣 YYYY-MM-DD
+      if (ev.type==="message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
           return client.replyMessage(ev.replyToken, {
@@ -184,10 +208,11 @@ app.post(
         return;
       }
 
-      if (ev.type === "message" && ev.message?.type==="text" && gid && !txt.startsWith("!文宣")) {
+      // 翻譯功能
+      if (ev.type==="message" && ev.message?.type==="text" && gid && !txt.startsWith("!文宣")) {
         const langs = groupLang.get(gid);
         if (!langs) return;
-        const name = await getUserName(gid, uid);
+        const name = await getUserName(gid, uid!);
         const isZh = /[\u4e00-\u9fff]/.test(txt);
         const out = isZh
           ? (await Promise.all([...langs].map(l=>translateWithDeepSeek(txt,l)))).join("\n")
