@@ -10,6 +10,7 @@ import admin from "firebase-admin";
 import fs from "fs/promises";
 import path from "path";
 import { createWriteStream } from "fs";
+import cron from "node-cron";
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -26,21 +27,25 @@ const client = new Client({
 // Express App
 const app = express();
 const PORT = process.env.PORT || 10000;
-// 你要在 .env 裡設定這個值，例如：https://your-app.onrender.com
-const SERVER_URL = process.env.SERVER_URL!.replace(/\/$/, "");
 
-// 把 public 目錄掛上靜態伺服
+// SERVER_URL 必須在 .env 設定，例如: SERVER_URL=https://your-app.onrender.com
+if (!process.env.SERVER_URL) {
+  console.error("❌ 缺少 SERVER_URL 環境變數");
+  process.exit(1);
+}
+const SERVER_URL = process.env.SERVER_URL.replace(/\/$/, "");
+
+// 掛載 public 目錄為靜態路徑
 app.use("/public", express.static(path.resolve("./public")));
 
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
-const groupLang = new Map<string, Set<string>>();
-const imageCache = new Map<string, Buffer>();
-const translationCache = new LRUCache<string, string>({ max: 500, ttl: 24 * 60 * 60 * 1000 });
+const groupLang = new Map();
+const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
 // 🔄 DeepSeek 翻譯（不動）
-async function translateWithDeepSeek(text: string, targetLang: string): Promise<string> {
+async function translateWithDeepSeek(text, targetLang) {
   const cacheKey = `${targetLang}:${text}`;
-  if (translationCache.has(cacheKey)) return translationCache.get(cacheKey)!;
+  if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
   const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang] || targetLang}，僅回傳翻譯文字。`;
   try {
     const res = await axios.post(
@@ -57,14 +62,14 @@ async function translateWithDeepSeek(text: string, targetLang: string): Promise<
     const out = res.data.choices[0].message.content.trim();
     translationCache.set(cacheKey, out);
     return out;
-  } catch (e: any) {
+  } catch (e) {
     console.error("❌ 翻譯失敗:", e.message);
     return "（翻譯暫時不可用）";
   }
 }
 
-// 取使用者名稱
-async function getUserName(gid: string, uid: string) {
+// 取得群組成員名稱
+async function getUserName(gid, uid) {
   try {
     const p = await client.getGroupMemberProfile(gid, uid);
     return p.displayName;
@@ -73,18 +78,18 @@ async function getUserName(gid: string, uid: string) {
   }
 }
 
-// 載入群組可用語言設定
+// 載入群組語言設定
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
 }
 
 // 檢查 & 標記已發送
-async function hasSent(gid: string, url: string) {
+async function hasSent(gid, url) {
   const doc = await db.collection("sentPosters").doc(gid).get();
-  return doc.exists && doc.data()?.urls?.includes(url);
+  return doc.exists && doc.data().urls?.includes(url);
 }
-async function markSent(gid: string, url: string) {
+async function markSent(gid, url) {
   await db
     .collection("sentPosters")
     .doc(gid)
@@ -92,14 +97,14 @@ async function markSent(gid: string, url: string) {
 }
 
 // 📥 根據日期抓文章連結
-async function fetchImageUrlsByDate(dateStr: string) {
+async function fetchImageUrlsByDate(dateStr) {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-  const links: { title: string; url: string }[] = [];
+  const links = [];
 
   $(".table-responsive tbody tr").each((_, tr) => {
-    const date = $(tr).find("td").eq(1).text().trim(); // 格式：YYYY/MM/DD
+    const date = $(tr).find("td").eq(1).text().trim(); // YYYY/MM/DD
     if (date === dateStr) {
       const a = $(tr).find("td").eq(0).find("a");
       const href = a.attr("href");
@@ -109,7 +114,7 @@ async function fetchImageUrlsByDate(dateStr: string) {
   });
   console.log("🔗 找到發佈日期文章數：", links.length);
 
-  const images: { title: string; url: string }[] = [];
+  const images = [];
   for (const item of links) {
     try {
       const detail = await axios.get(item.url);
@@ -120,7 +125,7 @@ async function fetchImageUrlsByDate(dateStr: string) {
           images.push({ title: item.title, url: `https://fw.wda.gov.tw${href}` });
         }
       });
-    } catch (e: any) {
+    } catch (e) {
       console.error(`⚠️ 讀取 ${item.url} 失敗:`, e.message);
     }
   }
@@ -128,37 +133,32 @@ async function fetchImageUrlsByDate(dateStr: string) {
   return images;
 }
 
-// 取圖 Buffer
-async function fetchImageBuffer(imgUrl: string) {
+// 抓圖片 Buffer
+async function fetchImageBuffer(imgUrl) {
   const res = await axios.get(imgUrl, { responseType: "arraybuffer" });
   return Buffer.from(res.data);
 }
 
-// 📤 傳圖並自動清除檔案
-async function sendImageToGroup(gid: string, buffer: Buffer) {
-  // 暫存檔案路徑
+// 📤 傳圖並自動刪除檔案
+async function sendImageToGroup(gid, buffer) {
   const filename = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
   const filePath = path.resolve("./public", filename);
-  // 確保 public 資料夾存在
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  // 寫檔
   await fs.writeFile(filePath, buffer);
-  // Line URL
-  const url = `${SERVER_URL}/public/${filename}`;
 
-  // 傳送
+  const url = `${SERVER_URL}/public/${filename}`;
   await client.pushMessage(gid, {
     type: "image",
     originalContentUrl: url,
     previewImageUrl: url,
   });
 
-  // 刪除暫存
+  // 刪除暫存檔
   await fs.unlink(filePath);
 }
 
-// 📢 主流程
-async function sendImagesToGroup(gid: string, dateStr: string) {
+// 📢 推播流程
+async function sendImagesToGroup(gid, dateStr) {
   const list = await fetchImageUrlsByDate(dateStr);
   for (const img of list) {
     if (await hasSent(gid, img.url)) {
@@ -172,9 +172,8 @@ async function sendImagesToGroup(gid: string, dateStr: string) {
 }
 
 // ⏰ Cron 每日 15:00 自動推播
-import cron from "node-cron";
 cron.schedule("0 15 * * *", async () => {
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "/"); // YYYY/MM/DD
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "/");
   for (const [gid] of groupLang.entries()) {
     await sendImagesToGroup(gid, today);
   }
@@ -190,7 +189,7 @@ app.post(
   async (req, res) => {
     res.sendStatus(200);
     await Promise.all(
-      req.body.events.map(async (event: any) => {
+      req.body.events.map(async event => {
         const gid = event.source?.groupId;
         const uid = event.source?.userId;
         const txt = event.message?.text?.trim();
@@ -209,7 +208,7 @@ app.post(
           return;
         }
 
-        // 翻譯功能（保留）
+        // 翻譯功能
         if (event.type === "message" && event.message?.type === "text" && !txt?.startsWith("!文宣")) {
           const langs = groupLang.get(gid);
           if (!langs) return;
@@ -228,7 +227,7 @@ app.post(
   }
 );
 
-// health check
+// 健康檢查
 app.get("/", (_, res) => res.send("OK"));
 app.listen(PORT, async () => {
   await loadLang();
