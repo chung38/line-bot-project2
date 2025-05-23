@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（抓取內頁圖檔）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（抓圖內頁 PDF）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -29,7 +29,7 @@ const groupLang = new Map();
 const imageCache = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 🔄 翻譯 DeepSeek
+// 翻譯
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -77,19 +77,21 @@ const markSent = async (gid, url) => {
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 📥 根據發佈日期抓圖（點進連結後擷取 PDF 圖片）
+// 🧲 修改後的圖文擷取函數
 const fetchImageUrlsByDate = async (dateStr) => {
   console.log("📥 開始抓文宣...", dateStr);
+  const formatted = dateStr.replace(/-/g, "/");
+
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
   const links = [];
 
   $(".table-responsive tbody tr").each((_, tr) => {
-    const pubDate = $(tr).find("td").eq(1).text().trim();
-    const href = $(tr).find("a").attr("href");
-    const title = $(tr).find("a").text().trim();
-    if (pubDate === dateStr.replace(/-/g, "/") && href) {
-      links.push({ title, url: `https://fw.wda.gov.tw${href}` });
+    const publishDate = $(tr).find("td").eq(1).text().trim();
+    if (publishDate === formatted) {
+      const href = $(tr).find("a").attr("href");
+      const title = $(tr).find("a").text().trim();
+      if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
 
@@ -100,14 +102,14 @@ const fetchImageUrlsByDate = async (dateStr) => {
     try {
       const detail = await axios.get(item.url);
       const $$ = load(detail.data);
-      $$(".text-photo a").each((_, a) => {
-        const href = $$(a).attr("href");
-        if (href?.includes("download-file")) {
-          images.push({ title: item.title, url: `https://fw.wda.gov.tw${href}` });
+      $$(".text-photo img").each((_, img) => {
+        const src = $$(img).attr("src");
+        if (src?.includes("download-file")) {
+          images.push({ title: item.title, url: `https://fw.wda.gov.tw${src}` });
         }
       });
     } catch (e) {
-      console.error(`⚠️ 讀取 ${item.url} 失敗:`, e.message);
+      console.error(`⚠️ 詳細頁讀取失敗: ${item.url}`, e.message);
     }
   }
 
