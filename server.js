@@ -80,7 +80,7 @@ async function markSent(gid, url) {
     .set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge:true });
 }
 
-// ——— 抓取發佈日期文章 & 圖片 URL ———
+// ——— 抓取發佈日期文章 & PDF URL ———
 async function fetchImageUrlsByDate(dateStr) {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -117,13 +117,11 @@ async function fetchImageUrlsByDate(dateStr) {
 
 // ——— PDF URL → JPEG Buffer ———
 async function pdfUrlToJpegBuffer(pdfUrl) {
-  // 1. 下載 PDF 到暫存
   await fs.mkdir(path.join(process.cwd(),"public","temp"), { recursive:true });
   const tmpPdf = path.join(process.cwd(),"public","temp", `${Date.now()}.pdf`);
   const resp = await axios.get(pdfUrl, { responseType:"stream" });
   await new Promise((r,e) => resp.data.pipe(createWriteStream(tmpPdf)).on("finish",r).on("error",e));
 
-  // 2. Puppeteer 轉 JPEG
   const browser = await puppeteer.launch({
     headless: "new",
     args: ["--no-sandbox","--disable-setuid-sandbox"]
@@ -133,7 +131,6 @@ async function pdfUrlToJpegBuffer(pdfUrl) {
   const imgBuf = await page.screenshot({ type:"jpeg", fullPage:true });
   await browser.close();
 
-  // 3. 刪除 PDF 暫存
   await fs.unlink(tmpPdf);
   return imgBuf;
 }
@@ -154,7 +151,7 @@ async function sendImageToGroup(gid, jpegBuf) {
     originalContentUrl: imageUrl,
     previewImageUrl: imageUrl
   });
-  // 刪檔＆快取地端清除
+  // 刪除暫存 JPEG
   const localPath = path.join(process.cwd(), imageUrl.split("/public/")[1]);
   await fs.unlink(localPath);
 }
@@ -167,7 +164,6 @@ async function sendImagesToGroup(gid, dateStr) {
       console.log("✅ 已發送過：", img.url);
       continue;
     }
-    // PDF→JPEG
     const jpegBuf = await pdfUrlToJpegBuffer(img.url);
     await sendImageToGroup(gid, jpegBuf);
     await markSent(gid, img.url);
@@ -209,10 +205,13 @@ app.post(
       }
 
       // 翻譯功能
-      if (ev.type==="message" && ev.message?.type==="text" && gid && !txt.startsWith("!文宣")) {
+      if (ev.type==="message"
+          && ev.message?.type==="text"
+          && gid
+          && !txt.startsWith("!文宣")) {
         const langs = groupLang.get(gid);
         if (!langs) return;
-        const name = await getUserName(gid, uid!);
+        const name = await getUserName(gid, uid);
         const isZh = /[\u4e00-\u9fff]/.test(txt);
         const out = isZh
           ? (await Promise.all([...langs].map(l=>translateWithDeepSeek(txt,l)))).join("\n")
