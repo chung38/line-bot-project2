@@ -9,7 +9,6 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
 import cron from "node-cron";
-import path from "path";
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -30,7 +29,6 @@ const groupLang = new Map();
 const imageCache = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 🔄 翻譯 DeepSeek
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -84,12 +82,12 @@ const fetchImageUrlsByDate = async (dateStr) => {
   const $ = load(res.data);
   const links = [];
 
-  $(".table-responsive tbody tr").each((_, tr) => {
-    const date = $(tr).find("td").eq(1).text().trim();
-    if (date === dateStr.replace(/-/g, "/")) {
-      const href = $(tr).find("a").attr("href");
-      const title = $(tr).find("a").text().trim();
-      if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
+  $(".table.table-hover.sub-table tbody tr").each((_, tr) => {
+    const date = $(tr).find("td").eq(1).text().trim(); // 發佈日期欄位
+    const href = $(tr).find("a").attr("href");
+    const title = $(tr).find("a").text().trim();
+    if (date === dateStr.replace(/-/g, "/") && href) {
+      links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
 
@@ -100,10 +98,10 @@ const fetchImageUrlsByDate = async (dateStr) => {
     try {
       const detail = await axios.get(item.url);
       const $$ = load(detail.data);
-      $$(".text-photo img").each((_, img) => {
-        const src = $$(img).attr("src");
-        if (src?.includes("download-file")) {
-          images.push({ title: item.title, url: `https://fw.wda.gov.tw${src}` });
+      $$(".text-photo a").each((_, a) => {
+        const img = $$(a).find("img").attr("src");
+        if (img?.includes("download-file")) {
+          images.push({ title: item.title, url: `https://fw.wda.gov.tw${img}` });
         }
       });
     } catch (e) {
