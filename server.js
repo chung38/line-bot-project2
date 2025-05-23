@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（抓圖內頁 PDF）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（抓內頁圖檔）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -9,6 +9,7 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
 import cron from "node-cron";
+import path from "path";
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -29,7 +30,7 @@ const groupLang = new Map();
 const imageCache = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 翻譯
+// 🔄 DeepSeek 翻譯功能
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -77,18 +78,16 @@ const markSent = async (gid, url) => {
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 🧲 修改後的圖文擷取函數
+// 📥 根據發佈日期抓圖（發佈日期格式為 YYYY/MM/DD）
 const fetchImageUrlsByDate = async (dateStr) => {
   console.log("📥 開始抓文宣...", dateStr);
-  const formatted = dateStr.replace(/-/g, "/");
-
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
   const links = [];
 
   $(".table-responsive tbody tr").each((_, tr) => {
-    const publishDate = $(tr).find("td").eq(1).text().trim();
-    if (publishDate === formatted) {
+    const date = $(tr).find("td").eq(1).text().trim(); // 發佈日期直接比對 YYYY/MM/DD
+    if (date === dateStr) {
       const href = $(tr).find("a").attr("href");
       const title = $(tr).find("a").text().trim();
       if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
@@ -109,7 +108,7 @@ const fetchImageUrlsByDate = async (dateStr) => {
         }
       });
     } catch (e) {
-      console.error(`⚠️ 詳細頁讀取失敗: ${item.url}`, e.message);
+      console.error(`⚠️ 讀取 ${item.url} 失敗:`, e.message);
     }
   }
 
@@ -146,7 +145,7 @@ const sendImagesToGroup = async (gid, dateStr) => {
 };
 
 cron.schedule("0 15 * * *", async () => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "/");
   for (const [gid, langs] of groupLang.entries()) {
     await sendImagesToGroup(gid, today);
   }
@@ -162,10 +161,10 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
 
     if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
       const date = txt.split(" ")[1];
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: "請輸入正確格式，例如：!文宣 2025-05-21"
+          text: "請輸入正確格式，例如：!文宣 2025/05/21"
         });
       }
       await sendImagesToGroup(gid, date);
