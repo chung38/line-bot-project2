@@ -78,19 +78,24 @@ const markSent = async (gid, url) => {
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 📥 根據發佈日期抓圖（點進連結後擷取內頁圖片 PDF）
+// 📥 根據發佈日期抓圖
 const fetchImageUrlsByDate = async (dateStr) => {
   console.log("📥 開始抓文宣...", dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-  const links = [];
+  const formattedDate = dateStr.replace(/-/g, "/");
 
-  $(".table-responsive tbody tr").each((_, tr) => {
-    const date = $(tr).find("td").eq(1).text().trim(); // 發佈日期
-    if (date === dateStr.replace(/-/g, "/")) {
-      const href = $(tr).find("a").attr("href");
-      const title = $(tr).find("a").text().trim();
-      if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
+  const links = [];
+  $(".tbody tr").each((_, tr) => {
+    const tds = $(tr).find("td");
+    const title = $(tds[0]).find("a").text().trim();
+    const href = $(tds[0]).find("a").attr("href");
+    const date = $(tds[1]).text().trim();
+
+    console.log(`🧾 發佈日期: ${date}，標題: ${title}`);
+
+    if (date === formattedDate && href) {
+      links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
 
@@ -103,8 +108,9 @@ const fetchImageUrlsByDate = async (dateStr) => {
       const $$ = load(detail.data);
       $$(".text-photo img").each((_, img) => {
         const src = $$(img).attr("src");
-        if (src?.includes("download-file")) {
-          images.push({ title: item.title, url: `https://fw.wda.gov.tw${src}` });
+        const alt = $$(img).attr("alt");
+        if (src && src.startsWith("/wda-employer")) {
+          images.push({ title: item.title, url: `https://fw.wda.gov.tw${src}`, alt });
         }
       });
     } catch (e) {
