@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣導圖推播（抓內頁圖檔）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（抓取內頁圖檔）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -8,8 +8,8 @@ import { load } from "cheerio";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import fs from "fs/promises";
+import puppeteer from "puppeteer";
 import cron from "node-cron";
-import path from "path";
 
 // 🔥 Firebase Init
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -30,7 +30,7 @@ const groupLang = new Map();
 const imageCache = new Map();
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-// 🔄 DeepSeek 翻譯功能
+// 🔄 翻譯 DeepSeek
 const translateWithDeepSeek = async (text, targetLang) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -49,7 +49,7 @@ const translateWithDeepSeek = async (text, targetLang) => {
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
-    console.error("❌ 翻譯失敗:", e.message);
+    console.error("\u274C \u7FFB\u8B6F\u5931\u6557:", e.message);
     return "（翻譯暫時不可用）";
   }
 };
@@ -78,30 +78,35 @@ const markSent = async (gid, url) => {
   await ref.set({ urls: admin.firestore.FieldValue.arrayUnion(url) }, { merge: true });
 };
 
-// 📥 根據發佈日期抓圖（發佈日期格式為 YYYY/MM/DD）
+// 📥 使用 Puppeteer 抓動態資料
 const fetchImageUrlsByDate = async (dateStr) => {
-  console.log("📥 開始抓文宣...", dateStr);
-  const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
-  const $ = load(res.data);
-  const links = [];
+  console.log("\uD83D\uDCC5 \u958B\u59CB\u6293\u6587\u5BA3...", dateStr);
+  const browser = await puppeteer.launch({ args: ['--no-sandbox','--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  await page.goto("https://fw.wda.gov.tw/wda-employer/home/file", { waitUntil: "networkidle0" });
+  await page.waitForSelector(".table-responsive tbody tr");
 
+  const html = await page.content();
+  await browser.close();
+
+  const $ = load(html);
+  const links = [];
   $(".table-responsive tbody tr").each((_, tr) => {
-    const date = $(tr).find("td").eq(1).text().trim(); // 發佈日期直接比對 YYYY/MM/DD
+    const date = $(tr).find('td[data-label="\u767C\u4F48\u65E5\u671F\uFF5C"]').text().trim();
     if (date === dateStr) {
-      const href = $(tr).find("a").attr("href");
-      const title = $(tr).find("a").text().trim();
+      const href = $(tr).find('td[data-label="\u6A19\u984C\uFF5C"] a').attr("href");
+      const title = $(tr).find('td[data-label="\u6A19\u984C\uFF5C"] a').text().trim();
       if (href) links.push({ title, url: `https://fw.wda.gov.tw${href}` });
     }
   });
-
-  console.log("🔗 找到發佈日期文章數：", links.length);
+  console.log("\uD83D\uDD17 \u627E\u5230\u767C\u4F48\u65E5\u671F\u6587\u7AE0\u6578:", links.length);
 
   const images = [];
   for (const item of links) {
     try {
       const detail = await axios.get(item.url);
       const $$ = load(detail.data);
-      $$(".text-photo img").each((_, img) => {
+      $$(".text-photo a[data-lightbox] img").each((_, img) => {
         const src = $$(img).attr("src");
         if (src?.includes("download-file")) {
           images.push({ title: item.title, url: `https://fw.wda.gov.tw${src}` });
@@ -111,7 +116,6 @@ const fetchImageUrlsByDate = async (dateStr) => {
       console.error(`⚠️ 讀取 ${item.url} 失敗:`, e.message);
     }
   }
-
   console.log("📑 最終圖片數：", images.length);
   return images;
 };
@@ -145,8 +149,8 @@ const sendImagesToGroup = async (gid, dateStr) => {
 };
 
 cron.schedule("0 15 * * *", async () => {
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "/");
-  for (const [gid, langs] of groupLang.entries()) {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const [gid] of groupLang.entries()) {
     await sendImagesToGroup(gid, today);
   }
   console.log("⏰ 自動推播完成");
@@ -161,13 +165,14 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(cl
 
     if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
       const date = txt.split(" ")[1];
-      if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: "請輸入正確格式，例如：!文宣 2025/05/21"
+          text: "請輸入正確格式，例如：!文宣 2025-05-21"
         });
       }
-      await sendImagesToGroup(gid, date);
+      const convertedDate = date.replace(/-/g, "/");
+      await sendImagesToGroup(gid, convertedDate);
       return;
     }
 
