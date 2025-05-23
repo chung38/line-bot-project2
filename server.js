@@ -253,3 +253,13 @@ app.post(
           });
         }
       })
+    );
+  }
+);
+
+app.get("/", (_, res) => res.send("OK"));
+app.listen(PORT, async () => {
+  await loadLang();
+  await loadInviter();
+  console.log("🚀 機器人已啟動 on", PORT);
+});
