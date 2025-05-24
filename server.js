@@ -149,7 +149,7 @@ function makeLangQuickReply(gid) {
       data: `lang_toggle=${code}`
     }
   }));
-  // 最後加一個「完成」快速回覆，點了不回覆也不再彈選單
+  // 最後加「完成」按鈕
   items.push({
     type: "action",
     action: { type: "message", label: "完成", text: "完成" }
@@ -182,13 +182,15 @@ app.post(
       if (ev.type === "leave" && gid) {
         return clearLang(gid);
       }
-      // Postback：切換語言，但不回覆任何訊息
+      // 切換語言 postback：存檔並回覆更新後的選單
       if (ev.type === "postback" && gid && ev.postback.data.startsWith("lang_toggle=")) {
         const code = ev.postback.data.split("=")[1];
         const set = groupLang.get(gid) || new Set();
         if (set.has(code)) set.delete(code);
         else set.add(code);
-        return saveLang(gid, Array.from(set));
+        await saveLang(gid, Array.from(set));
+        // 立刻回覆新的 Quick Reply（帶勾選狀態）
+        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
       // 手動喚出 !設定
       if (ev.type === "message" &&
