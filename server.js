@@ -31,29 +31,28 @@ const LANGS = {
   id: "印尼文"
 };
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [code,label])=>{
-  m[label + "版"] = code;
+  m[label+"版"] = code;
   m[label]       = code;
   return m;
-}, {});
+},{});
 
-// ------------------ In‐Memory State ------------------
+// ------------------ In-Memory State ------------------
 const groupLang  = new Map(); // gid → Set<langCode>
-const groupOwner = new Map(); // gid → owner uid
+const groupOwner = new Map(); // gid → uid
 
 // ------------------ Firestore Helpers ------------------
 async function loadLang(){
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d=>{
     const data = d.data();
-    groupLang.set(d.id, new Set(data.langs||[]));
-    if(data.owner) groupOwner.set(d.id, data.owner);
+    groupLang.set(d.id, new Set(data.langs || []));
+    if (data.owner) groupOwner.set(d.id, data.owner);
   });
 }
 async function saveLang(gid, langs){
   const owner = groupOwner.get(gid);
-  const payload = { langs };
-  if(owner) payload.owner = owner;
-  await db.collection("groupLanguages").doc(gid).set(payload);
+  await db.collection("groupLanguages").doc(gid)
+          .set({ langs, ...(owner?{owner}:{}) });
   groupLang.set(gid, new Set(langs));
 }
 async function clearLang(gid){
@@ -73,7 +72,7 @@ async function translateWithDeepSeek(text,targetLang){
       "https://api.deepseek.com/v1/chat/completions",
       { model:"deepseek-chat", messages:[
           { role:"system", content:sys },
-          { role:"user",   content:text }
+          { role:"user", content:text }
       ]},
       { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
@@ -153,94 +152,94 @@ cron.schedule("0 15 * * *",async()=>{
   console.log("⏰ 每日推播完成",new Date().toLocaleString());
 });
 
-// ------------------ Quick Reply 語言選單 ------------------
-function makeLangQuickReply(gid){
-  const sel = groupLang.get(gid)||new Set();
-  const items = Object.entries(LANGS).map(([code,label])=>({
-    type: "action",
-    action:{
-      type: "postback",
-      label: (sel.has(code)?"✅ ":"") + label,
-      data: `lang_toggle=${code}`
-    }
+// ------------------ Buttons Template 語言選單 ------------------
+function makeLangTemplate(gid){
+  const selected = groupLang.get(gid)||new Set();
+  const actions = Object.entries(LANGS).map(([code,label])=>({
+    type:  "postback",
+    label: (selected.has(code)?"✅ ":"")+label,
+    data:  `lang_toggle=${code}`
   }));
-  // 「完成」「取消」
-  items.push(
-    { type:"action", action:{ type:"message", label:"完成", text:"設定完成" } },
-    { type:"action", action:{ type:"message", label:"取消", text:"設定取消" } }
+  actions.push(
+    { type:"message", label:"完成", text:"設定完成" },
+    { type:"message", label:"取消", text:"設定取消" }
   );
   return {
-    type: "text",
-    text: "請選要接收的語言（可複選，選完點「完成」或「取消」）",
-    quickReply: { items }
+    type:     "template",
+    altText:  "請選要接收的語言",
+    template: {
+      type:    "buttons",
+      text:    "請選要接收的語言（點擊打勾，再點「完成」或「取消」）",
+      actions
+    }
   };
 }
 
 // ------------------ Webhook 處理 ------------------
-// 1) 先 parse JSON；2) 再驗簽
-app.use(express.json());
+// 1) 先用 express.json({verify:…}) 保存 rawBody  
+// 2) 再套用 middleware(client.config) 驗證簽名
 app.post(
   "/webhook",
+  express.json({
+    verify: (req, res, buf) => { (req as any).rawBody = buf; }
+  }),
   middleware(client.config),
-  async (req,res)=>{
+  async (req, res) => {
     res.sendStatus(200);
-    const events = req.body.events;
+    const events = (req as any).body.events;
     await Promise.all(events.map(async ev=>{
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
-      if(!gid) return;
 
-      // Bot 加入群組 → 設 owner + 叫 Quick Reply
-      if(ev.type==="join"){
+      // Bot 被邀請入群 → 建 owner 並跳選單
+      if(ev.type==="join"&&gid){
         groupOwner.set(gid,uid);
         await saveLang(gid,[]);
-        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
       }
-      // Bot 離開 → 清除
-      if(ev.type==="leave"){
+      // Bot 離群 → 清除設定
+      if(ev.type==="leave"&&gid){
         return clearLang(gid);
       }
-      // postback 切換語言
-      if(ev.type==="postback" && ev.postback.data.startsWith("lang_toggle=")){
+      // 語言切換 postback
+      if(ev.type==="postback"&&gid&&ev.postback.data.startsWith("lang_toggle=")){
         if(groupOwner.get(gid)!==uid) return;
         const code = ev.postback.data.split("=")[1];
         const set  = groupLang.get(gid)||new Set();
-        set.has(code)? set.delete(code) : set.add(code);
-        await saveLang(gid,[...set]);
-        // 再發一次 Quick Reply 保持不消失
-        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+        if(set.has(code)) set.delete(code);
+        else set.add(code);
+        await saveLang(gid,Array.from(set));
+        // 回傳更新後的 template
+        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
       }
-      // 使用者點「完成」/「取消」
-      if(ev.type==="message" && ev.message.type==="text"){
+      // 手動 !設定
+      if(ev.type==="message"&&ev.message?.type==="text"&&ev.message.text==="!設定"&&gid){
+        if(groupOwner.get(gid)!==uid) return;
+        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
+      }
+      // 結束選單：「設定完成」 or 「設定取消」
+      if(ev.type==="message"&&ev.message?.type==="text"&&["設定完成","設定取消"].includes(ev.message.text)&&gid){
+        return client.replyMessage(ev.replyToken,{
+          type:"text",
+          text: ev.message.text==="設定完成"
+                ?`目前已選：${[...groupLang.get(gid)].map(c=>LANGS[c]).join(",")||"（未選語言）"}`
+                :"已取消語言設定"
+        });
+      }
+      // !文宣 YYYY-MM-DD
+      if(ev.type==="message"&&ev.message?.type==="text"&&ev.message.text.startsWith("!文宣")&&gid){
+        const d = ev.message.text.split(" ")[1];
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){
+          return client.replyMessage(ev.replyToken,{type:"text",text:"請輸入：!文宣 YYYY-MM-DD"});
+        }
+        return sendImagesToGroup(gid,d);
+      }
+      // 翻譯：保留 mention，忽略控制指令
+      if(ev.type==="message"&&ev.message?.type==="text"&&gid){
         const txt = ev.message.text;
-        if(txt==="設定完成"){
-          const arr = [...(groupLang.get(gid)||[])];
-          const names = arr.map(c=>LANGS[c]).join("、")||"（未選）";
-          return client.replyMessage(ev.replyToken,{
-            type:"text", text:`設定完成，目前：${names}`
-          });
-        }
-        if(txt==="設定取消"){
-          return client.replyMessage(ev.replyToken,{
-            type:"text", text:"已取消設定"
-          });
-        }
-        if(txt==="!設定"){
-          if(groupOwner.get(gid)!==uid) return;
-          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
-        }
-        if(txt.startsWith("!文宣")){
-          const d = txt.split(" ")[1];
-          if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){
-            return client.replyMessage(ev.replyToken,{
-              type:"text", text:"請輸入：!文宣 YYYY-MM-DD"
-            });
-          }
-          return sendImagesToGroup(gid,d);
-        }
-        // 翻譯流程……（保留 mention）
+        if(["設定完成","設定取消","!設定"].includes(txt)||txt.startsWith("!文宣")) return;
         let mention="", content=txt;
-        const m = txt.match(/^(@\S+)\s*(.+)$/);
+        const m=txt.match(/^(@\S+)\s*(.+)$/);
         if(m){ mention=m[1]; content=m[2]; }
         const langs = groupLang.get(gid);
         if(!langs||langs.size===0) return;
