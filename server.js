@@ -160,7 +160,7 @@ function makeLangTemplate(gid){
     label: (selected.has(code)?"✅ ":"")+label,
     data:  `lang_toggle=${code}`
   }));
-  // 最後加「完成」和「取消」
+  // 「完成」「取消」按鈕
   actions.push(
     { type:"message", label:"完成", text:"設定完成" },
     { type:"message", label:"取消", text:"設定取消" }
@@ -170,7 +170,7 @@ function makeLangTemplate(gid){
     altText:  "請選要接收的語言",
     template: {
       type:    "buttons",
-      text:    "請點擊語言打勾，完成後再點完成或取消",
+      text:    "請點擊語言打勾，完成後再點「完成」或「取消」",
       actions
     }
   };
@@ -188,11 +188,11 @@ app.post(
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
 
-      // Bot 被邀請入群
+      // Bot 被邀請入群：用 pushMessage
       if(ev.type==="join"&&gid){
         groupOwner.set(gid,uid);
         await saveLang(gid,[]);
-        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
+        return client.pushMessage(gid, makeLangTemplate(gid));
       }
       // Bot 離群
       if(ev.type==="leave"&&gid){
@@ -206,15 +206,14 @@ app.post(
         if(set.has(code)) set.delete(code);
         else set.add(code);
         await saveLang(gid,Array.from(set));
-        // 再次回 template（不關閉）
-        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
+        return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
       }
       // 手動 !設定
       if(ev.type==="message"&&ev.message?.type==="text"&&ev.message.text==="!設定"&&gid){
         if(groupOwner.get(gid)!==uid) return;
-        return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
+        return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
       }
-      // 結束選單：「設定完成」「設定取消」
+      // 完成/取消
       if(ev.type==="message"&&ev.message?.type==="text"&&["設定完成","設定取消"].includes(ev.message.text)&&gid){
         return client.replyMessage(ev.replyToken,{
           type:"text",
@@ -223,14 +222,11 @@ app.post(
                 :"已取消語言設定"
         });
       }
-      // !文宣 YYYY-MM-DD
+      // !文宣
       if(ev.type==="message"&&ev.message?.type==="text"&&ev.message.text.startsWith("!文宣")&&gid){
-        const parts = ev.message.text.split(" ");
-        const d = parts[1];
+        const d = ev.message.text.split(" ")[1];
         if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){
-          return client.replyMessage(ev.replyToken,{
-            type:"text",text:"請輸入：!文宣 YYYY-MM-DD"
-          });
+          return client.replyMessage(ev.replyToken,{ type:"text", text:"請輸入：!文宣 YYYY-MM-DD" });
         }
         return sendImagesToGroup(gid,d);
       }
