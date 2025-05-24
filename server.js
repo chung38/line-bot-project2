@@ -35,7 +35,7 @@ const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [code,label])=>{
   m[label + "版"] = code;
   m[label]       = code;
   return m;
-},{});
+}, {});
 
 // ------------------ In‐Memory State ------------------
 const groupLang  = new Map(); // gid → Set<langCode>
@@ -153,27 +153,26 @@ cron.schedule("0 15 * * *",async()=>{
   console.log("⏰ 每日推播完成",new Date().toLocaleString());
 });
 
-// ------------------ Buttons Template 語言選單 ------------------
-function makeLangTemplate(gid){
+// ------------------ Quick Reply 語言選單 ------------------
+function makeLangQuickReply(gid){
   const sel = groupLang.get(gid)||new Set();
-  const actions = Object.entries(LANGS).map(([code,label])=>({
-    type:  "postback",
-    label: (sel.has(code)?"✅ ":"") + label,
-    data:  `lang_toggle=${code}`
+  const items = Object.entries(LANGS).map(([code,label])=>({
+    type: "action",
+    action:{
+      type: "postback",
+      label: (sel.has(code)?"✅ ":"") + label,
+      data: `lang_toggle=${code}`
+    }
   }));
-  // 完成 / 取消
-  actions.push(
-    { type:"message", label:"完成", text:"設定完成" },
-    { type:"message", label:"取消", text:"設定取消" }
+  // 完成／取消
+  items.push(
+    { type:"action", action:{ type:"message", label:"完成", text:"設定完成" } },
+    { type:"action", action:{ type:"message", label:"取消", text:"設定取消" } }
   );
   return {
-    type:    "template",
-    altText: "請選要接收的語言",
-    template:{
-      type:    "buttons",
-      text:    "請選要接收的語言（點擊打勾，再選「完成」或「取消」）",
-      actions
-    }
+    type:       "text",
+    text:       "請選要接收的語言（可複選，選完點完成或取消）",
+    quickReply:{ items }
   };
 }
 
@@ -190,30 +189,28 @@ app.post(
       const uid = ev.source?.userId;
       if(!gid) return;
 
-      // Bot 被邀請入群
+      // Bot 加入群組
       if(ev.type==="join"){
         groupOwner.set(gid,uid);
         await saveLang(gid,[]);
-        return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
+        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
-      // Bot 離開群組
+      // Bot 離開
       if(ev.type==="leave"){
         return clearLang(gid);
       }
-      // Postback：選語言
-      if(ev.type==="postback"){
-        const data = ev.postback.data;
-        if(data.startsWith("lang_toggle=")){
-          if(groupOwner.get(gid)!==uid) return;
-          const code = data.split("=")[1];
-          const set  = groupLang.get(gid) || new Set();
-          set.has(code)? set.delete(code): set.add(code);
-          await saveLang(gid, [...set]);
-          return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
-        }
+      // Postback：語言切換
+      if(ev.type==="postback" && ev.postback.data.startsWith("lang_toggle=")){
+        if(groupOwner.get(gid)!==uid) return;
+        const code = ev.postback.data.split("=")[1];
+        const set  = groupLang.get(gid)||new Set();
+        set.has(code)? set.delete(code) : set.add(code);
+        await saveLang(gid, [...set]);
+        // 再次送 Quick Reply
+        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
-      // Message：完成 / 取消 / !設定 / !文宣 / 翻譯
-      if(ev.type==="message" && ev.message?.type==="text"){
+      // Message：完成／取消／!設定／!文宣／翻譯
+      if(ev.type==="message"&&ev.message.type==="text"){
         const txt = ev.message.text;
         if(txt==="設定完成"){
           const arr = [...(groupLang.get(gid)||[])];
@@ -228,18 +225,16 @@ app.post(
         }
         if(txt==="!設定"){
           if(groupOwner.get(gid)!==uid) return;
-          return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
+          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
         }
         if(txt.startsWith("!文宣")){
           const d = txt.split(" ")[1];
           if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){
-            return client.replyMessage(ev.replyToken,{
-              type:"text",text:"請輸入：!文宣 YYYY-MM-DD"
-            });
+            return client.replyMessage(ev.replyToken,{ type:"text", text:"請輸入：!文宣 YYYY-MM-DD" });
           }
           return sendImagesToGroup(gid,d);
         }
-        // 翻譯逻辑留给你
+        // 翻譯留原逻辑……
       }
     }));
   }
