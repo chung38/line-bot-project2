@@ -28,7 +28,7 @@ const PORT = process.env.PORT || 10000;
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 // 反查：中文標籤 => 語系 code
 const NAME_TO_CODE = {};
-Object.entries(LANGS).forEach(([k,v])=>{
+Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
   NAME_TO_CODE[v] = k;
 });
@@ -38,6 +38,11 @@ const groupLang = new Map();
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
+}
+// 更新群組語系設定
+async function setLang(gid, lang) {
+  await db.collection("groupLanguages").doc(gid).set({ langs: [lang] });
+  groupLang.set(gid, new Set([lang]));
 }
 
 // 翻譯快取
@@ -74,15 +79,13 @@ async function fetchImageUrlsByDate(gid, dateStr) {
   console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-
-  console.log("🔧 groupLang 設定：", Array.from(groupLang.get(gid)||[]));
-
   const detailUrls = [];
-  $("table.sub-table tbody.tbody tr").each((_,tr)=>{
+
+  $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
     if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
       const href = tds.eq(0).find("a").attr("href");
-      if (href) detailUrls.push("https://fw.wda.gov.tw"+href);
+      if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
   console.log("🔗 發佈日期文章數：", detailUrls.length);
@@ -94,21 +97,18 @@ async function fetchImageUrlsByDate(gid, dateStr) {
     try {
       const d = await axios.get(url);
       const $$ = load(d.data);
-      $$(".text-photo a").each((_,el)=>{
+      $$(".text-photo a").each((_, el) => {
         const rawLabel = $$(el).find("p").text().trim();
-        // 去掉後面的數字和 "/n"
         const baseLabel = rawLabel.replace(/\d.*$/,"").trim();
         const code = NAME_TO_CODE[baseLabel];
         console.log("    ▶ 找到標籤：", rawLabel, "→ base:", baseLabel, "→ code:", code);
         if (code && wanted.has(code)) {
           console.log("      ✔ 列入：", code);
           let imgUrl = $$(el).find("img").attr("src");
-          if (imgUrl) {
-            images.push("https://fw.wda.gov.tw"+imgUrl);
-          }
+          if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
         }
       });
-    } catch(e) {
+    } catch (e) {
       console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
@@ -120,15 +120,12 @@ async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
     console.log("📤 推送：", url);
-    await client.pushMessage(gid, {
-      type:"image",
-      originalContentUrl:url,
-      previewImageUrl:url
-    });
+    await client.pushMessage(gid, { type:"image", originalContentUrl:url, previewImageUrl:url });
   }
 }
 
-cron.schedule("0 15 * * *", async ()=>{
+// 排程：每日 15:00 自動推播
+cron.schedule("0 15 * * *", async () => {
   const today = new Date().toISOString().slice(0,10);
   for (const [gid] of groupLang.entries()) {
     await sendImagesToGroup(gid, today);
@@ -136,47 +133,84 @@ cron.schedule("0 15 * * *", async ()=>{
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-app.post("/webhook",
-  bodyParser.raw({type:"application/json"}),
+// Webhook：處理 !設定 、!文宣 指令 & 翻譯
+app.post(
+  "/webhook",
+  bodyParser.raw({ type:"application/json" }),
   middleware(client.config),
   express.json(),
-  async (req,res)=>{
+  async (req, res) => {
     res.sendStatus(200);
-    await Promise.all(req.body.events.map(async ev=>{
+    await Promise.all(req.body.events.map(async ev => {
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
       const txt = ev.message?.text?.trim();
-      if (ev.type==="message" && txt?.startsWith("!文宣") && gid) {
+
+      // !設定 → 顯示 Quick Reply 選單
+      if (ev.type === "message" && txt === "!設定" && gid) {
+        return client.replyMessage(ev.replyToken, {
+          type: "text",
+          text: "請選擇要接收的語系：",
+          quickReply: {
+            items: Object.entries(LANGS).map(([code,name]) => ({
+              type: "action",
+              action: {
+                type: "message",
+                label: name,
+                text: `!設定 ${code}`
+              }
+            }))
+          }
+        });
+      }
+
+      // !設定 <code> → 寫回 Firestore
+      if (ev.type === "message" && txt?.startsWith("!設定 ") && gid) {
+        const code = txt.split(" ")[1];
+        if (!LANGS[code]) {
+          return client.replyMessage(ev.replyToken, { type:"text", text:"未知的語系代碼！" });
+        }
+        await setLang(gid, code);
+        return client.replyMessage(ev.replyToken, { type:"text", text:`已設定語系：${LANGS[code]}` });
+      }
+
+      // !文宣 YYYY-MM-DD
+      if (ev.type === "message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          return client.replyMessage(ev.replyToken,{type:"text",text:"請輸入：!文宣 YYYY-MM-DD"});
+          return client.replyMessage(ev.replyToken, { type:"text", text:"請輸入：!文宣 YYYY-MM-DD" });
         }
-        await sendImagesToGroup(gid,d);
+        await sendImagesToGroup(gid, d);
         return;
       }
-      if (ev.type==="message"
-          && ev.message?.type==="text"
-          && gid
-          && !txt?.startsWith("!文宣")) {
+
+      // 其他文字 → 翻譯
+      if (
+        ev.type === "message" &&
+        ev.message?.type === "text" &&
+        gid &&
+        !txt?.startsWith("!設定") &&
+        !txt?.startsWith("!文宣")
+      ) {
         const langs = groupLang.get(gid);
         if (!langs) return;
-        const name = await getUserName(gid,uid);
+        const name = await getUserName(gid, uid);
         const isZh = /[\u4e00-\u9fff]/.test(txt);
         const out = isZh
-          ? (await Promise.all([...langs].map(l=>translateWithDeepSeek(txt,l)))).join("\n")
-          : await translateWithDeepSeek(txt,"zh-TW");
-        await client.replyMessage(ev.replyToken,{
+          ? (await Promise.all([...langs].map(l => translateWithDeepSeek(txt, l)))).join("\n")
+          : await translateWithDeepSeek(txt, "zh-TW");
+        return client.replyMessage(ev.replyToken, {
           type:"text",
           text:`【${name}】說：\n${out}`
         });
       }
+
     }));
   }
 );
 
-app.get("/",(_,res)=>res.send("OK"));
-
-app.listen(PORT, async ()=>{
+app.get("/", (_,res) => res.send("OK"));
+app.listen(PORT, async () => {
   await loadLang();
   console.log("🚀 Bot 已啟動，Listening on", PORT);
 });
