@@ -8,13 +8,11 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import cron from "node-cron";
 
-// === Firebase Init ===
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, "\n");
 admin.initializeApp({ credential: admin.credential.cert(firebaseConfig) });
 const db = admin.firestore();
 
-// === LINE Init ===
 const client = new Client({
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -23,15 +21,13 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 各語系映射，不含繁體中文
-const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
+const LANGS = { en: "\u82f1\u6587", th: "\u6cf0\u6587", vi: "\u8d8a\u5357\u6587", id: "\u5370\u5c3c\u6587" };
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
-  m[v + "版"] = k;
+  m[v + "\u7248"] = k;
   m[v] = k;
   return m;
 }, {});
 
-// 載入／管理群組語系設定
 const groupLang = new Map();
 const groupOwner = new Map();
 async function loadLang() {
@@ -52,12 +48,11 @@ async function clearLang(gid) {
   groupOwner.delete(gid);
 }
 
-// DeepSeek 翻譯快取
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 async function translateWithDeepSeek(text, targetLang) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
-  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang]||targetLang}，僅回傳翻譯後文字。`;
+  const sys = `\u4f60\u662f\u4e00\u4f4d\u53f0\u7063\u5728\u5730\u7684\u7ffb\u8b6f\u54e1\uff0c\u8acb\u5c07\u4ee5\u4e0b\u53e5\u5b50\u7ffb\u8b6f\u6210${LANGS[targetLang]||targetLang}\uff0c\u50c5\u56de\u50b3\u7ffb\u8b6f\u5f8c\u6587\u5b57\u3002`;
   try {
     const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
@@ -68,12 +63,11 @@ async function translateWithDeepSeek(text, targetLang) {
     translationCache.set(key, out);
     return out;
   } catch (e) {
-    console.error("❌ 翻譯失敗:", e.message);
-    return "（翻譯暫不可用）";
+    console.error("\u274c \u7ffb\u8b6f\u5931\u6557:", e.message);
+    return "\uff08\u7ffb\u8b6f\u66ab\u4e0d\u53ef\u7528\uff09";
   }
 }
 
-// 取得使用者名稱
 async function getUserName(gid, uid) {
   try {
     const p = await client.getGroupMemberProfile(gid, uid);
@@ -83,12 +77,10 @@ async function getUserName(gid, uid) {
   }
 }
 
-// 抓圖函式
 async function fetchImageUrlsByDate(gid, dateStr) {
-  console.log("📥 開始抓文宣...", gid, dateStr);
+  console.log("\ud83d\udcc5 \u958b\u59cb\u6293\u6587\u5ba3...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-
   const detailUrls = [];
   $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
@@ -97,8 +89,7 @@ async function fetchImageUrlsByDate(gid, dateStr) {
       if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
-  console.log("🔗 發佈日期文章數：", detailUrls.length);
-
+  console.log("\ud83d\udd17 \u767c\u4f48\u65e5\u671f\u6587\u7ae0\u6578\uff1a", detailUrls.length);
   const wanted = groupLang.get(gid) || new Set();
   const images = [];
   for (const url of detailUrls) {
@@ -114,18 +105,17 @@ async function fetchImageUrlsByDate(gid, dateStr) {
         }
       });
     } catch (e) {
-      console.error("⚠️ 讀取詳情失敗:", url, e.message);
+      console.error("\u26a0\ufe0f \u8b80\u53d6\u8a73\u60c5\u5931\u6557:", url, e.message);
     }
   }
-  console.log("📑 最終圖片數：", images.length);
+  console.log("\ud83d\udcc1 \u6700\u7d42\u5716\u7247\u6578\uff1a", images.length);
   return images;
 }
 
-// 推送圖片
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
-    console.log("📤 推送：", url);
+    console.log("\ud83d\udce4 \u63a8\u9001\uff1a", url);
     await client.pushMessage(gid, {
       type: "image",
       originalContentUrl: url,
@@ -134,13 +124,12 @@ async function sendImagesToGroup(gid, dateStr) {
   }
 }
 
-// 排程：每日 15:00 自動推播
 cron.schedule("0 15 * * *", async () => {
   const today = new Date().toISOString().slice(0, 10);
   for (const gid of groupLang.keys()) {
     await sendImagesToGroup(gid, today);
   }
-  console.log("⏰ 每日推播完成", new Date().toLocaleString());
+  console.log("\u23f0 \u6bcf\u65e5\u63a8\u64ad\u5b8c\u6210", new Date().toLocaleString());
 });
 
 function makeLangQuickReply(gid) {
@@ -149,13 +138,13 @@ function makeLangQuickReply(gid) {
     type: "action",
     action: {
       type: "postback",
-      label: (selected.has(code) ? "✅ " : "") + label,
+      label: (selected.has(code) ? "\u2705 " : "") + label,
       data: `lang_toggle=${code}`
     }
   }));
   items.push({
     type: "action",
-    action: { type: "message", label: "完成", text: "完成" }
+    action: { type: "message", label: "\u53d6\u6d88", text: "取消" }
   });
   return {
     type: "text",
@@ -174,15 +163,12 @@ app.post(
     await Promise.all(req.body.events.map(async ev => {
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
-
       if (ev.type === "join" && gid) {
         groupOwner.set(gid, uid);
         await saveLang(gid, []);
         return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
-      if (ev.type === "leave" && gid) {
-        return clearLang(gid);
-      }
+      if (ev.type === "leave" && gid) return clearLang(gid);
       if (ev.type === "postback" && gid && ev.postback.data.startsWith("lang_toggle=")) {
         if (groupOwner.get(gid) !== uid) return;
         const code = ev.postback.data.split("=")[1];
@@ -206,7 +192,7 @@ app.post(
       }
       if (ev.type === "message" && ev.message.type === "text" && gid) {
         const txt = ev.message.text;
-        if (["完成","!設定"].includes(txt) || txt.startsWith("!文宣")) return;
+        if (["取消", "!設定"].includes(txt) || txt.startsWith("!文宣")) return;
         const m = txt.match(/^(@\S+)\s*(.+)$/);
         let mention = "", content = txt;
         if (m) {
@@ -233,5 +219,5 @@ app.post(
 app.get("/", (_, res) => res.send("OK"));
 app.listen(PORT, async () => {
   await loadLang();
-  console.log("🚀 Bot 已啟動，Listening on", PORT);
+  console.log("\ud83d\ude80 Bot \u5df2\u555f\u52d5\uff0cListening on", PORT);
 });
