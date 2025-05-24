@@ -184,7 +184,7 @@ app.post(
   middleware(client.config),
   async (req,res)=>{
     res.sendStatus(200);
-    const events = (req.body as any).events;
+    const events = req.body.events;
     await Promise.all(events.map(async ev=>{
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
@@ -209,15 +209,13 @@ app.post(
           const set  = groupLang.get(gid) || new Set();
           set.has(code)? set.delete(code): set.add(code);
           await saveLang(gid, [...set]);
-          // 再回一次 template
           return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
         }
       }
       // Message：完成 / 取消 / !設定 / !文宣 / 翻譯
-      if(ev.type==="message" && ev.message.type==="text"){
+      if(ev.type==="message" && ev.message?.type==="text"){
         const txt = ev.message.text;
-        // 完成
-        if(txt==="設定完成" && gid){
+        if(txt==="設定完成"){
           const arr = [...(groupLang.get(gid)||[])];
           const names = arr.map(c=>LANGS[c]).join("、")||"（未選）";
           return client.replyMessage(ev.replyToken,{
@@ -225,16 +223,13 @@ app.post(
             text:`設定完成，目前：${names}`
           });
         }
-        // 取消
-        if(txt==="設定取消") {
-          return client.replyMessage(ev.replyToken,{ type:"text", text:"已取消" });
+        if(txt==="設定取消"){
+          return client.replyMessage(ev.replyToken,{ type:"text", text:"已取消設定" });
         }
-        // 手動 !設定
         if(txt==="!設定"){
           if(groupOwner.get(gid)!==uid) return;
           return client.replyMessage(ev.replyToken, makeLangTemplate(gid));
         }
-        // !文宣 指令
         if(txt.startsWith("!文宣")){
           const d = txt.split(" ")[1];
           if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){
@@ -244,8 +239,7 @@ app.post(
           }
           return sendImagesToGroup(gid,d);
         }
-        // 翻譯
-        // ... 你的翻譯邏輯放這裡 ...
+        // 翻譯逻辑留给你
       }
     }));
   }
