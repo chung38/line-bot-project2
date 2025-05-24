@@ -24,7 +24,7 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 各語系映射，不含「繁體中文」
+// 各語系映射，不含繁體中文
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
   m[v + "版"] = k;
@@ -32,7 +32,7 @@ const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
   return m;
 }, {});
 
-// 載入／快取群組語系設定
+// 載入／管理群組語系設定
 const groupLang = new Map();
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
@@ -78,7 +78,7 @@ async function getUserName(gid, uid) {
   }
 }
 
-// 抓圖
+// 抓圖函式
 async function fetchImageUrlsByDate(gid, dateStr) {
   console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -138,29 +138,26 @@ cron.schedule("0 15 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// 建立 Quick Reply 語言選單，帶上次勾選狀態
+// 建立 Quick Reply 語言選單（帶勾選狀態）
 function makeLangQuickReply(gid) {
   const selected = groupLang.get(gid) || new Set();
-  const items = Object.entries(LANGS).map(([code, label]) => {
-    const prefix = selected.has(code) ? "✅ " : "";
-    return {
-      type: "action",
-      action: {
-        type: "postback",
-        label: prefix + label,
-        data: `lang_toggle=${code}`,
-      },
-    };
-  });
-  // 加一個「完成」按鈕，用來關閉選單
+  const items = Object.entries(LANGS).map(([code, label]) => ({
+    type: "action",
+    action: {
+      type: "postback",
+      label: (selected.has(code) ? "✅ " : "") + label,
+      data: `lang_toggle=${code}`
+    }
+  }));
+  // 最後加一個「完成」快速回覆，點了不回覆也不再彈選單
   items.push({
     type: "action",
-    action: { type: "message", label: "完成", text: "完成" },
+    action: { type: "message", label: "完成", text: "完成" }
   });
   return {
     type: "text",
     text: "請選要接收的語言（可複選／取消）：",
-    quickReply: { items },
+    quickReply: { items }
   };
 }
 
@@ -172,73 +169,73 @@ app.post(
   express.json(),
   async (req, res) => {
     res.sendStatus(200);
-    await Promise.all(
-      req.body.events.map(async ev => {
-        const gid = ev.source?.groupId;
-        const uid = ev.source?.userId;
+    await Promise.all(req.body.events.map(async ev => {
+      const gid = ev.source?.groupId;
+      const uid = ev.source?.userId;
 
-        // Bot 被邀請入群
-        if (ev.type === "join" && gid) {
-          await saveLang(gid, []);
-          return client.pushMessage(gid, makeLangQuickReply(gid));
+      // 機器人被邀請入群
+      if (ev.type === "join" && gid) {
+        await saveLang(gid, []);
+        return client.pushMessage(gid, makeLangQuickReply(gid));
+      }
+      // 機器人離開群組
+      if (ev.type === "leave" && gid) {
+        return clearLang(gid);
+      }
+      // Postback：切換語言，但不回覆任何訊息
+      if (ev.type === "postback" && gid && ev.postback.data.startsWith("lang_toggle=")) {
+        const code = ev.postback.data.split("=")[1];
+        const set = groupLang.get(gid) || new Set();
+        if (set.has(code)) set.delete(code);
+        else set.add(code);
+        return saveLang(gid, Array.from(set));
+      }
+      // 手動喚出 !設定
+      if (ev.type === "message" &&
+          ev.message.type === "text" &&
+          ev.message.text === "!設定" &&
+          gid) {
+        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+      }
+      // !文宣 YYYY-MM-DD
+      if (ev.type === "message" &&
+          ev.message.type === "text" &&
+          ev.message.text.startsWith("!文宣") &&
+          gid) {
+        const parts = ev.message.text.split(" ");
+        const d = parts[1];
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          return client.replyMessage(ev.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
         }
-        // Bot 離開群組
-        if (ev.type === "leave" && gid) {
-          return clearLang(gid);
+        return sendImagesToGroup(gid, d);
+      }
+      // 翻譯（保留 mention，忽略「完成」與「!設定」「!文宣」）
+      if (ev.type === "message" &&
+          ev.message.type === "text" &&
+          gid) {
+        const txt = ev.message.text;
+        if (txt === "完成" || txt === "!設定" || txt.startsWith("!文宣")) return;
+        // 拆 mention
+        const m = txt.match(/^(@\S+)\s*(.+)$/);
+        let mention = "", content = txt;
+        if (m) {
+          mention = m[1];
+          content = m[2];
         }
-        // 切換語言 postback
-        if (ev.type === "postback" && gid && ev.postback.data.startsWith("lang_toggle=")) {
-          const code = ev.postback.data.split("=")[1];
-          const set = groupLang.get(gid) || new Set();
-          if (set.has(code)) set.delete(code);
-          else set.add(code);
-          await saveLang(gid, Array.from(set));
-          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+        const langs = groupLang.get(gid);
+        if (!langs || langs.size === 0) return;
+        const name = await getUserName(gid, uid);
+        const isZh = /[\u4e00-\u9fff]/.test(content);
+        let out;
+        if (isZh) {
+          out = (await Promise.all([...langs].map(l => translateWithDeepSeek(content, l)))).join("\n");
+        } else {
+          out = await translateWithDeepSeek(content, "zh-TW");
         }
-        // 手動 !設定
-        if (ev.type === "message" && ev.message.type === "text" && ev.message.text === "!設定" && gid) {
-          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
-        }
-        // !文宣 指令
-        if (ev.type === "message" && ev.message.type === "text" && ev.message.text.startsWith("!文宣") && gid) {
-          const parts = ev.message.text.split(" ");
-          const d = parts[1];
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-            return client.replyMessage(ev.replyToken, {
-              type: "text",
-              text: "請輸入：!文宣 YYYY-MM-DD",
-            });
-          }
-          return sendImagesToGroup(gid, d);
-        }
-        // 翻譯（保留 mention）
-        if (ev.type === "message" && ev.message.type === "text" && gid) {
-          const txt = ev.message.text;
-          if (txt === "!設定" || txt.startsWith("!文宣")) return;
-          const m = txt.match(/^(@\S+)\s*(.+)$/);
-          let mention = "", content = txt;
-          if (m) {
-            mention = m[1];
-            content = m[2];
-          }
-          const langs = groupLang.get(gid);
-          if (!langs || langs.size === 0) return;
-          const name = await getUserName(gid, uid);
-          const isZh = /[\u4e00-\u9fff]/.test(content);
-          let out;
-          if (isZh) {
-            out = (await Promise.all([...langs].map(l => translateWithDeepSeek(content, l)))).join("\n");
-          } else {
-            out = await translateWithDeepSeek(content, "zh-TW");
-          }
-          const reply = mention ? `${mention} ${out}` : out;
-          return client.replyMessage(ev.replyToken, {
-            type: "text",
-            text: `【${name}】說：\n${reply}`,
-          });
-        }
-      })
-    );
+        const reply = mention ? `${mention} ${out}` : out;
+        return client.replyMessage(ev.replyToken, { type: "text", text: `【${name}】說：\n${reply}` });
+      }
+    }));
   }
 );
 
