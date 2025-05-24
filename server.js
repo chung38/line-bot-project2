@@ -24,22 +24,20 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 各語系映射
-const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+// 各語系映射，不含「繁體中文」
+const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
   m[v + "版"] = k;
   m[v] = k;
   return m;
 }, {});
 
-// 載入群組語系設定
+// 載入／快取群組語系設定
 const groupLang = new Map();
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
 }
-
-// 儲存／清除群組語系設定
 async function saveLang(gid, langs) {
   await db.collection("groupLanguages").doc(gid).set({ langs });
   groupLang.set(gid, new Set(langs));
@@ -54,7 +52,7 @@ const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 async function translateWithDeepSeek(text, targetLang) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
-  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang] || targetLang}，僅回傳翻譯後文字。`;
+  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang]||targetLang}，僅回傳翻譯後文字。`;
   try {
     const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
@@ -80,7 +78,7 @@ async function getUserName(gid, uid) {
   }
 }
 
-// 抓圖函式
+// 抓圖
 async function fetchImageUrlsByDate(gid, dateStr) {
   console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -98,7 +96,6 @@ async function fetchImageUrlsByDate(gid, dateStr) {
 
   const wanted = groupLang.get(gid) || new Set();
   const images = [];
-
   for (const url of detailUrls) {
     try {
       const d = await axios.get(url);
@@ -141,26 +138,33 @@ cron.schedule("0 15 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// 建立語言設定選單 (複選)
-function makeLangQuickReply() {
+// 建立 Quick Reply 語言選單，帶上次勾選狀態
+function makeLangQuickReply(gid) {
+  const selected = groupLang.get(gid) || new Set();
+  const items = Object.entries(LANGS).map(([code, label]) => {
+    const prefix = selected.has(code) ? "✅ " : "";
+    return {
+      type: "action",
+      action: {
+        type: "postback",
+        label: prefix + label,
+        data: `lang_toggle=${code}`,
+      },
+    };
+  });
+  // 加一個「完成」按鈕，用來關閉選單
+  items.push({
+    type: "action",
+    action: { type: "message", label: "完成", text: "完成" },
+  });
   return {
-    type: "template",
-    altText: "請選擇語言（可複選／取消）",
-    template: {
-      type: "buttons",
-      text: "請選要接收的語言",
-      actions: Object.entries(LANGS)
-        .filter(([code]) => code !== "zh-TW")
-        .map(([code, label]) => ({
-          type: "postback",
-          label: label,
-          data: `lang_toggle=${code}`,
-        })),
-    },
+    type: "text",
+    text: "請選要接收的語言（可複選／取消）：",
+    quickReply: { items },
   };
 }
 
-// Webhook：事件處理
+// Webhook 事件處理
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -173,17 +177,15 @@ app.post(
         const gid = ev.source?.groupId;
         const uid = ev.source?.userId;
 
-        // 機器人加入群組
+        // Bot 被邀請入群
         if (ev.type === "join" && gid) {
           await saveLang(gid, []);
-          return client.pushMessage(gid, makeLangQuickReply());
+          return client.pushMessage(gid, makeLangQuickReply(gid));
         }
-
-        // 機器人離開群組
+        // Bot 離開群組
         if (ev.type === "leave" && gid) {
           return clearLang(gid);
         }
-
         // 切換語言 postback
         if (ev.type === "postback" && gid && ev.postback.data.startsWith("lang_toggle=")) {
           const code = ev.postback.data.split("=")[1];
@@ -191,18 +193,13 @@ app.post(
           if (set.has(code)) set.delete(code);
           else set.add(code);
           await saveLang(gid, Array.from(set));
-          return client.replyMessage(ev.replyToken, {
-            type: "text",
-            text: `目前已選：${[...set].map(c => LANGS[c]).join(", ") || "（尚未選擇）"}`,
-          });
+          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
         }
-
         // 手動 !設定
         if (ev.type === "message" && ev.message.type === "text" && ev.message.text === "!設定" && gid) {
-          return client.replyMessage(ev.replyToken, makeLangQuickReply());
+          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
         }
-
-        // !文宣 YYYY-MM-DD
+        // !文宣 指令
         if (ev.type === "message" && ev.message.type === "text" && ev.message.text.startsWith("!文宣") && gid) {
           const parts = ev.message.text.split(" ");
           const d = parts[1];
@@ -214,11 +211,10 @@ app.post(
           }
           return sendImagesToGroup(gid, d);
         }
-
-        // 翻譯（保留 @提及）
+        // 翻譯（保留 mention）
         if (ev.type === "message" && ev.message.type === "text" && gid) {
           const txt = ev.message.text;
-          if (txt.startsWith("!文宣") || txt === "!設定") return;
+          if (txt === "!設定" || txt.startsWith("!文宣")) return;
           const m = txt.match(/^(@\S+)\s*(.+)$/);
           let mention = "", content = txt;
           if (m) {
