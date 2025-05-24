@@ -154,6 +154,28 @@ app.post(
       const uid = ev.source?.userId;
       const txt = ev.message?.text?.trim();
 
+      // Bot 被邀請入群，立即跳出設定選單
+      if (ev.type === "join" && gid) {
+        const langs = groupLang.get(gid) || new Set();
+        const items = Object.entries(LANGS).map(([code, name]) => ({
+          type: "action",
+          action: {
+            type: "message",
+            label: `${langs.has(code) ? "✓" : ""}${name}`,
+            text: `!設定 ${code}`,
+          },
+        }));
+        items.push({
+          type: "action",
+          action: { type: "message", label: "✅ 完成", text: "!設定 完成" },
+        });
+        return client.replyMessage(ev.replyToken, {
+          type: "text",
+          text: "機器人已加入，請先選擇語系設定（按「完成」結束）：",
+          quickReply: { items },
+        });
+      }
+
       // !設定 開始選單
       if (ev.type === "message" && txt === "!設定" && gid) {
         const langs = groupLang.get(gid) || new Set();
