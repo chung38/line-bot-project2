@@ -68,7 +68,7 @@ async function translateWithDeepSeek(text, targetLang) {
       { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
     const out = r.data.choices[0].message.content.trim();
-    translationCache.set(key,out);
+    translationCache.set(key, out);
     return out;
   } catch(e) {
     console.error("❌ 翻譯失敗:", e.message);
@@ -126,7 +126,7 @@ async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const u of imgs) {
     console.log("📤 推送：", u);
-    await client.pushMessage(gid,{
+    await client.pushMessage(gid, {
       type:               "image",
       originalContentUrl: u,
       previewImageUrl:    u
@@ -143,11 +143,11 @@ cron.schedule("0 15 * * *", async ()=>{
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// ─── 建立 Quick Reply 選單 (message action) ───
+// ─── Quick Reply 菜單 (message action) ───
 function makeLangQuickReply(gid) {
   const sel = groupLang.get(gid) || new Set();
   const items = Object.entries(LANGS).map(([code,label])=>({
-    type:   "action",
+    type: "action",
     action: {
       type: "message",
       label,
@@ -178,79 +178,76 @@ app.post(
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
 
-      // 1) Bot 加入 → 設 owner 並顯示選單
-      if (ev.type==="join" && gid) {
+      // 1) 手動 !設定 → 設定 owner 並顯示菜單
+      if (ev.type==="message" &&
+          ev.message.type==="text" &&
+          ev.message.text==="!設定" &&
+          gid) {
         groupOwner.set(gid, uid);
         await saveLang(gid, []);
         return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
-      // 2) Bot 離開 → 清除
-      if (ev.type==="leave" && gid) return clearLang(gid);
 
-      // 3) 切換語言
-      if (ev.type==="message" && ev.message.type==="text" && gid) {
-        const txt = ev.message.text;
-        // Toggle
-        if (txt.startsWith("lang_toggle=") && groupOwner.get(gid)===uid) {
-          const code = txt.split("=")[1];
-          const set  = groupLang.get(gid) || new Set();
-          if (set.has(code)) set.delete(code);
-          else set.add(code);
-          await saveLang(gid,[...set]);
-          return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
-        }
-        // 完成
-        if (txt==="lang_action=done" && groupOwner.get(gid)===uid) {
+      // 2) 切換語言
+      if (ev.type==="message" &&
+          ev.message.type==="text" &&
+          gid &&
+          ev.message.text.startsWith("lang_toggle=") &&
+          groupOwner.get(gid)===uid
+      ) {
+        const code = ev.message.text.split("=")[1];
+        const set  = groupLang.get(gid) || new Set();
+        if (set.has(code)) set.delete(code);
+        else set.add(code);
+        await saveLang(gid, [...set]);
+        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+      }
+
+      // 3) 完成 / 取消
+      if (ev.type==="message" &&
+          ev.message.type==="text" &&
+          gid &&
+          ["lang_action=done","lang_action=cancel"].includes(ev.message.text) &&
+          groupOwner.get(gid)===uid
+      ) {
+        if (ev.message.text==="lang_action=done") {
           const sel = [...(groupLang.get(gid)||[])].map(c=>LANGS[c]).join("、")||"（未選）";
-          return client.replyMessage(ev.replyToken,{
+          return client.replyMessage(ev.replyToken, {
             type:"text",
             text:`✅ 設定完成，目前已選：${sel}`
           });
-        }
-        // 取消
-        if (txt==="lang_action=cancel" && groupOwner.get(gid)===uid) {
+        } else {
           const sel = [...(groupLang.get(gid)||[])].map(c=>LANGS[c]).join("、")||"（未選）";
-          return client.replyMessage(ev.replyToken,{
+          return client.replyMessage(ev.replyToken, {
             type:"text",
             text:`❎ 已取消設定，仍維持：${sel}`
           });
         }
       }
 
-      // 4) 手動 !設定
-      if (
-        ev.type==="message" &&
-        ev.message.type==="text" &&
-        ev.message.text==="!設定" && gid &&
-        groupOwner.get(gid)===uid
-      ) {
-        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
-      }
-
-      // 5) !文宣 YYYY-MM-DD
-      if (
-        ev.type==="message" &&
-        ev.message.type==="text" &&
-        ev.message.text.startsWith("!文宣") && gid
+      // 4) !文宣 YYYY-MM-DD
+      if (ev.type==="message" &&
+          ev.message.type==="text" &&
+          ev.message.text.startsWith("!文宣") &&
+          gid
       ) {
         const d = ev.message.text.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          return client.replyMessage(ev.replyToken,{
+          return client.replyMessage(ev.replyToken, {
             type:"text", text:"請輸入：!文宣 YYYY-MM-DD"
           });
         }
         return sendImagesToGroup(gid, d);
       }
 
-      // 6) 其他文字 → 翻譯
-      if (
-        ev.type==="message" &&
-        ev.message.type==="text" && gid
+      // 5) 其他文字 → 翻譯
+      if (ev.type==="message" &&
+          ev.message.type==="text" &&
+          gid
       ) {
         const txt = ev.message.text;
-        // 忽略設定與文宣
-        if (txt==="!設定" || txt.startsWith("!文宣")) return;
-        let mention="",content=txt;
+        if (["!設定"].includes(txt) || txt.startsWith("!文宣")) return;
+        let mention="", content=txt;
         const m = txt.match(/^(@\S+)\s*(.+)$/);
         if (m) { mention=m[1]; content=m[2]; }
         const langs = groupLang.get(gid);
