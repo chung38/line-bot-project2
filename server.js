@@ -21,9 +21,9 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const LANGS = { en: "\u82f1\u6587", th: "\u6cf0\u6587", vi: "\u8d8a\u5357\u6587", id: "\u5370\u5c3c\u6587" };
+const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
-  m[v + "\u7248"] = k;
+  m[v + "版"] = k;
   m[v] = k;
   return m;
 }, {});
@@ -52,7 +52,7 @@ const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 async function translateWithDeepSeek(text, targetLang) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
-  const sys = `\u4f60\u662f\u4e00\u4f4d\u53f0\u7063\u5728\u5730\u7684\u7ffb\u8b6f\u54e1\uff0c\u8acb\u5c07\u4ee5\u4e0b\u53e5\u5b50\u7ffb\u8b6f\u6210${LANGS[targetLang]||targetLang}\uff0c\u50c5\u56de\u50b3\u7ffb\u8b6f\u5f8c\u6587\u5b57\u3002`;
+  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang]||targetLang}，僅回傳翻譯後文字。`;
   try {
     const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
@@ -63,8 +63,8 @@ async function translateWithDeepSeek(text, targetLang) {
     translationCache.set(key, out);
     return out;
   } catch (e) {
-    console.error("\u274c \u7ffb\u8b6f\u5931\u6557:", e.message);
-    return "\uff08\u7ffb\u8b6f\u66ab\u4e0d\u53ef\u7528\uff09";
+    console.error("❌ 翻譯失敗:", e.message);
+    return "（翻譯暫不可用）";
   }
 }
 
@@ -78,7 +78,7 @@ async function getUserName(gid, uid) {
 }
 
 async function fetchImageUrlsByDate(gid, dateStr) {
-  console.log("\ud83d\udcc5 \u958b\u59cb\u6293\u6587\u5ba3...", gid, dateStr);
+  console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
   const detailUrls = [];
@@ -89,7 +89,7 @@ async function fetchImageUrlsByDate(gid, dateStr) {
       if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
-  console.log("\ud83d\udd17 \u767c\u4f48\u65e5\u671f\u6587\u7ae0\u6578\uff1a", detailUrls.length);
+  console.log("🔗 發佈日期文章數：", detailUrls.length);
   const wanted = groupLang.get(gid) || new Set();
   const images = [];
   for (const url of detailUrls) {
@@ -105,17 +105,17 @@ async function fetchImageUrlsByDate(gid, dateStr) {
         }
       });
     } catch (e) {
-      console.error("\u26a0\ufe0f \u8b80\u53d6\u8a73\u60c5\u5931\u6557:", url, e.message);
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
-  console.log("\ud83d\udcc1 \u6700\u7d42\u5716\u7247\u6578\uff1a", images.length);
+  console.log("📁 最終圖片數：", images.length);
   return images;
 }
 
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
-    console.log("\ud83d\udce4 \u63a8\u9001\uff1a", url);
+    console.log("📤 推送：", url);
     await client.pushMessage(gid, {
       type: "image",
       originalContentUrl: url,
@@ -129,7 +129,7 @@ cron.schedule("0 15 * * *", async () => {
   for (const gid of groupLang.keys()) {
     await sendImagesToGroup(gid, today);
   }
-  console.log("\u23f0 \u6bcf\u65e5\u63a8\u64ad\u5b8c\u6210", new Date().toLocaleString());
+  console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
 function makeLangQuickReply(gid) {
@@ -138,13 +138,13 @@ function makeLangQuickReply(gid) {
     type: "action",
     action: {
       type: "postback",
-      label: (selected.has(code) ? "\u2705 " : "") + label,
+      label: (selected.has(code) ? "✅ " : "") + label,
       data: `lang_toggle=${code}`
     }
   }));
   items.push({
     type: "action",
-    action: { type: "message", label: "\u53d6\u6d88", text: "取消" }
+    action: { type: "message", label: "完成", text: "完成" }
   });
   return {
     type: "text",
@@ -182,6 +182,9 @@ app.post(
         if (groupOwner.get(gid) !== uid) return;
         return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
       }
+      if (ev.type === "message" && ev.message.type === "text" && ev.message.text === "完成") {
+        return; // do nothing to dismiss quick reply
+      }
       if (ev.type === "message" && ev.message.type === "text" && ev.message.text.startsWith("!文宣") && gid) {
         const parts = ev.message.text.split(" ");
         const d = parts[1];
@@ -192,7 +195,7 @@ app.post(
       }
       if (ev.type === "message" && ev.message.type === "text" && gid) {
         const txt = ev.message.text;
-        if (["取消", "!設定"].includes(txt) || txt.startsWith("!文宣")) return;
+        if (["完成", "!設定"].includes(txt) || txt.startsWith("!文宣")) return;
         const m = txt.match(/^(@\S+)\s*(.+)$/);
         let mention = "", content = txt;
         if (m) {
@@ -219,5 +222,5 @@ app.post(
 app.get("/", (_, res) => res.send("OK"));
 app.listen(PORT, async () => {
   await loadLang();
-  console.log("\ud83d\ude80 Bot \u5df2\u555f\u52d5\uff0cListening on", PORT);
+  console.log("🚀 Bot 已啟動，Listening on", PORT);
 });
