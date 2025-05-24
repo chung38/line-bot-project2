@@ -1,4 +1,4 @@
-// 🔧 LINE Bot with Firestore + 宣威圖推播（方案 B 只抓設定語言）+ DeepSeek 翻譯 + Debug Log
+// 🔧 LINE Bot with Firestore + 宣導圖推播（方案 C 只抓設定語言）+ DeepSeek 翻譯 + Debug Log
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -26,14 +26,15 @@ const PORT = process.env.PORT || 10000;
 
 // 各語系中英文對照
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+// 反查：中文標籤 => 語系 code
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [k, v]) => {
   m[v + "版"] = k;
   m[v] = k;
   return m;
-}, {});
+}, {} as Record<string,string>);
 
 // 載入各群組設定的語系
-const groupLang = new Map();
+const groupLang = new Map<string,Set<string>>();
 async function loadLang() {
   const snap = await db.collection("groupLanguages").get();
   snap.forEach(d => groupLang.set(d.id, new Set(d.data().langs)));
@@ -42,7 +43,7 @@ async function loadLang() {
 // 翻譯快取
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-async function translateWithDeepSeek(text, targetLang) {
+async function translateWithDeepSeek(text: string, targetLang: string) {
   const key = `${targetLang}:${text}`;
   if (translationCache.has(key)) return translationCache.get(key);
   const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${LANGS[targetLang] || targetLang}，僅回傳翻譯後文字。`;
@@ -55,13 +56,13 @@ async function translateWithDeepSeek(text, targetLang) {
     const out = r.data.choices[0].message.content.trim();
     translationCache.set(key, out);
     return out;
-  } catch (e) {
+  } catch (e:any) {
     console.error("❌ 翻譯失敗:", e.message);
     return "（翻譯暫不可用）";
   }
 }
 
-async function getUserName(gid, uid) {
+async function getUserName(gid: string, uid: string) {
   try {
     const p = await client.getGroupMemberProfile(gid, uid);
     return p.displayName;
@@ -70,12 +71,15 @@ async function getUserName(gid, uid) {
   }
 }
 
-async function fetchImageUrlsByDate(gid, dateStr) {
-  console.log("\ud83d\udcc5 \u958b\u59cb\u6293\u6587\u5ba3...", gid, dateStr);
+async function fetchImageUrlsByDate(gid: string, dateStr: string) {
+  console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
-  const detailUrls = [];
 
+  // debug: 看看 groupLang 裡對這個 gid 設定的是哪些 code
+  console.log("🔧 groupLang 設定：", Array.from(groupLang.get(gid) || []));
+
+  const detailUrls: string[] = [];
   $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
     if (tds.eq(1).text().trim() === dateStr.replace(/-/g, "/")) {
@@ -83,19 +87,21 @@ async function fetchImageUrlsByDate(gid, dateStr) {
       if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
-  console.log("\ud83d\udd17 發佈日期文章數：", detailUrls.length);
+  console.log("🔗 發佈日期文章數：", detailUrls.length);
 
-  const wanted = groupLang.get(gid) || new Set();
-  const images = [];
+  const wanted = groupLang.get(gid) || new Set<string>();
+  const images: string[] = [];
 
   for (const url of detailUrls) {
     try {
       const d = await axios.get(url);
       const $$ = load(d.data);
       $$(".text-photo a").each((_, el) => {
-        const label = $$(el).find("p").text().trim();
-        const code = NAME_TO_CODE[label];
+        const label = $$(el).find("p").text().trim();      // e.g. "中文版"、"泰文版"
+        const code  = NAME_TO_CODE[label];
+        console.log("    ▶ 找到標籤：", label, "→ code:", code);
         if (code && wanted.has(code)) {
+          console.log("      ✔ 列入：", code);
           let imgUrl = $$(el).find("img").attr("src");
           if (imgUrl) {
             imgUrl = "https://fw.wda.gov.tw" + imgUrl;
@@ -103,22 +109,22 @@ async function fetchImageUrlsByDate(gid, dateStr) {
           }
         }
       });
-    } catch (e) {
-      console.error("\u26a0\ufe0f 讀取詳情失敗:", url, e.message);
+    } catch(e:any) {
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
-  console.log("\ud83d\udcc1 最終圖片數：", images.length);
+  console.log("📑 最終圖片數：", images.length);
   return images;
 }
 
-async function sendImagesToGroup(gid, dateStr) {
+async function sendImagesToGroup(gid: string, dateStr: string) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const originalUrl of imgs) {
-    console.log("\ud83d\udce4 推送：", originalUrl);
+    console.log("📤 推送：", originalUrl);
     await client.pushMessage(gid, {
       type: "image",
       originalContentUrl: originalUrl,
-      previewImageUrl: originalUrl
+      previewImageUrl: originalUrl,
     });
   }
 }
@@ -128,7 +134,7 @@ cron.schedule("0 15 * * *", async () => {
   for (const [gid] of groupLang.entries()) {
     await sendImagesToGroup(gid, today);
   }
-  console.log("\u23f0 每日推播完成", new Date().toLocaleString());
+  console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
 app.post(
@@ -142,34 +148,30 @@ app.post(
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
       const txt = ev.message?.text?.trim();
-
-      if (ev.type === "message" && txt?.startsWith("!\u6587\u5ba3") && gid) {
+      if (ev.type === "message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          return client.replyMessage(ev.replyToken, {
-            type: "text", text: "請輸入：!\u6587\u5ba3 YYYY-MM-DD"
-          });
+          return client.replyMessage(ev.replyToken, { type:"text", text:"請輸入：!文宣 YYYY-MM-DD" });
         }
         await sendImagesToGroup(gid, d);
         return;
       }
-
       if (
         ev.type === "message" &&
         ev.message?.type === "text" &&
         gid &&
-        !txt.startsWith("!\u6587\u5ba3")
+        !txt?.startsWith("!文宣")
       ) {
         const langs = groupLang.get(gid);
         if (!langs) return;
-        const name = await getUserName(gid, uid);
+        const name = await getUserName(gid, uid!);
         const isZh = /[\u4e00-\u9fff]/.test(txt);
         const out = isZh
           ? (await Promise.all([...langs].map(l => translateWithDeepSeek(txt, l)))).join("\n")
           : await translateWithDeepSeek(txt, "zh-TW");
         await client.replyMessage(ev.replyToken, {
           type: "text",
-          text: `【${name}】說：\n${out}`
+          text: `【${name}】說：\n${out}`,
         });
       }
     }));
