@@ -160,7 +160,7 @@ function makeLangTemplate(gid){
     label: (selected.has(code)?"✅ ":"")+label,
     data:  `lang_toggle=${code}`
   }));
-  // 最後加一個「完成」和「取消」按鈕
+  // 最後加「完成」和「取消」
   actions.push(
     { type:"message", label:"完成", text:"設定完成" },
     { type:"message", label:"取消", text:"設定取消" }
@@ -170,7 +170,7 @@ function makeLangTemplate(gid){
     altText:  "請選要接收的語言",
     template: {
       type:    "buttons",
-      text:    "請選要接收的語言（點擊打勾，再點「完成」或「取消」）",
+      text:    "請點擊語言打勾，完成後再點完成或取消",
       actions
     }
   };
@@ -202,11 +202,11 @@ app.post(
       if(ev.type==="postback"&&gid&&ev.postback.data.startsWith("lang_toggle=")){
         if(groupOwner.get(gid)!==uid) return; 
         const code = ev.postback.data.split("=")[1];
-        const set = groupLang.get(gid)||new Set();
+        const set  = groupLang.get(gid)||new Set();
         if(set.has(code)) set.delete(code);
         else set.add(code);
         await saveLang(gid,Array.from(set));
-        // 回傳新的 template（不關閉）
+        // 再次回 template（不關閉）
         return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
       }
       // 手動 !設定
@@ -214,7 +214,7 @@ app.post(
         if(groupOwner.get(gid)!==uid) return;
         return client.replyMessage(ev.replyToken,makeLangTemplate(gid));
       }
-      // 結束選單：「設定完成」 or 「設定取消」
+      // 結束選單：「設定完成」「設定取消」
       if(ev.type==="message"&&ev.message?.type==="text"&&["設定完成","設定取消"].includes(ev.message.text)&&gid){
         return client.replyMessage(ev.replyToken,{
           type:"text",
