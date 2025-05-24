@@ -43,7 +43,7 @@ async function loadLang() {
 }
 async function saveLang(gid, langs) {
   const owner = groupOwner.get(gid);
-  await db.collection("groupLanguages").doc(gid).set({ langs, owner });
+  await db.collection("groupLanguages").doc(gid).set({ langs, ...(owner ? { owner } : {}) });
   groupLang.set(gid, new Set(langs));
 }
 async function clearLang(gid) {
