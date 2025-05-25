@@ -1,4 +1,4 @@
-// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單）
+// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單＋@人名兼容）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -19,7 +19,6 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 環境變數檢查
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -38,6 +37,17 @@ const groupLang = new Map();      // groupId -> Set<langCode>
 const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
+
+// --- mention 處理 ---
+// 偵測 @人名 或 <@Uxxxx> 並分離
+function extractMentionAndText(text) {
+  // 支援 LINE 文字開頭有 @mention 或 <@Uxxxxxxxx>
+  const match = text.match(/^([@＠][^\s]+(?:\s*\([^\)]+\))?\s*|<@[A-Za-z0-9]+>\s*)+/);
+  if (match) {
+    return { mention: match[0], content: text.slice(match[0].length).trim() };
+  }
+  return { mention: "", content: text };
+}
 
 // --- Firestore helpers ---
 const loadLang = async () => {
@@ -195,11 +205,10 @@ const sendMenu = async (gid, retry = 0) => {
         data: `action=set_lang&code=${code}` 
       },
       style: "primary",
-      color: "#3b82f6", // 藍色
+      color: "#3b82f6",
       margin: "md",
       height: "sm"
     }));
-  // 取消按鈕
   langButtons.push({
     type: "button",
     action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
@@ -348,19 +357,24 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // 翻譯
+      // 翻譯（有 mention 處理！）
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const userName = await getUserName(gid, uid);
+
+        // 提取 mention
+        const { mention, content } = extractMentionAndText(txt || "");
+        if (!content) return; // 空內容不翻譯
+
         let translated;
-        if (isChinese(txt)) {
-          const results = await Promise.all([...set].map(code => translateWithDeepSeek(txt, code)));
+        if (isChinese(content)) {
+          const results = await Promise.all([...set].map(code => translateWithDeepSeek(content, code)));
           translated = results.join("\n");
         } else {
-          translated = await translateWithDeepSeek(txt, "zh-TW");
+          translated = await translateWithDeepSeek(content, "zh-TW");
         }
-        await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
+        await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${mention}${translated}` });
       }
     } catch (e) {
       console.error("處理單一事件失敗:", e);
