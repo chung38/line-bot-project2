@@ -278,7 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（每語言直接原文翻譯，mention/symbol保留）===
+// === 主 Webhook（@mention+外語只翻繁中，中文多語，功能完整）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,42 +348,56 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 主翻譯：每語言獨立對原文翻譯，mention與標點保留 ---
+      // === 主翻譯區 ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
-        const langList = [...set];
-        const grouped = langList.map(() => []);
+        let results = [];
 
         for (const line of lines) {
           if (!line.trim()) continue;
 
-          // mention與符號/數字處理
+          // 先判斷是否以 mention 開頭
           let mentionMatch = line.match(/^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/);
           let mentionPart = "";
           let restLine = line;
           if (mentionMatch) {
             mentionPart = mentionMatch[1];
-            restLine = line.slice(mentionPart.length);
+            restLine = line.slice(mentionPart.length).trim();
           }
 
-          if (!restLine.trim() || isSymbolOrNum(restLine.trim())) {
-            langList.forEach((_, idx) => grouped[idx].push(mentionPart + restLine.trim()));
+          // mention+外語（非中文）→只翻成繁中
+          if (mentionPart && restLine && !isChinese(restLine) && !isSymbolOrNum(restLine)) {
+            let zh = await translateWithDeepSeek(mentionPart + restLine, "zh-TW");
+            results.push(zh);
             continue;
           }
 
-          // 直接對原文分別翻譯（不強制先轉中文），提昇多語與多國混合支持
-          for (let [idx, code] of langList.entries()) {
-            let textForTrans = mentionPart + restLine.trim();
-            let out = await translateWithDeepSeek(textForTrans, code);
-            grouped[idx].push(out);
+          // 單純標點或空白
+          if (!restLine || isSymbolOrNum(restLine)) {
+            results.push(line);
+            continue;
+          }
+
+          // 純中文→照選單翻多語
+          if (isChinese(restLine)) {
+            for (let code of set) {
+              let out = await translateWithDeepSeek(restLine, code);
+              results.push(out);
+            }
+            continue;
+          }
+
+          // 其它外語或混合（非 mention 開頭）→照原本多語翻譯
+          for (let code of set) {
+            let out = await translateWithDeepSeek(line, code);
+            results.push(out);
           }
         }
 
-        let translated = grouped.map(lines => lines.join('\n')).join('\n\n');
-        translated = restoreMentions(translated, segments);
+        let translated = restoreMentions(results.join('\n'), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
           type: "text",
