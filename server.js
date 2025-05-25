@@ -278,7 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（語言分組聚合排列）===
+// === 主 Webhook（每語言直接原文翻譯，mention/symbol保留）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,17 +348,19 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 語言聚合翻譯排列 ---
+      // --- 主翻譯：每語言獨立對原文翻譯，mention與標點保留 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
-        const langList = [...set]; // 保證語言順序一致
-        const grouped = langList.map(() => []); // 每語言的結果陣列
+        const langList = [...set];
+        const grouped = langList.map(() => []);
 
         for (const line of lines) {
           if (!line.trim()) continue;
+
+          // mention與符號/數字處理
           let mentionMatch = line.match(/^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/);
           let mentionPart = "";
           let restLine = line;
@@ -366,26 +368,20 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
             mentionPart = mentionMatch[1];
             restLine = line.slice(mentionPart.length);
           }
-          // 標點符號（或空白）直接原樣給所有語言
+
           if (!restLine.trim() || isSymbolOrNum(restLine.trim())) {
             langList.forEach((_, idx) => grouped[idx].push(mentionPart + restLine.trim()));
             continue;
           }
-          // 正文依語言聚合（先全部泰文、再全部越南文...）
+
+          // 直接對原文分別翻譯（不強制先轉中文），提昇多語與多國混合支持
           for (let [idx, code] of langList.entries()) {
-            let textForTrans = restLine.trim();
-            let out;
-            if (isChinese(textForTrans)) {
-              out = await translateWithDeepSeek(textForTrans, code);
-            } else {
-              // 先轉回中文再轉目標語
-              let zh = await translateWithDeepSeek(textForTrans, "zh-TW");
-              out = code === "zh-TW" ? zh : await translateWithDeepSeek(zh, code);
-            }
-            grouped[idx].push(mentionPart + out);
+            let textForTrans = mentionPart + restLine.trim();
+            let out = await translateWithDeepSeek(textForTrans, code);
+            grouped[idx].push(out);
           }
         }
-        // 每組語言分塊換行排列，中間再空一行分開
+
         let translated = grouped.map(lines => lines.join('\n')).join('\n\n');
         translated = restoreMentions(translated, segments);
         const userName = await getUserName(gid, uid);
