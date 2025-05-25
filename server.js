@@ -1,5 +1,3 @@
-// === Firestore 版 LINE 群組翻譯+文宣搜圖機器人（支援mention、每行每語分開顯示、自動管理設定者、凌晨自動推播文宣圖）===
-
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -312,7 +310,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook ===
+// === 主 Webhook（這裡 message 處理區塊已改成你的需求）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -382,57 +380,74 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // ----------- 支援 mention 與多語混排多行「每語分開顯示」 -------------
+      // --- 這裡 message 處理區塊照你的需求重新寫 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
-        // mention 遮罩
+
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
         let resultLines = [];
+
         for (const line of lines) {
           if (!line.trim()) continue;
+
           // 檢查行首一串 mention
           let mentionMatch = line.match(/^((\[@MENTION_\d+\]\s*)+)/);
-          let restLine = line, mentionPart = "";
           if (mentionMatch) {
-            mentionPart = mentionMatch[1].replace(/\s+$/,""); // mention區
-            restLine = line.slice(mentionPart.length).trim();
+            let mentionPart = mentionMatch[1];
+            let mentionArr = mentionPart.match(/\[@MENTION_\d+\]/g) || [];
+            let restLine = line.slice(mentionPart.length).trim();
+
             if (restLine && isChinese(restLine)) {
               for (let code of set) {
-                let tr = await translateWithDeepSeek(restLine, code);
-                resultLines.push(`${mentionPart}${tr}`);
+                for (let mentionKey of mentionArr) {
+                  let tr = await translateWithDeepSeek(restLine, code);
+                  resultLines.push(`${mentionKey}${tr}`);
+                }
               }
             } else if (restLine) {
               let zh = await translateWithDeepSeek(restLine, "zh-TW");
-              resultLines.push(`${mentionPart}${zh}`);
+              for (let mentionKey of mentionArr) {
+                resultLines.push(`${mentionKey}${zh}`);
+              }
             } else {
-              resultLines.push(mentionPart);
+              mentionArr.forEach(mentionKey => resultLines.push(mentionKey));
             }
           } else {
-            // 無 mention 開頭
+            // 沒有行首 mention
             let tokens = splitByLang(line);
-            // 此行所有翻譯都要分開
-            let outputForThisLine = [];
+            let zhChunks = [];
+            let nonZhChunks = [];
+            let chunkMention = [];
+
             for (let tk of tokens) {
               if (tk.type === "mention") {
-                outputForThisLine.push(tk.text);
+                chunkMention.push(tk.text);
               } else if (tk.type === "zh") {
-                for (let code of set) {
-                  let tr = await translateWithDeepSeek(tk.text, code);
-                  outputForThisLine.push(tr);
-                }
+                zhChunks.push(tk.text);
               } else if (tk.type === "other" && tk.text.trim()) {
-                let zh = await translateWithDeepSeek(tk.text, "zh-TW");
-                outputForThisLine.push(zh);
-              } else {
-                outputForThisLine.push(tk.text);
+                nonZhChunks.push(tk.text);
               }
             }
-            resultLines.push(outputForThisLine.join(""));
+
+            // 這裡直接把所有 mention 各分行
+            chunkMention.forEach(m => resultLines.push(m));
+
+            // 每個 zh chunk，所有語言都分行
+            for (let code of set) {
+              for (let chunk of zhChunks) {
+                let tr = await translateWithDeepSeek(chunk, code);
+                resultLines.push(tr);
+              }
+            }
+            // 非中文塊翻回中文
+            for (let chunk of nonZhChunks) {
+              let zh = await translateWithDeepSeek(chunk, "zh-TW");
+              resultLines.push(zh);
+            }
           }
         }
-        // mention還原
         let translated = restoreMentions(resultLines.join("\n"), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
