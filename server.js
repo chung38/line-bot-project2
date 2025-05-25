@@ -1,228 +1,292 @@
-/**
- * server.js - LINE Bot with translation and daily propaganda image push
- */
-'use strict';
+import "dotenv/config";
+import express from "express";
+import { Client, middleware } from "@line/bot-sdk";
+import bodyParser from "body-parser";
+import axios from "axios";
+import https from "node:https";
+import { LRUCache } from "lru-cache";
+import admin from "firebase-admin";
+import { load as cheerioLoad } from "cheerio";
+import cron from "node-cron";
 
-// Module dependencies
-const express = require('express');
-const line = require('@line/bot-sdk');
-const admin = require('firebase-admin');
-const cron = require('node-cron');
-const axios = require('axios');
-const cheerio = require('cheerio');
-
-// Initialize Firebase Admin with service account (Firestore)
-const serviceAccount = require(__dirname + '/linebot-0511-9a3a5-firebase-adminsdk-fbsvc-4d78e33d6f.json');
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
+// 初始化 Firebase
+const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, "\n");
+admin.initializeApp({ credential: admin.credential.cert(firebaseConfig) });
 const db = admin.firestore();
 
-// LINE Bot configuration
-const config = {
-    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN, // Add your LINE Channel Access Token in environment variables
-    channelSecret: process.env.LINE_CHANNEL_SECRET // Add your LINE Channel Secret in environment variables
-};
-const client = new line.Client(config);
-
-// Express app for webhook
 const app = express();
-app.post('/callback', line.middleware(config), async (req, res) => {
-    try {
-        const events = req.body.events;
-        for (const event of events) {
-            // Only handle message events
-            if (event.type === 'message' && event.message.type === 'text') {
-                const text = event.message.text.trim();
-                const source = event.source;
-                // Determine group or room ID
-                const groupId = source.groupId || source.roomId || source.userId;
-                
-                // Handle manual command for propaganda images
-                if (text.startsWith('!文宣 ')) {
-                    const parts = text.split(' ');
-                    if (parts.length >= 2) {
-                        const dateInput = parts[1];
-                        // Validate date format YYYY-MM-DD
-                        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-                        if (!datePattern.test(dateInput)) {
-                            await client.replyMessage(event.replyToken, {
-                                type: 'text',
-                                text: '日期格式錯誤，請使用 YYYY-MM-DD。'
-                            });
-                        } else {
-                            // Fetch images for the specified date
-                            const imagesByLang = await fetchImagesByDate(dateInput);
-                            // Get group language settings from Firestore
-                            const groupRef = db.collection('groups').doc(groupId);
-                            const groupSnap = await groupRef.get();
-                            let groupLangs = [];
-                            if (groupSnap.exists) {
-                                groupLangs = groupSnap.data().languages || [];
-                            }
-                            // Prepare image messages for this group based on languages
-                            let messages = [];
-                            for (const lang of groupLangs) {
-                                if (imagesByLang[lang]) {
-                                    for (const imgUrl of imagesByLang[lang]) {
-                                        messages.push({
-                                            type: 'image',
-                                            originalContentUrl: imgUrl,
-                                            previewImageUrl: imgUrl
-                                        });
-                                    }
-                                }
-                            }
-                            if (messages.length > 0) {
-                                // Reply with images
-                                await client.replyMessage(event.replyToken, messages);
-                            } else {
-                                // No images found for group languages
-                                await client.replyMessage(event.replyToken, {
-                                    type: 'text',
-                                    text: '該日期無符合條件的宣導圖片，或您群組設定的語言中無對應語言版本。'
-                                });
-                            }
-                        }
-                    } else {
-                        // No date provided
-                        await client.replyMessage(event.replyToken, {
-                            type: 'text',
-                            text: '請提供日期，例如：!文宣 2025-05-16'
-                        });
-                    }
-                    continue; // move to next event after handling command
-                }
-                
-                // TODO: Handle other commands or translation logic
-                // Example: language menu settings, translation of messages, permission checks, etc.
-                // Keep original translation and language menu logic unchanged.
+const PORT = process.env.PORT || 10000;
 
-                // Example placeholder: If a translation feature existed, it would be here
-            }
-        }
-        // Return HTTP 200 to LINE platform
-        res.sendStatus(200);
-    } catch (err) {
-        console.error('Error handling event:', err);
-        res.sendStatus(500);
-    }
+// 環境變數檢查
+["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
+  if (!process.env[v]) {
+    console.error(`❌ 缺少環境變數 ${v}`);
+    process.exit(1);
+  }
 });
 
-// Function to fetch propaganda images by date (YYYY-MM-DD)
-async function fetchImagesByDate(dateStr) {
-    // Convert YYYY-MM-DD to site format YYYY/MM/DD
-    const [year, month, day] = dateStr.split('-');
-    const target = `${year}/${month}/${day}`;
-    const listUrl = 'https://fw.wda.gov.tw/wda-employer/home/file';
+const lineConfig = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET
+};
+const client = new Client(lineConfig);
+const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-    let imagesByLang = {}; // { 'vi': [...], 'th': [...], ... }
-    try {
-        const res = await axios.get(listUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const $ = cheerio.load(res.data);
-        const tasks = [];
-        // Find table rows matching the date
-        $('tr').each((i, tr) => {
-            const dateCell = $(tr).find('td[data-label="發佈日期｜"]');
-            if (dateCell && dateCell.text().trim() === target) {
-                const link = $(tr).find('a').attr('href');
-                if (link) {
-                    const detailUrl = 'https://fw.wda.gov.tw' + link;
-                    tasks.push(extractImagesFromPage(detailUrl, imagesByLang));
-                }
-            }
-        });
-        // Wait for all detail pages to be processed
-        await Promise.all(tasks);
-    } catch (err) {
-        console.error('Error fetching list page:', err);
+const groupLang = new Map();      // groupId -> Set<langCode>
+const groupInviter = new Map();   // groupId -> userId
+const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+
+const loadLang = async () => {
+  const snapshot = await db.collection("groupLanguages").get();
+  snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
+};
+
+const saveLang = async () => {
+  const batch = db.batch();
+  groupLang.forEach((set, gid) => {
+    const ref = db.collection("groupLanguages").doc(gid);
+    set.size ? batch.set(ref, { langs: [...set] }) : batch.delete(ref);
+  });
+  await batch.commit();
+};
+
+const loadInviter = async () => {
+  const snapshot = await db.collection("groupInviters").get();
+  snapshot.forEach(doc => groupInviter.set(doc.id, doc.data().userId));
+};
+
+const saveInviter = async () => {
+  const batch = db.batch();
+  groupInviter.forEach((uid, gid) => batch.set(db.collection("groupInviters").doc(gid), { userId: uid }));
+  await batch.commit();
+};
+
+const isChinese = text => /[\u4e00-\u9fff]/.test(text);
+
+const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
+  const cacheKey = `${targetLang}:${text}`;
+  if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
+
+  const sys = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang] || targetLang}，請使用台灣常用語，並且僅回傳翻譯後的文字。`;
+
+  try {
+    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: text }
+      ]
+    }, {
+      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+    });
+    const out = res.data.choices[0].message.content.trim();
+    translationCache.set(cacheKey, out);
+    return out;
+  } catch (e) {
+    if (e.response?.status === 429 && retry < 3) {
+      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
+      return translateWithDeepSeek(text, targetLang, retry + 1);
     }
-    return imagesByLang;
+    console.error("翻譯失敗:", e.message);
+    return "（翻譯暫時不可用）";
+  }
+};
+
+const getUserName = async (gid, uid) => {
+  try {
+    const profile = await client.getGroupMemberProfile(gid, uid);
+    return profile.displayName;
+  } catch {
+    return uid;
+  }
+};
+
+// 🔍 搜圖功能
+async function fetchImageUrlsByDate(dateStr) {
+  const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
+  const $ = cheerioLoad(res.data);
+  const detailUrls = [];
+  $("table.sub-table tbody.tbody tr").each((_, tr) => {
+    const tds = $(tr).find("td");
+    if (tds.eq(1).text().trim() === dateStr.replace(/-/g, "/")) {
+      const href = tds.eq(0).find("a").attr("href");
+      if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
+    }
+  });
+  const images = [];
+  for (const url of detailUrls) {
+    try {
+      const d = await axios.get(url);
+      const $$ = cheerioLoad(d.data);
+      $$(".text-photo a").each((_, el) => {
+        const label = $$(el).find("p").text().trim();
+        const code =
+          label === "英文版" ? "en" :
+          label === "泰文版" ? "th" :
+          label === "越南文版" ? "vi" :
+          label === "印尼文版" ? "id" : null;
+        if (code) {
+          const src = $$(el).find("img").attr("src");
+          if (src) images.push({ lang: code, url: "https://fw.wda.gov.tw" + src });
+        }
+      });
+    } catch (e) {
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
+    }
+  }
+  return images;
 }
 
-// Helper function to fetch detail page and extract images (populates imagesByLang)
-async function extractImagesFromPage(detailUrl, imagesByLang) {
-    try {
-        const res = await axios.get(detailUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const $ = cheerio.load(res.data);
-        // Find all anchors that correspond to images (indicated by page count text)
-        $('a').each((i, a) => {
-            const text = $(a).text() || '';
-            if (text.match(/版[1-3]\/3/)) {
-                let langCode = null;
-                if (text.includes('英文版')) langCode = 'en';
-                else if (text.includes('泰文版')) langCode = 'th';
-                else if (text.includes('印尼文版')) langCode = 'id';
-                else if (text.includes('越南文版')) langCode = 'vi';
-                else if (text.includes('中文版')) {
-                    langCode = 'zh'; // Traditional Chinese
-                }
-                if (!langCode || langCode === 'zh') {
-                    return; // skip if no valid language or Chinese
-                }
-                const href = $(a).attr('href');
-                if (href) {
-                    const imgUrl = href.startsWith('http') ? href : 'https://fw.wda.gov.tw' + href;
-                    if (!imagesByLang[langCode]) imagesByLang[langCode] = [];
-                    if (!imagesByLang[langCode].includes(imgUrl)) {
-                        imagesByLang[langCode].push(imgUrl);
-                    }
-                }
-            }
-        });
-    } catch (err) {
-        console.error('Error fetching detail page:', err);
-    }
-}
+app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
+  res.sendStatus(200);
 
-// Schedule daily job at 15:00 Asia/Taipei time
-cron.schedule('0 15 * * *', async () => {
-    console.log('Running daily propaganda image push job...');
-    // Today's date (Taipei time)
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = ('0' + (now.getMonth() + 1)).slice(-2);
-    const day = ('0' + now.getDate()).slice(-2);
-    const todayStr = `${year}-${month}-${day}`;
-    // Fetch images for today
-    const imagesByLang = await fetchImagesByDate(todayStr);
-    // Get all groups from Firestore
-    const snapshot = await db.collection('groups').get();
-    if (snapshot.empty) {
-        console.log('No groups found for image push.');
+  await Promise.all(req.body.events.map(async event => {
+    try {
+      const gid = event.source?.groupId;
+      const uid = event.source?.userId;
+      const txt = event.message?.text;
+
+      if (event.type === "join" && gid) return sendMenu(gid);
+
+      if ((event.type === "message" && txt === "!設定") || event.type === "postback") {
+        if (gid && uid && !groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
+        }
+      }
+
+      if (event.type === "message" && txt === "!設定" && gid) {
+        if (groupInviter.get(gid) !== uid) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
+          return;
+        }
+        return sendMenu(gid);
+      }
+
+      if (event.type === "postback" && gid) {
+        if (groupInviter.get(gid) !== uid) return;
+        const p = new URLSearchParams(event.postback.data);
+        if (p.get("action") === "set_lang") {
+          const code = p.get("code");
+          let set = groupLang.get(gid) || new Set();
+          code === "cancel" ? set.clear() : (set.has(code) ? set.delete(code) : set.add(code));
+          set.size ? groupLang.set(gid, set) : groupLang.delete(gid);
+          await saveLang();
+
+          const cur = [...(groupLang.get(gid) || [])].map(c => SUPPORTED_LANGS[c]).join("、") || "無";
+          await client.replyMessage(event.replyToken, { type: "text", text: `目前選擇：${cur}` });
+        }
         return;
-    }
-    for (const doc of snapshot.docs) {
-        const groupId = doc.id;
-        const groupData = doc.data();
-        const groupLangs = groupData.languages || [];
-        let msgs = [];
-        for (const lang of groupLangs) {
-            if (imagesByLang[lang]) {
-                imagesByLang[lang].forEach(url => {
-                    msgs.push({
-                        type: 'image',
-                        originalContentUrl: url,
-                        previewImageUrl: url
-                    });
-                });
-            }
+      }
+
+      // 宣導圖查詢功能
+      if (event.type === "message" && txt && txt.startsWith("!文宣") && gid) {
+        const parts = txt.split(" ");
+        const d = parts[1];
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          return client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
         }
-        if (msgs.length > 0) {
-            try {
-                await client.pushMessage(groupId, msgs);
-                console.log(`Pushed images to group ${groupId}: ${msgs.length} images.`);
-            } catch (err) {
-                console.error('Error pushing images to group', groupId, err);
-            }
+        const images = await fetchImageUrlsByDate(d);
+        const langs = groupLang.get(gid) || new Set();
+        const toSend = images.filter(img => langs.has(img.lang));
+        if (toSend.length === 0) {
+          return client.replyMessage(event.replyToken, { type: "text", text: "查無符合語言的宣導圖。" });
         }
+        // 最多回傳 5 張圖
+        for (let i = 0; i < Math.min(toSend.length, 5); i++) {
+          await client.pushMessage(gid, {
+            type: "image",
+            originalContentUrl: toSend[i].url,
+            previewImageUrl: toSend[i].url
+          });
+        }
+        return;
+      }
+
+      if (event.type === "message" && event.message.type === "text" && gid) {
+        const set = groupLang.get(gid);
+        if (!set || set.size === 0) return;
+        const userName = await getUserName(gid, uid);
+        let translated;
+        if (isChinese(txt)) {
+          const results = await Promise.all([...set].map(code => translateWithDeepSeek(txt, code)));
+          translated = results.join("\n");
+        } else {
+          translated = await translateWithDeepSeek(txt, "zh-TW");
+        }
+        await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
+      }
+    } catch (e) {
+      console.error("處理單一事件失敗:", e);
     }
-}, {
-    timezone: 'Asia/Taipei'
+  }));
 });
 
-// Start Express server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+const rateLimit = {}, INTERVAL = 60000;
+const canSend = gid => {
+  const now = Date.now();
+  if (!rateLimit[gid] || now - rateLimit[gid] > INTERVAL) {
+    rateLimit[gid] = now;
+    return true;
+  }
+  return false;
+};
+
+const sendMenu = async (gid, retry = 0) => {
+  if (!canSend(gid)) return;
+  const buttons = Object.entries(SUPPORTED_LANGS).filter(([code]) => code !== "zh-TW").map(([code, label]) => ({
+    type: "button",
+    action: { type: "postback", label, data: `action=set_lang&code=${code}` },
+    style: "primary", color: "#34B7F1"
+  }));
+  buttons.push({
+    type: "button",
+    action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
+    style: "secondary", color: "#FF3B30"
+  });
+
+  const msg = {
+    type: "flex",
+    altText: "語言設定選單",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
+          { type: "separator", margin: "md" },
+          ...buttons
+        ]
+      }
+    }
+  };
+
+  try {
+    await client.pushMessage(gid, msg);
+  } catch (e) {
+    if (e.statusCode === 429 && retry < 3) {
+      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
+      return sendMenu(gid, retry + 1);
+    }
+    console.error("選單發送失敗:", e.message);
+  }
+};
+
+app.get("/", (_, res) => res.send("OK"));
+app.get("/ping", (_, res) => res.send("pong"));
+setInterval(() => {
+  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode)).on("error", e => console.error("PING 失敗", e.message));
+}, 10 * 60 * 1000);
+
+app.listen(PORT, async () => {
+  try {
+    await loadLang();
+    await loadInviter();
+    console.log(`🚀 服務已啟動，監聽於 ${PORT}`);
+  } catch (e) {
+    console.error("❌ 啟動失敗:", e);
+    process.exit(1);
+  }
 });
