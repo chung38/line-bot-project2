@@ -278,7 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（@mention/語言判斷完整規則）===
+// === 主 Webhook（精準處理 mention + 外語、mention + 中文）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,7 +348,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // === @mention/語言規則主翻譯區塊 ===
+      // --- 主訊息翻譯區塊 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
@@ -358,35 +358,42 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
 
         for (const line of lines) {
           if (!line.trim()) continue;
-
-          // 解析開頭 mention
+          // 處理 LINE mention ([@MENTION_0]) 或 純文字 @人名
+          let mentionPart = "", rest = line;
+          // 真 mention
           const mentionRegex = /^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/;
           const mentionMatch = line.match(mentionRegex);
-          let mentionPart = "";
-          let rest = line;
           if (mentionMatch) {
             mentionPart = mentionMatch[1];
             rest = line.slice(mentionPart.length).trimStart();
+          } else {
+            // 純文字 @人名 (允許 @galant(巍瀚) 或 @galant )
+            const atNamePattern = /^(@[^\s]+(?:$begin:math:text$[^$end:math:text$]*\))?\s*)/;
+            const atNameMatch = line.match(atNamePattern);
+            if (atNameMatch) {
+              mentionPart = atNameMatch[1];
+              rest = line.slice(mentionPart.length).trimStart();
+            }
           }
 
-          // 純 mention（不翻譯）
+          // 只有 mention 不用翻
           if (!rest) {
             outputLines.push(mentionPart.trim());
             continue;
           }
-          // 標點符號
+          // 標點、數字符號保留原文
           if (isSymbolOrNum(rest)) {
             outputLines.push(mentionPart + rest);
             continue;
           }
-
+          // 有 mention
           if (mentionPart) {
             if (!isChinese(rest)) {
-              // @mention+外語，只翻成繁中
+              // @mention + 外語，只翻成繁體中文
               const zh = await translateWithDeepSeek(rest, "zh-TW");
               outputLines.push(`${mentionPart}${zh}`);
             } else {
-              // @mention+中文，依語言選單多語翻，每段都帶mention
+              // @mention + 中文，依語言選單多語翻，每段都帶mention
               for (let code of set) {
                 if (code === "zh-TW") continue;
                 const tr = await translateWithDeepSeek(rest, code);
@@ -394,7 +401,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
               }
             }
           } else {
-            // 沒有 mention：外語翻繁中、中文依語言多語翻
+            // 沒 mention
             if (isChinese(rest)) {
               for (let code of set) {
                 if (code === "zh-TW") continue;
@@ -407,7 +414,6 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
             }
           }
         }
-
         let translated = restoreMentions(outputLines.join('\n'), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
