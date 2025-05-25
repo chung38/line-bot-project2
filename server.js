@@ -1,12 +1,12 @@
-// Firestore 版 LINE 群組翻譯機器人＋宣導圖推播
+// Firestore 版 LINE 群組翻譯機器人（支援語言選單設定者機制＋搜圖功能）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import bodyParser from "body-parser";
 import axios from "axios";
+import { load } from "cheerio";
 import https from "node:https";
 import { LRUCache } from "lru-cache";
-import { load } from "cheerio";
 import admin from "firebase-admin";
 import cron from "node-cron";
 
@@ -32,21 +32,21 @@ const lineConfig = {
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 const client = new Client(lineConfig);
-const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-const groupLang = new Map();      // groupId -> Set<langCode>
-const groupInviter = new Map();   // groupId -> userId
+// 支援語言
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
-
-// for 搜圖功能
-const LANGS = SUPPORTED_LANGS;
 const NAME_TO_CODE = {};
-Object.entries(LANGS).forEach(([k,v])=>{
+Object.entries(SUPPORTED_LANGS).forEach(([k,v])=>{
   NAME_TO_CODE[v + "版"] = k;
   NAME_TO_CODE[v] = k;
 });
 
-// Firestore 群組語言載入/儲存
+const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
+
+const groupLang = new Map();      // groupId -> Set<langCode>
+const groupInviter = new Map();   // groupId -> userId
+
+// Firestore helpers
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
@@ -59,7 +59,6 @@ const saveLang = async () => {
   });
   await batch.commit();
 };
-// Firestore 群組邀請者載入/儲存
 const loadInviter = async () => {
   const snapshot = await db.collection("groupInviters").get();
   snapshot.forEach(doc => groupInviter.set(doc.id, doc.data().userId));
@@ -67,15 +66,13 @@ const loadInviter = async () => {
 const saveInviter = async () => {
   const batch = db.batch();
   groupInviter.forEach((uid, gid) => {
-    if (!uid) return; // 跳過 undefined/null/空字串
-    batch.set(db.collection("groupInviters").doc(gid), { userId: uid });
+    if (uid !== undefined) batch.set(db.collection("groupInviters").doc(gid), { userId: uid });
   });
   await batch.commit();
 };
 
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
 
-// DeepSeek
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -105,7 +102,6 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   }
 };
 
-// 取得用戶名
 const getUserName = async (gid, uid) => {
   try {
     const profile = await client.getGroupMemberProfile(gid, uid);
@@ -115,13 +111,14 @@ const getUserName = async (gid, uid) => {
   }
 };
 
-// --- 搜圖功能（與你舊版本相同，並優化標籤比對） ---
+// 搜圖功能
 async function fetchImageUrlsByDate(gid, dateStr) {
   console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
 
   console.log("🔧 groupLang 設定：", Array.from(groupLang.get(gid)||[]));
+
   const detailUrls = [];
   $("table.sub-table tbody.tbody tr").each((_,tr)=>{
     const tds = $(tr).find("td");
@@ -141,7 +138,6 @@ async function fetchImageUrlsByDate(gid, dateStr) {
       const $$ = load(d.data);
       $$(".text-photo a").each((_,el)=>{
         const rawLabel = $$(el).find("p").text().trim();
-        // 去掉後面的數字和 "/n"
         const baseLabel = rawLabel.replace(/\d.*$/,"").trim();
         const code = NAME_TO_CODE[baseLabel];
         console.log("    ▶ 找到標籤：", rawLabel, "→ base:", baseLabel, "→ code:", code);
@@ -173,16 +169,7 @@ async function sendImagesToGroup(gid, dateStr) {
   }
 }
 
-// --- 自動推播：每日 15:00 ---
-cron.schedule("0 15 * * *", async ()=>{
-  const today = new Date().toISOString().slice(0,10);
-  for (const [gid] of groupLang.entries()) {
-    await sendImagesToGroup(gid, today);
-  }
-  console.log("⏰ 每日推播完成", new Date().toLocaleString());
-});
-
-// --- Flex 美化選單 ---
+// ====== 語言選單 (Flex Message) ======
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -211,13 +198,11 @@ const sendMenu = async (gid, retry = 0) => {
     altText: "語言設定選單",
     contents: {
       type: "bubble",
-      size: "mega",
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "lg",
         contents: [
-          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold", size: "xl", margin: "md" },
+          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold", align:"center", size:"xl", margin:"md" },
           { type: "separator", margin: "md" },
           ...buttons
         ]
@@ -236,7 +221,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// --- Webhook 主邏輯 ---
+// ====== Webhook 處理 ======
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -246,35 +231,34 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
       const uid = event.source?.userId;
       const txt = event.message?.text?.trim();
 
-      // 1) 機器人入群時直接發選單（Flex）
-      if (event.type === "join" && gid) {
-        // 把邀請人暫存到 groupInviter
-        if (uid) {
+      // 1) 加入群組時，立即推送語言選單（不記錄 inviter，等首位操作人再記錄）
+      if (event.type === "join" && gid) return sendMenu(gid);
+
+      // 2) 第一次操作 !設定 或 postback，紀錄該人為設定者
+      if ((event.type === "message" && txt === "!設定") || event.type === "postback") {
+        if (gid && uid && !groupInviter.has(gid)) {
           groupInviter.set(gid, uid);
           await saveInviter();
         }
-        return sendMenu(gid);
       }
 
-      // 2) 按 "!設定" 也能叫出選單（邀請者限定）
-      if ((event.type === "message" && txt === "!設定") && gid) {
+      // 3) "!設定"（只有設定者可再次操作）
+      if (event.type === "message" && txt === "!設定" && gid) {
         if (groupInviter.get(gid) !== uid) {
-          await client.replyMessage(event.replyToken, { type: "text", text: "只有邀請者可以更改語言選單。" });
+          await client.replyMessage(event.replyToken, { type: "text", text: "只有邀請者可以更改語言設定。" });
           return;
         }
         return sendMenu(gid);
       }
 
-      // 3) 處理 Flex postback 選單選擇
+      // 4) 處理語言選單 postback（只有設定者可操作）
       if (event.type === "postback" && gid) {
         if (groupInviter.get(gid) !== uid) return;
         const p = new URLSearchParams(event.postback.data);
         if (p.get("action") === "set_lang") {
           const code = p.get("code");
           let set = groupLang.get(gid) || new Set();
-          if (code === "cancel") set.clear();
-          else if (set.has(code)) set.delete(code);
-          else set.add(code);
+          code === "cancel" ? set.clear() : (set.has(code) ? set.delete(code) : set.add(code));
           set.size ? groupLang.set(gid, set) : groupLang.delete(gid);
           await saveLang();
 
@@ -284,7 +268,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // 4) !文宣 YYYY-MM-DD 搜圖
+      // 5) 處理 !文宣 YYYY-MM-DD
       if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -294,8 +278,8 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // 5) 翻譯
-      if (event.type === "message" && event.message?.type === "text" && gid && !txt?.startsWith("!文宣")) {
+      // 6) 翻譯訊息
+      if (event.type === "message" && event.message.type === "text" && gid && !txt?.startsWith("!文宣") && txt !== "!設定") {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const userName = await getUserName(gid, uid);
@@ -314,14 +298,21 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
   }));
 });
 
-// --- 基本健康檢查與防 Render 休眠 ---
+// ====== 定時自動推播 ======
+cron.schedule("0 15 * * *", async ()=>{
+  const today = new Date().toISOString().slice(0,10);
+  for (const [gid] of groupLang.entries()) {
+    await sendImagesToGroup(gid, today);
+  }
+  console.log("⏰ 每日推播完成", new Date().toLocaleString());
+});
+
 app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 setInterval(() => {
   https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode)).on("error", e => console.error("PING 失敗", e.message));
 }, 10 * 60 * 1000);
 
-// --- 啟動 ---
 app.listen(PORT, async () => {
   try {
     await loadLang();
