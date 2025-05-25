@@ -8,6 +8,7 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import https from "node:https";
 
+// ==== Firebase Init ====
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
 firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, "\n");
 admin.initializeApp({ credential: admin.credential.cert(firebaseConfig) });
@@ -43,6 +44,7 @@ const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
+  console.log("✅ 已載入 groupLang:", Array.from(groupLang.entries()));
 };
 const saveLang = async () => {
   const batch = db.batch();
@@ -51,10 +53,12 @@ const saveLang = async () => {
     set.size ? batch.set(ref, { langs: [...set] }) : batch.delete(ref);
   });
   await batch.commit();
+  console.log("💾 已儲存 groupLang:", Array.from(groupLang.entries()));
 };
 const loadInviter = async () => {
   const snapshot = await db.collection("groupInviters").get();
   snapshot.forEach(doc => groupInviter.set(doc.id, doc.data().userId));
+  console.log("✅ 已載入 groupInviter:", Array.from(groupInviter.entries()));
 };
 const saveInviter = async () => {
   const batch = db.batch();
@@ -62,6 +66,7 @@ const saveInviter = async () => {
     if (uid) batch.set(db.collection("groupInviters").doc(gid), { userId: uid });
   });
   await batch.commit();
+  console.log("💾 已儲存 groupInviter:", Array.from(groupInviter.entries()));
 };
 
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
@@ -106,6 +111,7 @@ const getUserName = async (gid, uid) => {
 
 // ==== 搜圖 ====
 async function fetchImageUrlsByDate(gid, dateStr) {
+  console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
 
@@ -117,6 +123,7 @@ async function fetchImageUrlsByDate(gid, dateStr) {
       if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
+  console.log("🔗 發佈日期文章數：", detailUrls.length);
 
   const wanted = groupLang.get(gid) || new Set();
   const images = [];
@@ -129,21 +136,27 @@ async function fetchImageUrlsByDate(gid, dateStr) {
         const rawLabel = $$(el).find("p").text().trim();
         const baseLabel = rawLabel.replace(/\d.*$/, "").trim();
         const code = NAME_TO_CODE[baseLabel];
+        console.log("    ▶ 找到標籤：", rawLabel, "→ base:", baseLabel, "→ code:", code);
         if (code && wanted.has(code)) {
+          console.log("      ✔ 列入：", code);
           let imgUrl = $$(el).find("img").attr("src");
           if (imgUrl) {
             images.push("https://fw.wda.gov.tw" + imgUrl);
           }
         }
       });
-    } catch {}
+    } catch(e) {
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
+    }
   }
+  console.log("📑 最終圖片數：", images.length);
   return images;
 }
 
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
+    console.log("📤 推送：", url);
     await client.pushMessage(gid, {
       type: "image",
       originalContentUrl: url,
@@ -154,6 +167,7 @@ async function sendImagesToGroup(gid, dateStr) {
 
 // ====== Flex Message ======
 const sendMenu = async (gid, retry = 0) => {
+  console.log(`🟦 sendMenu() 呼叫 for group: ${gid}`);
   const langCodes = ["en", "th", "vi", "id"];
   const selected = groupLang.get(gid) || new Set();
   const buttons = langCodes.map(code => ({
@@ -188,6 +202,7 @@ const sendMenu = async (gid, retry = 0) => {
 
   try {
     await client.pushMessage(gid, msg);
+    console.log(`✅ FlexMessage 已送出給 ${gid}`);
   } catch (e) {
     if (e.statusCode === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
@@ -207,15 +222,18 @@ app.post("/webhook",
 
     await Promise.all(req.body.events.map(async event => {
       try {
+        console.log("\n[Webhook] 收到事件：", JSON.stringify(event, null, 2));
         const gid = event.source?.groupId;
         const uid = event.source?.userId;
         const txt = event.message?.text?.trim();
 
         // Bot 加入群組 → 顯示 Flex Message 選單，指定邀請者
         if (event.type === "join" && gid) {
+          console.log(`[join] Bot 被邀請進群：${gid}, 邀請人: ${uid}`);
           if (!groupInviter.has(gid) && uid) {
             groupInviter.set(gid, uid);
             await saveInviter();
+            console.log(`✔️ 新增邀請人: ${uid}`);
           }
           await sendMenu(gid);
           return;
@@ -225,11 +243,14 @@ app.post("/webhook",
         if (((event.type === "message" && txt === "!設定") || event.type === "postback") && gid && uid && !groupInviter.has(gid)) {
           groupInviter.set(gid, uid);
           await saveInviter();
+          console.log(`✔️ 新增邀請人 (透過!設定/postback): ${uid}`);
         }
 
         // 輸入 "!設定" 只允許邀請者設定
         if (event.type === "message" && txt === "!設定" && gid) {
+          console.log(`[!設定] 觸發 by ${uid} in ${gid}`);
           if (groupInviter.get(gid) !== uid) {
+            console.log("⛔ 非邀請者，拒絕設定權限。");
             await client.replyMessage(event.replyToken, { type: "text", text: "只有邀請者可以更改語言設定。" });
             return;
           }
@@ -239,7 +260,11 @@ app.post("/webhook",
 
         // Flex Message 按鈕互動
         if (event.type === "postback" && gid) {
-          if (groupInviter.get(gid) !== uid) return;
+          console.log(`[postback] data: ${event.postback.data}, user: ${uid}, group: ${gid}`);
+          if (groupInviter.get(gid) !== uid) {
+            console.log("⛔ 非邀請者 postback 被阻擋。");
+            return;
+          }
           const p = new URLSearchParams(event.postback.data);
 
           // 切換語言（即時變更，回覆目前選擇）
@@ -249,8 +274,8 @@ app.post("/webhook",
             set.has(code) ? set.delete(code) : set.add(code);
             set.size ? groupLang.set(gid, set) : groupLang.delete(gid);
             await saveLang();
-
             const cur = [...(groupLang.get(gid) || [])].map(c => SUPPORTED_LANGS[c]).join("、") || "無";
+            console.log(`🟢 語言設定更新: group=${gid} → ${cur}`);
             await client.replyMessage(event.replyToken, { type: "text", text: `目前選擇：${cur}` });
             return;
           }
@@ -259,6 +284,7 @@ app.post("/webhook",
           if (p.get("action") === "cancel") {
             groupLang.delete(gid);
             await saveLang();
+            console.log(`🔴 語言設定已取消 group=${gid}`);
             await client.replyMessage(event.replyToken, { type: "text", text: "目前選擇：無" });
             return;
           }
@@ -267,6 +293,7 @@ app.post("/webhook",
         // 文宣搜圖
         if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
           const d = txt.split(" ")[1];
+          console.log(`[!文宣] 收到：${txt}, group=${gid}`);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
             return client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
           }
@@ -286,6 +313,7 @@ app.post("/webhook",
           } else {
             translated = await translateWithDeepSeek(txt, "zh-TW");
           }
+          console.log(`🈸 翻譯 by ${userName}: ${txt} → ${translated}`);
           await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
         }
       } catch (e) {
