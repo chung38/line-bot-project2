@@ -1,3 +1,4 @@
+// Firestore 版 LINE 群組翻譯＋搜圖機器人（mention支援、國旗美化選單）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -18,6 +19,7 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// 環境變數檢查
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -62,24 +64,6 @@ const saveInviter = async () => {
 
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
 
-// --- @mention保留 ---
-function extractMentions(text) {
-  // 支援多行多組mention，符號都吃掉
-  // 例如 @名稱/名稱、@名稱-名稱、@名稱(名稱)等，全部 masking
-  const mentionPattern = /@[\w\-\u4e00-\u9fff\/\(\)（）\u3000\s]+/g;
-  let i = 0;
-  const mentions = [];
-  const masked = text.replace(mentionPattern, m => {
-    mentions.push(m);
-    return `[@MENTION_${i++}]`;
-  });
-  return [masked, mentions];
-}
-function restoreMentions(text, mentions) {
-  return text.replace(/\[@MENTION_(\d+)\]/g, (_, n) => mentions[n] ?? "");
-}
-
-// --- 翻譯核心 ---
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -117,6 +101,34 @@ const getUserName = async (gid, uid) => {
     return uid;
   }
 };
+
+// --- Mention 處理 ---
+
+function extractMentionsFromLineMessage(message) {
+  // 只處理有 mentioned 的情況
+  if (!message.mentioned || !Array.isArray(message.mentioned.mentions) || message.mentioned.mentions.length === 0) {
+    return { masked: message.text, segments: [] };
+  }
+  // mentions 按 index 排序
+  const mentions = [...message.mentioned.mentions].sort((a, b) => a.index - b.index);
+  let segments = [];
+  let lastIdx = 0;
+  let masked = "";
+  mentions.forEach((m, idx) => {
+    masked += message.text.slice(lastIdx, m.index);
+    masked += `[@MENTION_${idx}]`;
+    segments.push({
+      userId: m.userId,
+      text: message.text.substr(m.index, m.length)
+    });
+    lastIdx = m.index + m.length;
+  });
+  masked += message.text.slice(lastIdx);
+  return { masked, segments };
+}
+function restoreMentions(text, segments) {
+  return text.replace(/\[@MENTION_(\d+)\]/g, (_, n) => segments[n]?.text ?? "");
+}
 
 // --- 搜圖相關 ---
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
@@ -187,7 +199,7 @@ cron.schedule("0 3 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// --- Flex Message（美化＋國旗）---
+// --- Flex Message（國旗美化選單）---
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -205,17 +217,16 @@ const sendMenu = async (gid, retry = 0) => {
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
       type: "button",
-      action: { 
-        type: "postback", 
-        label: `${LANG_ICONS[code]} ${label}`, 
-        data: `action=set_lang&code=${code}` 
+      action: {
+        type: "postback",
+        label: `${LANG_ICONS[code]} ${label}`,
+        data: `action=set_lang&code=${code}`
       },
       style: "primary",
       color: "#3b82f6",
       margin: "md",
       height: "sm"
     }));
-  // 取消按鈕
   langButtons.push({
     type: "button",
     action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
@@ -364,35 +375,35 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // 翻譯
+      // ======= 多行翻譯，支援 mention =============
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
 
-        // --- mention 處理 ---
-        const [maskedText, mentions] = extractMentions(txt);
+        // 處理 mention
+        const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
-        // 多行逐行判斷語言處理
-        async function translateLine(line, targetSet) {
-          if (!line.trim()) return "";
-          if (isChinese(line)) {
-            const arr = await Promise.all([...targetSet].map(code => translateWithDeepSeek(line, code)));
-            return arr.join("\n");
-          }
-          // 其他語言翻中文
-          else {
-            if (targetSet.has("zh-TW")) return line;
-            return await translateWithDeepSeek(line, "zh-TW");
-          }
-        }
-
-        const lines = maskedText.split(/\r?\n/);
+        // 多行分開逐行翻譯
+        const lines = masked.split(/\r?\n/);
         let resultLines = [];
         for (const line of lines) {
-          resultLines.push(await translateLine(line, set));
+          // 若全是 mention placeholder，直接保留
+          if (/\[@MENTION_\d+\]/.test(line) && !line.replace(/\[@MENTION_\d+\]/g, "").trim()) {
+            resultLines.push(line);
+          } else if (isChinese(line)) {
+            // 有選擇語言時，多語翻譯
+            const translations = await Promise.all([...set].map(code => translateWithDeepSeek(line, code)));
+            resultLines.push(translations.join("\n"));
+          } else if (line.trim()) {
+            // 非中文則翻回中文
+            resultLines.push(await translateWithDeepSeek(line, "zh-TW"));
+          } else {
+            resultLines.push("");
+          }
         }
+        // 還原 mention
         let translated = resultLines.join("\n");
-        translated = restoreMentions(translated, mentions);
+        translated = restoreMentions(translated, segments);
 
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
