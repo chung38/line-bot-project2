@@ -1,4 +1,4 @@
-// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者）
+// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -19,6 +19,7 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// 環境變數檢查
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -36,6 +37,7 @@ const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 const groupLang = new Map();      // groupId -> Set<langCode>
 const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
 // --- Firestore helpers ---
 const loadLang = async () => {
@@ -103,7 +105,7 @@ const getUserName = async (gid, uid) => {
 // --- 搜圖相關 ---
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const NAME_TO_CODE = {};
-Object.entries(LANGS).forEach(([k,v])=>{
+Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
   NAME_TO_CODE[v] = k;
 });
@@ -114,11 +116,11 @@ async function fetchImageUrlsByDate(gid, dateStr) {
   const $ = load(res.data);
 
   const detailUrls = [];
-  $("table.sub-table tbody.tbody tr").each((_,tr)=>{
+  $("table.sub-table tbody.tbody tr").each((_, tr) => {
     const tds = $(tr).find("td");
-    if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
+    if (tds.eq(1).text().trim() === dateStr.replace(/-/g, "/")) {
       const href = tds.eq(0).find("a").attr("href");
-      if (href) detailUrls.push("https://fw.wda.gov.tw"+href);
+      if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
     }
   });
   console.log("🔗 發佈日期文章數：", detailUrls.length);
@@ -129,18 +131,18 @@ async function fetchImageUrlsByDate(gid, dateStr) {
     try {
       const d = await axios.get(url);
       const $$ = load(d.data);
-      $$(".text-photo a").each((_,el)=>{
+      $$(".text-photo a").each((_, el) => {
         const rawLabel = $$(el).find("p").text().trim();
-        const baseLabel = rawLabel.replace(/\d.*$/,"").trim();
+        const baseLabel = rawLabel.replace(/\d.*$/, "").trim();
         const code = NAME_TO_CODE[baseLabel];
         if (code && wanted.has(code)) {
           let imgUrl = $$(el).find("img").attr("src");
           if (imgUrl) {
-            images.push("https://fw.wda.gov.tw"+imgUrl);
+            images.push("https://fw.wda.gov.tw" + imgUrl);
           }
         }
       });
-    } catch(e) {
+    } catch (e) {
       console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
@@ -152,23 +154,24 @@ async function sendImagesToGroup(gid, dateStr) {
   for (const url of imgs) {
     console.log("📤 推送：", url);
     await client.pushMessage(gid, {
-      type:"image",
-      originalContentUrl:url,
-      previewImageUrl:url
+      type: "image",
+      originalContentUrl: url,
+      previewImageUrl: url
     });
   }
 }
 
 // --- 定時推播 ---
-cron.schedule("0 15 * * *", async ()=>{
-  const today = new Date().toISOString().slice(0,10);
+// 每日凌晨 3 點派送前一天資料
+cron.schedule("0 3 * * *", async () => {
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   for (const [gid] of groupLang.entries()) {
-    await sendImagesToGroup(gid, today);
+    await sendImagesToGroup(gid, yesterday);
   }
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// --- Flex Message ---
+// --- Flex Message（已美化、有國旗）---
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -181,15 +184,29 @@ const canSend = gid => {
 
 const sendMenu = async (gid, retry = 0) => {
   if (!canSend(gid)) return;
-  const buttons = Object.entries(SUPPORTED_LANGS).filter(([code]) => code !== "zh-TW").map(([code, label]) => ({
+  // 語言按鈕 (有國旗)
+  const langButtons = Object.entries(SUPPORTED_LANGS)
+    .filter(([code]) => code !== "zh-TW")
+    .map(([code, label]) => ({
+      type: "button",
+      action: { 
+        type: "postback", 
+        label: `${LANG_ICONS[code]} ${label}`, 
+        data: `action=set_lang&code=${code}` 
+      },
+      style: "primary",
+      color: "#3b82f6", // 藍色
+      margin: "md",
+      height: "sm"
+    }));
+  // 取消按鈕
+  langButtons.push({
     type: "button",
-    action: { type: "postback", label, data: `action=set_lang&code=${code}` },
-    style: "primary", color: "#34B7F1"
-  }));
-  buttons.push({
-    type: "button",
-    action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
-    style: "secondary", color: "#FF3B30"
+    action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
+    style: "secondary",
+    color: "#ef4444",
+    margin: "md",
+    height: "sm"
   });
 
   const msg = {
@@ -197,13 +214,46 @@ const sendMenu = async (gid, retry = 0) => {
     altText: "語言設定選單",
     contents: {
       type: "bubble",
+      size: "mega",
       body: {
         type: "box",
         layout: "vertical",
+        spacing: "lg",
+        paddingAll: "20px",
         contents: [
-          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
-          { type: "separator", margin: "md" },
-          ...buttons
+          {
+            type: "box",
+            layout: "vertical",
+            contents: [
+              {
+                type: "text",
+                text: "🌏 群組自動翻譯語言設定",
+                weight: "bold",
+                size: "xl",
+                color: "#1d4ed8",
+                align: "center"
+              },
+              {
+                type: "separator",
+                margin: "md"
+              },
+              {
+                type: "text",
+                text: "請點擊下方按鈕切換語言，或取消全部。",
+                size: "sm",
+                color: "#555555",
+                align: "center",
+                margin: "md"
+              }
+            ]
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            spacing: "sm",
+            margin: "lg",
+            contents: langButtons
+          }
         ]
       }
     }
@@ -231,7 +281,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
       const uid = event.source?.userId;
       const txt = event.message?.text;
 
-      // 新增: 離開群組時清空 groupInviter/groupLang
+      // 離開群組時清空 groupInviter/groupLang
       if (event.type === "leave" && gid) {
         groupInviter.delete(gid);
         groupLang.delete(gid);
@@ -291,10 +341,10 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
       if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
         const d = txt.split(" ")[1];
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          await client.replyMessage(event.replyToken,{type:"text",text:"請輸入：!文宣 YYYY-MM-DD"});
+          await client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
           return;
         }
-        await sendImagesToGroup(gid,d);
+        await sendImagesToGroup(gid, d);
         return;
       }
 
