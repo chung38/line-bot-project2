@@ -1,4 +1,4 @@
-// Firestore 版 LINE 群組翻譯＋搜圖機器人（逐行雙向翻譯＋自動設定者＋國旗選單）
+// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單＋@人名不翻譯）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -19,6 +19,7 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// 環境變數檢查
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -37,6 +38,23 @@ const groupLang = new Map();      // groupId -> Set<langCode>
 const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
+
+// === [加註標示處] ===
+// @人名處理輔助函數
+function extractMentions(text) {
+  const mentions = [];
+  let idx = 0;
+  // 偵測 @人名（包含中英數、空白）
+  const newText = text.replace(/@[\u4e00-\u9fa5A-Za-z0-9\-\_（）()．・\s]+/g, match => {
+    mentions.push(match);
+    return `__MENTION_${idx++}__`;
+  });
+  return [newText, mentions];
+}
+function restoreMentions(text, mentions) {
+  return text.replace(/__MENTION_(\d+)__/g, (_, n) => mentions[+n] || "");
+}
+// === [加註標示處] ===
 
 // --- Firestore helpers ---
 const loadLang = async () => {
@@ -61,20 +79,8 @@ const saveInviter = async () => {
   await batch.commit();
 };
 
-// --- 語言偵測：簡單偵測（遇到特殊需求可加強）---
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
-const isVietnamese = text => /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(text);
-const isIndonesian = text => /[ckgh]an\b|nya\b|[aeiou]lah\b/i.test(text); // 粗略偵測
-const isThai = text => /[\u0E00-\u0E7F]/.test(text);
-const guessLang = text => {
-  if (isChinese(text)) return "zh-TW";
-  if (isThai(text)) return "th";
-  if (isVietnamese(text)) return "vi";
-  if (isIndonesian(text)) return "id";
-  return "en"; // default fallback
-};
 
-// --- DeepSeek 翻譯 ---
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -113,8 +119,8 @@ const getUserName = async (gid, uid) => {
   }
 };
 
-// --- 搜圖 ---
-const LANGS = SUPPORTED_LANGS;
+// --- 搜圖相關 ---
+const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const NAME_TO_CODE = {};
 Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
@@ -173,6 +179,7 @@ async function sendImagesToGroup(gid, dateStr) {
 }
 
 // --- 定時推播 ---
+// 每日凌晨 3 點派送前一天資料
 cron.schedule("0 3 * * *", async () => {
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   for (const [gid] of groupLang.entries()) {
@@ -181,7 +188,7 @@ cron.schedule("0 3 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// --- Flex Message（國旗美化）---
+// --- Flex Message（已美化、有國旗）---
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -205,7 +212,7 @@ const sendMenu = async (gid, retry = 0) => {
         data: `action=set_lang&code=${code}` 
       },
       style: "primary",
-      color: "#3b82f6",
+      color: "#3b82f6", // 藍色
       margin: "md",
       height: "sm"
     }));
@@ -358,31 +365,29 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // 翻譯
+      // 翻譯（加上 @人名保留）
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const userName = await getUserName(gid, uid);
-        // 拆成多行，每行偵測語言後決定要翻到哪
-        const lines = txt.split(/\r?\n/).filter(Boolean);
-        const translatedLines = await Promise.all(lines.map(async line => {
-          const srcLang = guessLang(line);
-          // 若本行已經是群組目標語言，則翻成中文，否則翻到每個目標語言
-          if (srcLang === "zh-TW") {
-            // 中文 -> 目標語言
-            const results = await Promise.all([...set].map(code => translateWithDeepSeek(line, code)));
-            return results.join("\n");
-          } else {
-            // 其它語言 -> 中文
-            if (set.has(srcLang)) {
-              // 避免將"已是目標語言"又翻成其它語言
-              return await translateWithDeepSeek(line, "zh-TW");
-            } else {
-              return await translateWithDeepSeek(line, "zh-TW");
-            }
-          }
-        }));
-        await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translatedLines.join('\n')}` });
+
+        // === [加註標示處] ===
+        const [txtNoMention, mentions] = extractMentions(txt);
+        let translated;
+
+        if (isChinese(txt)) {
+          const results = await Promise.all([...set].map(async code => {
+            const tr = await translateWithDeepSeek(txtNoMention, code);
+            return restoreMentions(tr, mentions);
+          }));
+          translated = results.join("\n");
+        } else {
+          const tr = await translateWithDeepSeek(txtNoMention, "zh-TW");
+          translated = restoreMentions(tr, mentions);
+        }
+        // === [加註標示處] ===
+
+        await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
       }
     } catch (e) {
       console.error("處理單一事件失敗:", e);
