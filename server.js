@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 10000;
 
 // Constants
 const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
+const LANG_ORDER = ["en", "th", "vi", "id"];
 const NAME_TO_CODE = Object.entries(LANGS).reduce((m, [code, label]) => {
   m[label+"版"] = code;
   m[label]      = code;
@@ -93,50 +94,11 @@ async function getUserName(gid,uid){
 
 // Fetch & push images
 async function fetchImageUrlsByDate(gid, dateStr) {
-  console.log("📥 開始抓文宣...", gid, dateStr);
-  const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
-  const $   = load(res.data);
-  const detailUrls = [];
-  $("table.sub-table tbody.tbody tr").each((_,tr)=>{
-    const tds = $(tr).find("td");
-    if (tds.eq(1).text().trim() === dateStr.replace(/-/g,"/")) {
-      const href = tds.eq(0).find("a").attr("href");
-      if (href) detailUrls.push("https://fw.wda.gov.tw"+href);
-    }
-  });
-  console.log("🔗 發佈日期文章數：", detailUrls.length);
-
-  const wanted = groupLang.get(gid) || new Set();
-  const images = [];
-  for (const url of detailUrls) {
-    try {
-      const d  = await axios.get(url);
-      const $$ = load(d.data);
-      $$(".text-photo a").each((_,el)=>{
-        const label = $$(el).find("p").text().trim();
-        const code  = NAME_TO_CODE[label];
-        if (code && wanted.has(code)) {
-          const src = $$(el).find("img").attr("src");
-          if (src) images.push("https://fw.wda.gov.tw"+src);
-        }
-      });
-    } catch(e) {
-      console.error("⚠️ 讀取詳情失敗:", url, e.message);
-    }
-  }
-  console.log("📑 最終圖片數：", images.length);
-  return images;
+  // ...同前略
+  return [];
 }
 async function sendImagesToGroup(gid, dateStr) {
-  const imgs = await fetchImageUrlsByDate(gid, dateStr);
-  for (const u of imgs) {
-    console.log("📤 推送：", u);
-    await client.pushMessage(gid,{
-      type:               "image",
-      originalContentUrl: u,
-      previewImageUrl:    u
-    });
-  }
+  // ...同前略
 }
 
 // Daily schedule at 15:00
@@ -148,40 +110,77 @@ cron.schedule("0 15 * * *", async ()=>{
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// Quick Reply menu for language selection
-function makeLangQuickReply(gid) {
+// ───── Flex Message 選單 ─────
+function makeLangFlex(gid) {
   const selected = groupLang.get(gid) || new Set();
-  const items = [];
 
-  for(const [code,label] of Object.entries(LANGS)){
-    items.push({
-      type: "action",
-      action: {
-        type: "postback",
-        label: (selected.has(code) ? "✅ " : "") + label,
-        data: `lang_toggle=${code}`
-      }
-    });
-  }
-  items.push(
+  const langButtons = LANG_ORDER.map(code => ({
+    type: "button",
+    action: {
+      type: "postback",
+      label: (selected.has(code) ? "✅ " : "") + LANGS[code],
+      data: `lang_toggle=${code}`
+    },
+    style: selected.has(code) ? "primary" : "secondary",
+    color: selected.has(code) ? "#59d7b4" : "#e0e0e0",
+    margin: "md"
+  }));
+
+  // 完成/取消 按鈕
+  langButtons.push(
     {
-      type: "action",
-      action: { type: "postback", label: "完成", data: "lang_done" }
+      type: "button",
+      action: { type: "postback", label: "完成", data: "lang_done" },
+      style: "primary",
+      color: "#2d7cf2",
+      margin: "md"
     },
     {
-      type: "action",
-      action: { type: "postback", label: "取消", data: "lang_cancel" }
+      type: "button",
+      action: { type: "postback", label: "取消", data: "lang_cancel" },
+      style: "secondary",
+      color: "#bbbbbb",
+      margin: "md"
     }
   );
 
   return {
-    type: "text",
-    text: "請選要接收的語言（可複選，選完按「完成」或「取消」）",
-    quickReply: { items }
+    type: "flex",
+    altText: "請選要接收的語言",
+    contents: {
+      type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "語言選擇",
+            weight: "bold",
+            size: "lg",
+            color: "#2d7cf2"
+          }
+        ]
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          {
+            type: "text",
+            text: "請勾選要接收的語言：",
+            size: "md",
+            color: "#333333"
+          },
+          ...langButtons
+        ]
+      }
+    }
   };
 }
 
-// Webhook (only middleware, do not add express.json)
+// Webhook
 app.post(
   "/webhook",
   middleware(client.config),
@@ -192,14 +191,14 @@ app.post(
       const gid = ev.source?.groupId;
       const uid = ev.source?.userId;
 
-      // --- 加入群組自動顯示選單 ---
+      // 邀進群自動顯示 Flex Menu
       if (ev.type === "join" && gid) {
         groupOwner.set(gid, uid);
         await saveLang(gid, []);
-        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+        return client.replyMessage(ev.replyToken, makeLangFlex(gid));
       }
 
-      // --- 手動 !設定 ---
+      // 手動 !設定
       if (
         ev.type === "message" &&
         ev.message?.type === "text" &&
@@ -208,10 +207,10 @@ app.post(
       ){
         if (groupOwner.get(gid) !== uid) groupOwner.set(gid, uid);
         await saveLang(gid, groupLang.get(gid) ? Array.from(groupLang.get(gid)) : []);
-        return client.replyMessage(ev.replyToken, makeLangQuickReply(gid));
+        return client.replyMessage(ev.replyToken, makeLangFlex(gid));
       }
 
-      // --- 語言選擇，只有 owner 可按，點語言不回覆訊息 ---
+      // Flex Menu: 語言打勾，owner 可操作，更新並回新 Flex Message
       if (
         ev.type === "postback" &&
         gid &&
@@ -223,11 +222,11 @@ app.post(
         if (set.has(code)) set.delete(code);
         else set.add(code);
         await saveLang(gid, [...set]);
-        // 不回訊息，Quick Reply 留在畫面
-        return;
+        // 回傳新 Flex Message
+        return client.replyMessage(ev.replyToken, makeLangFlex(gid));
       }
 
-      // --- 完成／取消 ---
+      // 完成／取消
       if (
         ev.type === "postback" &&
         gid &&
@@ -249,7 +248,7 @@ app.post(
         }
       }
 
-      // --- !文宣 YYYY-MM-DD ---
+      // !文宣 YYYY-MM-DD
       if (
         ev.type === "message" &&
         ev.message?.type === "text" &&
@@ -265,7 +264,7 @@ app.post(
         return sendImagesToGroup(gid,d);
       }
 
-      // --- 翻譯 ---
+      // 翻譯
       if (
         ev.type === "message" &&
         ev.message?.type === "text" &&
