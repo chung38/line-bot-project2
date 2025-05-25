@@ -61,6 +61,7 @@ const saveInviter = async () => {
 };
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
+const isSymbolOrNum = txt => /^[\d\s,.!?，。？！、：；"'“”‘’（）()【】《》\-+*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // --- mention 遮罩與還原 ---
 function extractMentionsFromLineMessage(message) {
@@ -86,7 +87,7 @@ function restoreMentions(text, segments) {
 function splitByLang(line) {
   const tokens = [];
   let rest = line;
-  let mentionPattern = /\[@MENTION_\d+\]/g;
+  let mentionPattern = /$begin:math:display$@MENTION_\\d+$end:math:display$/g;
   let m;
   while ((m = mentionPattern.exec(rest)) !== null) {
     if (m.index > 0) tokens.push({ type: "text", text: rest.substring(0, m.index) });
@@ -310,7 +311,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（這裡 message 處理區塊已改成你的需求）===
+// === 主 Webhook ===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -380,11 +381,10 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 這裡 message 處理區塊照你的需求重新寫 ---
+      // --- 這裡 message 處理區塊（**主翻譯排列重寫**） ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
-
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
         let resultLines = [];
@@ -393,12 +393,11 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
           if (!line.trim()) continue;
 
           // 檢查行首一串 mention
-          let mentionMatch = line.match(/^((\[@MENTION_\d+\]\s*)+)/);
+          let mentionMatch = line.match(/^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/);
           if (mentionMatch) {
             let mentionPart = mentionMatch[1];
-            let mentionArr = mentionPart.match(/\[@MENTION_\d+\]/g) || [];
+            let mentionArr = mentionPart.match(/$begin:math:display$@MENTION_\\d+$end:math:display$/g) || [];
             let restLine = line.slice(mentionPart.length).trim();
-
             if (restLine && isChinese(restLine)) {
               for (let code of set) {
                 for (let mentionKey of mentionArr) {
@@ -407,9 +406,15 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
                 }
               }
             } else if (restLine) {
-              let zh = await translateWithDeepSeek(restLine, "zh-TW");
-              for (let mentionKey of mentionArr) {
-                resultLines.push(`${mentionKey}${zh}`);
+              if (!isSymbolOrNum(restLine)) {
+                let zh = await translateWithDeepSeek(restLine, "zh-TW");
+                for (let mentionKey of mentionArr) {
+                  resultLines.push(`${mentionKey}${zh}`);
+                }
+              } else {
+                for (let mentionKey of mentionArr) {
+                  resultLines.push(`${mentionKey}${restLine}`);
+                }
               }
             } else {
               mentionArr.forEach(mentionKey => resultLines.push(mentionKey));
@@ -430,21 +435,22 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
                 nonZhChunks.push(tk.text);
               }
             }
-
-            // 這裡直接把所有 mention 各分行
             chunkMention.forEach(m => resultLines.push(m));
-
-            // 每個 zh chunk，所有語言都分行
-            for (let code of set) {
-              for (let chunk of zhChunks) {
+            // 每個 zh chunk，所有語言都成對分行
+            for (let chunk of zhChunks) {
+              for (let code of set) {
                 let tr = await translateWithDeepSeek(chunk, code);
                 resultLines.push(tr);
               }
             }
-            // 非中文塊翻回中文
+            // 非中文塊
             for (let chunk of nonZhChunks) {
-              let zh = await translateWithDeepSeek(chunk, "zh-TW");
-              resultLines.push(zh);
+              if (!isSymbolOrNum(chunk)) {
+                let zh = await translateWithDeepSeek(chunk, "zh-TW");
+                resultLines.push(zh);
+              } else {
+                resultLines.push(chunk);
+              }
             }
           }
         }
