@@ -1,4 +1,4 @@
-// Firestore 版 LINE 群組翻譯機器人（優化版，含搜圖功能）
+// Firestore 版 LINE 群組翻譯機器人（優化版，含搜圖功能，第一個點選者為設定者）
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -18,7 +18,6 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 環境變數檢查
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -37,7 +36,6 @@ const groupLang = new Map();      // groupId -> Set<langCode>
 const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 
-// 中文標籤 => 語系 code
 const NAME_TO_CODE = {};
 Object.entries(SUPPORTED_LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
@@ -223,30 +221,23 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
       const uid = event.source?.userId;
       const txt = event.message?.text;
 
-      // 加入群組時，發送語言選單，並紀錄邀請者
+      // 加入群組時，發送語言選單，但不設定設定者
       if (event.type === "join" && gid) {
-        console.log(`[join] Bot 被邀請進群：${gid}, 邀請人: ${uid}`);
-        if (gid && uid && !groupInviter.has(gid)) {
-          groupInviter.set(gid, uid);
-          await saveInviter();
-        }
+        console.log(`[join] Bot 被邀請進群：${gid}`);
         await sendMenu(gid);
         return;
       }
 
-      // !設定 or postback 時，補儲存邀請者
-      if ((event.type === "message" && txt === "!設定") || event.type === "postback") {
-        if (gid && uid && !groupInviter.has(gid)) {
-          groupInviter.set(gid, uid);
-          await saveInviter();
-        }
-      }
-
-      // !設定顯示選單
+      // !設定 指令顯示語言選單
       if (event.type === "message" && txt === "!設定" && gid) {
-        if (groupInviter.get(gid) !== uid) {
+        if (groupInviter.has(gid) && groupInviter.get(gid) !== uid) {
           await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
           return;
+        }
+        // 沒有設定者就設為設定者
+        if (!groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
         }
         await sendMenu(gid);
         return;
@@ -254,8 +245,14 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
 
       // 點語言選單
       if (event.type === "postback" && gid) {
+        // 沒有設定者時，第一個按的人就是設定者
+        if (!groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
+          console.log(`✅ ${uid} 已成為 ${gid} 的設定者`);
+        }
         if (groupInviter.get(gid) !== uid) {
-          console.log("⛔ 非邀請者 postback 被阻擋。");
+          console.log("⛔ 非設定者 postback 被阻擋。", uid, groupInviter.get(gid));
           return;
         }
         const p = new URLSearchParams(event.postback.data);
