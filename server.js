@@ -1,5 +1,3 @@
-// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單＋mention完整保留）
-
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -39,22 +37,6 @@ const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
-// --- mention 處理: @人名 (支援括號、底線、特殊符號等，遇到空格或標點才結束)
-function extractMentions(text) {
-  const mentions = [];
-  let idx = 0;
-  // @後面允許: 中英數、-_/．・()（）[]【】
-  const regex = /@[\w\u4e00-\u9fa5\-_/．・()（）\[\]【】]+/g;
-  const newText = text.replace(regex, match => {
-    mentions.push(match);
-    return `__MENTION_${idx++}__`;
-  });
-  return [newText, mentions];
-}
-function restoreMentions(text, mentions) {
-  return text.replace(/__MENTION_(\d+)__/g, (_, n) => mentions[+n] || "");
-}
-
 // --- Firestore helpers ---
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
@@ -80,6 +62,24 @@ const saveInviter = async () => {
 
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
 
+// --- @mention保留 ---
+function extractMentions(text) {
+  // 支援多行多組mention，符號都吃掉
+  // 例如 @名稱/名稱、@名稱-名稱、@名稱(名稱)等，全部 masking
+  const mentionPattern = /@[\w\-\u4e00-\u9fff\/\(\)（）\u3000\s]+/g;
+  let i = 0;
+  const mentions = [];
+  const masked = text.replace(mentionPattern, m => {
+    mentions.push(m);
+    return `[@MENTION_${i++}]`;
+  });
+  return [masked, mentions];
+}
+function restoreMentions(text, mentions) {
+  return text.replace(/\[@MENTION_(\d+)\]/g, (_, n) => mentions[n] ?? "");
+}
+
+// --- 翻譯核心 ---
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -187,7 +187,7 @@ cron.schedule("0 3 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// --- Flex Message（已美化、有國旗）---
+// --- Flex Message（美化＋國旗）---
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -211,7 +211,7 @@ const sendMenu = async (gid, retry = 0) => {
         data: `action=set_lang&code=${code}` 
       },
       style: "primary",
-      color: "#3b82f6", // 藍色
+      color: "#3b82f6",
       margin: "md",
       height: "sm"
     }));
@@ -368,21 +368,33 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
-        const userName = await getUserName(gid, uid);
 
-        // --- 處理 mention 保留 ---
+        // --- mention 處理 ---
         const [maskedText, mentions] = extractMentions(txt);
 
-        let translated;
-        if (isChinese(maskedText)) {
-          const results = await Promise.all([...set].map(code => translateWithDeepSeek(maskedText, code)));
-          translated = results.join("\n");
-        } else {
-          translated = await translateWithDeepSeek(maskedText, "zh-TW");
+        // 多行逐行判斷語言處理
+        async function translateLine(line, targetSet) {
+          if (!line.trim()) return "";
+          if (isChinese(line)) {
+            const arr = await Promise.all([...targetSet].map(code => translateWithDeepSeek(line, code)));
+            return arr.join("\n");
+          }
+          // 其他語言翻中文
+          else {
+            if (targetSet.has("zh-TW")) return line;
+            return await translateWithDeepSeek(line, "zh-TW");
+          }
         }
-        // --- 還原 mention ---
+
+        const lines = maskedText.split(/\r?\n/);
+        let resultLines = [];
+        for (const line of lines) {
+          resultLines.push(await translateLine(line, set));
+        }
+        let translated = resultLines.join("\n");
         translated = restoreMentions(translated, mentions);
 
+        const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
       }
     } catch (e) {
