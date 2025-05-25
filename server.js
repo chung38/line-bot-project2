@@ -278,7 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（@mention+外語只翻繁中，中文多語，功能完整）===
+// === 主 Webhook（翻譯核心區）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,7 +348,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // === 主翻譯區 ===
+      // === 翻譯核心區 ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
@@ -356,45 +356,67 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         const lines = masked.split(/\r?\n/);
         let results = [];
 
+        // 判斷外語
+        const isForeign = s =>
+          /[ก-๙ả-ỹăắằẵặâấầẫậêếềễệôốồỗộơớờỡợưứừữựa-zA-Z]/i.test(s) && !isChinese(s);
+
         for (const line of lines) {
           if (!line.trim()) continue;
 
-          // 先判斷是否以 mention 開頭
+          // 行首是否有 mention
           let mentionMatch = line.match(/^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/);
           let mentionPart = "";
           let restLine = line;
           if (mentionMatch) {
             mentionPart = mentionMatch[1];
             restLine = line.slice(mentionPart.length).trim();
-          }
 
-          // mention+外語（非中文）→只翻成繁中
-          if (mentionPart && restLine && !isChinese(restLine) && !isSymbolOrNum(restLine)) {
-            let zh = await translateWithDeepSeek(mentionPart + restLine, "zh-TW");
-            results.push(zh);
-            continue;
-          }
+            if (!restLine) {
+              // 僅 @人名，不翻譯
+              results.push(mentionPart.trim());
+              continue;
+            }
 
-          // 單純標點或空白
-          if (!restLine || isSymbolOrNum(restLine)) {
+            if (isForeign(restLine)) {
+              // @人名+外語，只翻繁中
+              let zh = await translateWithDeepSeek(restLine, "zh-TW");
+              results.push(`${mentionPart}${zh}`);
+              continue;
+            }
+
+            if (isChinese(restLine)) {
+              // @人名+中文，翻成已選語言
+              for (let code of set) {
+                let out = await translateWithDeepSeek(restLine, code);
+                results.push(`${mentionPart}${out}`);
+              }
+              continue;
+            }
+
+            // @人名+標點符號，不翻
             results.push(line);
             continue;
           }
 
-          // 純中文→照選單翻多語
-          if (isChinese(restLine)) {
+          // 非 @人名
+          if (!line.trim() || isSymbolOrNum(line)) {
+            results.push(line);
+            continue;
+          }
+          if (isChinese(line)) {
             for (let code of set) {
-              let out = await translateWithDeepSeek(restLine, code);
+              let out = await translateWithDeepSeek(line, code);
               results.push(out);
             }
             continue;
           }
-
-          // 其它外語或混合（非 mention 開頭）→照原本多語翻譯
-          for (let code of set) {
-            let out = await translateWithDeepSeek(line, code);
-            results.push(out);
+          if (isForeign(line)) {
+            let zh = await translateWithDeepSeek(line, "zh-TW");
+            results.push(zh);
+            continue;
           }
+          // 其它情形
+          results.push(line);
         }
 
         let translated = restoreMentions(results.join('\n'), segments);
