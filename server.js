@@ -392,7 +392,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // ----------- 支援 mention 與多語混排的多行翻譯 -------------
+      // ----------- 支援 mention 與多語分行雙向翻譯（主修正點）-------------
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
@@ -409,17 +409,18 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
           }
           if (originalLine.trim() === "") continue;
           if (isAllZh) {
-            // 多語各行
+            // 中文：每選一語言各產生一行，不留原文
             for (let code of set) {
               const translated = await translateWithDeepSeek(originalLine, code);
               resultLines.push(translated);
             }
           } else {
-            // 非中文句翻回中文
+            // 非中文行全部翻回中文
             const zh = await translateWithDeepSeek(originalLine, "zh-TW");
             resultLines.push(zh);
           }
         }
+        // mention還原
         let translated = restoreMentions(resultLines.join("\n"), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
