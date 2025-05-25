@@ -1,4 +1,5 @@
-// Firestore 版 LINE 群組翻譯＋搜圖機器人（@人名支援特殊符號、國旗美化選單、自動管理設定者＋凌晨自動推播前一天文宣圖）
+// Firestore 版 LINE 群組翻譯＋搜圖機器人（自動管理設定者＋國旗美化選單＋mention完整保留）
+
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -38,12 +39,13 @@ const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
-// --- mention 處理: @人名 (含 - / ・ . 等特殊符號)
+// --- mention 處理: @人名 (支援括號、底線、特殊符號等，遇到空格或標點才結束)
 function extractMentions(text) {
   const mentions = [];
   let idx = 0;
-  // 支援中英文、數字、- / ． ・下劃線
-  const newText = text.replace(/@[\w\u4e00-\u9fa5\-/．・]+/g, match => {
+  // @後面允許: 中英數、-_/．・()（）[]【】
+  const regex = /@[\w\u4e00-\u9fa5\-_/．・()（）\[\]【】]+/g;
+  const newText = text.replace(regex, match => {
     mentions.push(match);
     return `__MENTION_${idx++}__`;
   });
@@ -78,7 +80,6 @@ const saveInviter = async () => {
 
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
 
-// --- DeepSeek 翻譯封裝
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -210,7 +211,7 @@ const sendMenu = async (gid, retry = 0) => {
         data: `action=set_lang&code=${code}` 
       },
       style: "primary",
-      color: "#3b82f6",
+      color: "#3b82f6", // 藍色
       margin: "md",
       height: "sm"
     }));
@@ -369,19 +370,19 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         if (!set || set.size === 0) return;
         const userName = await getUserName(gid, uid);
 
-        // 🟡 處理 mention 跳過翻譯
-        const [msgWithPlaceholders, mentions] = extractMentions(txt);
+        // --- 處理 mention 保留 ---
+        const [maskedText, mentions] = extractMentions(txt);
+
         let translated;
-        if (isChinese(msgWithPlaceholders)) {
-          // 多語翻譯
-          const results = await Promise.all([...set].map(code =>
-            translateWithDeepSeek(msgWithPlaceholders, code).then(t => restoreMentions(t, mentions))
-          ));
+        if (isChinese(maskedText)) {
+          const results = await Promise.all([...set].map(code => translateWithDeepSeek(maskedText, code)));
           translated = results.join("\n");
         } else {
-          translated = await translateWithDeepSeek(msgWithPlaceholders, "zh-TW");
-          translated = restoreMentions(translated, mentions);
+          translated = await translateWithDeepSeek(maskedText, "zh-TW");
         }
+        // --- 還原 mention ---
+        translated = restoreMentions(translated, mentions);
+
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
       }
     } catch (e) {
