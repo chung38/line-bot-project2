@@ -1,4 +1,4 @@
-// === Firestore 版 LINE 群組翻譯+文宣搜圖機器人（支援mention、多行混排雙向翻譯、自動管理設定者、凌晨自動推播文宣圖，每種語言分行）===
+// === Firestore 版 LINE 群組翻譯+文宣搜圖機器人（多語分行、mention、不留原文、凌晨推播、Firestore）===
 
 import "dotenv/config";
 import express from "express";
@@ -20,6 +20,7 @@ const db = admin.firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// === 環境變數檢查 ===
 ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`❌ 缺少環境變數 ${v}`);
@@ -64,7 +65,7 @@ const saveInviter = async () => {
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 
-// --- mention 遮罩與還原 ---
+// --- mention 遮罩與還原（不會參與翻譯）---
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -164,6 +165,7 @@ Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v] = k;
 });
 async function fetchImageUrlsByDate(gid, dateStr) {
+  console.log("📥 開始抓文宣...", gid, dateStr);
   const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
   const $ = load(res.data);
   const detailUrls = [];
@@ -192,7 +194,7 @@ async function fetchImageUrlsByDate(gid, dateStr) {
         }
       });
     } catch (e) {
-      // console.error("⚠️ 讀取詳情失敗:", url, e.message);
+      console.error("⚠️ 讀取詳情失敗:", url, e.message);
     }
   }
   return images;
@@ -217,7 +219,7 @@ cron.schedule("0 3 * * *", async () => {
   console.log("⏰ 每日推播完成", new Date().toLocaleString());
 });
 
-// === Flex Message（國旗美化語言選單） ===
+// === Flex Message（美化國旗語言選單） ===
 const rateLimit = {}, INTERVAL = 60000;
 const canSend = gid => {
   const now = Date.now();
@@ -330,11 +332,13 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         groupLang.delete(gid);
         await db.collection("groupInviters").doc(gid).delete();
         await db.collection("groupLanguages").doc(gid).delete();
+        console.log(`[leave] Bot 離開群組：${gid}，資料已清空。`);
         return;
       }
 
       // 加入群組時只發語言選單，不設設定者
       if (event.type === "join" && gid) {
+        console.log(`[join] Bot 被邀請進群：${gid}`);
         await sendMenu(gid);
         return;
       }
@@ -358,8 +362,12 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         if (!groupInviter.has(gid)) {
           groupInviter.set(gid, uid);
           await saveInviter();
+          console.log(`✅ ${uid} 已成為 ${gid} 的設定者`);
         }
-        if (groupInviter.get(gid) !== uid) return;
+        if (groupInviter.get(gid) !== uid) {
+          console.log("⛔ 非設定者 postback 被阻擋。", uid, groupInviter.get(gid));
+          return;
+        }
         const p = new URLSearchParams(event.postback.data);
         if (p.get("action") === "set_lang") {
           const code = p.get("code");
@@ -384,36 +392,34 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // ----------- 支援 mention 與多語混排多行「每語分開顯示」 -------------
+      // ----------- 支援 mention 與多語混排的多行翻譯 -------------
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
-        // mention 遮罩
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
         let resultLines = [];
         for (const line of lines) {
           let tokens = splitByLang(line);
-          // 這行的所有翻譯都要分行輸出
-          let outputForThisLine = [];
+          let originalLine = "";
+          let isAllZh = true;
           for (let tk of tokens) {
-            if (tk.type === "mention") {
-              outputForThisLine.push(tk.text);
-            } else if (tk.type === "zh") {
-              // 中文翻成所有語言，每語分行
-              const translations = await Promise.all([...set].map(code => translateWithDeepSeek(tk.text, code)));
-              translations.forEach(tr => outputForThisLine.push(tr));
-            } else if (tk.type === "other" && tk.text.trim()) {
-              // 非中文翻回中文
-              const zh = await translateWithDeepSeek(tk.text, "zh-TW");
-              outputForThisLine.push(zh);
-            } else {
-              outputForThisLine.push(tk.text);
-            }
+            if (tk.type === "mention" || tk.type === "zh" || tk.type === "other") originalLine += tk.text;
+            if (tk.type === "other" && tk.text.trim()) isAllZh = false;
           }
-          resultLines.push(outputForThisLine.join("\n"));
+          if (originalLine.trim() === "") continue;
+          if (isAllZh) {
+            // 多語各行
+            for (let code of set) {
+              const translated = await translateWithDeepSeek(originalLine, code);
+              resultLines.push(translated);
+            }
+          } else {
+            // 非中文句翻回中文
+            const zh = await translateWithDeepSeek(originalLine, "zh-TW");
+            resultLines.push(zh);
+          }
         }
-        // mention還原
         let translated = restoreMentions(resultLines.join("\n"), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, { type: "text", text: `【${userName}】說：\n${translated}` });
@@ -427,7 +433,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
 app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 setInterval(() => {
-  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode)).on("error", e => {});
+  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode)).on("error", e => console.error("PING 失敗", e.message));
 }, 10 * 60 * 1000);
 
 app.listen(PORT, async () => {
