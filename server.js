@@ -278,25 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 分段偵測、逐段聚合翻譯、mention規則 ===
-function splitParagraphsPreserveNewline(text) {
-  return text.split(/\r?\n/);
-}
-
-function detectMention(line) {
-  // LINE mention遮罩（正規），或純@人名
-  const mentionRegex = /^(($begin:math:display$@MENTION_\\d+$end:math:display$|\@[^\s@]+(?:\s*$begin:math:text$[^)]+$end:math:text$)?)\s*)+/;
-  const match = line.match(mentionRegex);
-  if (match) {
-    return {
-      mention: match[0],
-      rest: line.slice(match[0].length)
-    };
-  }
-  return { mention: "", rest: line };
-}
-
-// === 主 Webhook ===
+// === 主 Webhook（mention/多語/分段偵測與聚合）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -366,85 +348,82 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 聚合翻譯區塊（含 mention+外語/中文/多語夾雜/分段）---
+      // --- 主訊息翻譯（mention+外語只翻繁中、mention+中文多語、其他分語言聚合，符號與格式保留）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const paragraphs = splitParagraphsPreserveNewline(masked);
-        const langList = [...set];
-        let outputByLang = langList.map(() => []);
+        const lines = masked.split(/\r?\n/);
 
-        // 依每一段落單獨處理
-        for (const para of paragraphs) {
-          if (!para.trim()) {
-            outputByLang.forEach(lines => lines.push(""));
-            continue;
+        // 建立與語言數等長的陣列，分別聚合每一語言（同一段只放一語）
+        let outputByLang = [...Array([...set].length)].map(() => []);
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          // 判斷 mention (LINE mention 或 @人名)
+          let mentionPart = "", rest = line;
+          // LINE mention mask
+          const mentionRegex = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/;
+          let mentionMatch = line.match(mentionRegex);
+          if (mentionMatch) {
+            mentionPart = mentionMatch[1];
+            rest = line.slice(mentionPart.length).trimStart();
+          } else {
+            // 純文字 @人名 (允許 @galant(巍瀚) 或 @galant )
+            const atNamePattern = /^(@[^\s]+(?:$begin:math:text$[^)]+$end:math:text$)?\s*)/;
+            const atNameMatch = line.match(atNamePattern);
+            if (atNameMatch) {
+              mentionPart = atNameMatch[1];
+              rest = line.slice(mentionPart.length).trimStart();
+            }
           }
-          const { mention, rest } = detectMention(para);
 
+          // 只有 mention 沒內容直接保留 mention 本身
           if (!rest) {
-            outputByLang.forEach(lines => lines.push(mention.trim()));
+            outputByLang.forEach(arr => arr.push(mentionPart));
             continue;
           }
+          // 標點、數字符號保留原文
           if (isSymbolOrNum(rest)) {
-            outputByLang.forEach(lines => lines.push(mention + rest));
+            outputByLang.forEach(arr => arr.push(mentionPart + rest));
             continue;
           }
 
-          // mention + 外語，只翻繁體中文
-          if (mention && !isChinese(rest)) {
+          // @mention + 外語：只翻繁中
+          if (mentionPart && !isChinese(rest)) {
             const zh = await translateWithDeepSeek(rest, "zh-TW");
-            outputByLang.forEach((lines, idx) => {
-              if (langList[idx] === "zh-TW")
-                lines.push(mention + zh);
-              else
-                lines.push(""); // 其他語言留空行
+            outputByLang.forEach(arr => arr.push(`${mentionPart}${zh}`));
+            continue;
+          }
+
+          // @mention + 中文：分別翻多語（不含繁中）
+          if (mentionPart && isChinese(rest)) {
+            [...set].forEach(async (code, idx) => {
+              if (code === "zh-TW") return;
+              const tr = await translateWithDeepSeek(rest, code);
+              outputByLang[idx].push(`${mentionPart}${tr}`);
             });
             continue;
           }
 
-          // mention + 中文，依語言選單多語翻譯，每段都帶mention
-          if (mention && isChinese(rest)) {
-            langList.forEach(async (code, idx) => {
-              if (code === "zh-TW") {
-                outputByLang[idx].push(""); // 繁中留空行
-              } else {
-                const tr = await translateWithDeepSeek(rest, code);
-                outputByLang[idx].push(mention + tr);
-              }
+          // 沒 mention
+          if (isChinese(rest)) {
+            [...set].forEach(async (code, idx) => {
+              if (code === "zh-TW") return;
+              const tr = await translateWithDeepSeek(rest, code);
+              outputByLang[idx].push(tr);
             });
             continue;
-          }
-
-          // 無 mention，純外語
-          if (!mention && !isChinese(rest)) {
+          } else {
+            // 非中文：翻成繁中
             const zh = await translateWithDeepSeek(rest, "zh-TW");
-            langList.forEach((code, idx) => {
-              if (code === "zh-TW")
-                outputByLang[idx].push(zh);
-              else
-                outputByLang[idx].push("");
-            });
-            continue;
-          }
-
-          // 無 mention，純中文，群組選擇語言多語聚合
-          if (!mention && isChinese(rest)) {
-            langList.forEach(async (code, idx) => {
-              if (code === "zh-TW") {
-                outputByLang[idx].push(""); // 繁中留空
-              } else {
-                const tr = await translateWithDeepSeek(rest, code);
-                outputByLang[idx].push(tr);
-              }
-            });
-            continue;
+            outputByLang.forEach(arr => arr.push(zh));
           }
         }
 
-        // 格式聚合
-        let merged = outputByLang.map(lines => lines.filter(x=>x).join("\n")).filter(x=>x).join("\n\n");
+        // 聚合格式
+        let merged = outputByLang.map(lines => lines.filter(x => x).join("\n")).filter(x => x).join("\n\n");
         merged = restoreMentions(merged, segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
