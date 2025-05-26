@@ -172,13 +172,13 @@ async function sendImagesToGroup(gid, dateStr) {
   }
 }
 
-// === 每日凌晨 3 點自動推播前一天文宣圖 ===
-cron.schedule("0 3 * * *", async () => {
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+// === 每天下午四點（16:00）自動推播當天文宣圖 ===
+cron.schedule("0 16 * * *", async () => {
+  const today = new Date().toISOString().slice(0, 10);
   for (const [gid] of groupLang.entries()) {
-    await sendImagesToGroup(gid, yesterday);
+    await sendImagesToGroup(gid, today);
   }
-  console.log("⏰ 每日推播完成", new Date().toLocaleString());
+  console.log("⏰ 每天下午四點推播完成", new Date().toLocaleString());
 });
 
 // === Flex Message（國旗美化語言選單） ===
