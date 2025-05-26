@@ -32,8 +32,8 @@ const lineConfig = {
 const client = new Client(lineConfig);
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-const groupLang = new Map();
-const groupInviter = new Map();
+const groupLang = new Map();      // groupId -> Set<langCode>
+const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
@@ -60,6 +60,9 @@ const saveInviter = async () => {
   await batch.commit();
 };
 
+const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
+const isSymbolOrNum = txt => /^[\d\s,.!?，。？！、：；"'“”‘’（）()【】《》\-+*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+
 // --- mention 遮罩與還原 ---
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
@@ -80,12 +83,7 @@ function restoreMentions(text, segments) {
   return restored;
 }
 
-// === 判斷函數 ===
-const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
-const isSymbolOrNum = txt => /^[\d\s,.!?，。？！、：；"'“”‘’（）()【】《》\-+*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
-
-// === DeepSeek 單句翻譯 ===
-const delay = ms => new Promise(r => setTimeout(r, ms));
+// === DeepSeek API 雙向翻譯 ===
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -107,13 +105,15 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
     return out;
   } catch (e) {
     if (e.response?.status === 429 && retry < 3) {
-      await delay((retry + 1) * 3000);
+      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return translateWithDeepSeek(text, targetLang, retry + 1);
     }
     console.error("翻譯失敗:", e.message);
     return "（翻譯暫時不可用）";
   }
 };
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const getUserName = async (gid, uid) => {
   try {
@@ -201,7 +201,7 @@ const sendMenu = async (gid, retry = 0) => {
       type: "button",
       action: { 
         type: "postback", 
-        label: `${LANG_ICONS[code]} ${label}`, 
+        label: `${LANG_ICONS[code] || ""} ${label}`, 
         data: `action=set_lang&code=${code}` 
       },
       style: "primary",
@@ -280,7 +280,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook ===
+// === 主 Webhook（分段偵測+逐段送翻譯+聚合/mention判斷/多語/搜圖）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -375,14 +375,15 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
             continue;
           }
 
-          // mention + 外語 → 只翻繁中
+          // 「mention+外語」直接只翻繁中
           if (mentionPart && !isChinese(rest)) {
             const zh = await translateWithDeepSeek(rest, "zh-TW");
             outputLines.push(`${mentionPart}${zh}`);
             await delay(400);
             continue;
           }
-          // mention + 中文 → 依語言選單多語聚合
+
+          // 「mention+中文」→群組語言
           if (mentionPart && isChinese(rest)) {
             for (let code of set) {
               if (code === "zh-TW") continue;
@@ -392,6 +393,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
             }
             continue;
           }
+
           // 無 mention，外語→翻繁中
           if (!mentionPart && !isChinese(rest)) {
             const zh = await translateWithDeepSeek(rest, "zh-TW");
@@ -399,6 +401,7 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
             await delay(400);
             continue;
           }
+
           // 無 mention，中文→依選單多語
           if (!mentionPart && isChinese(rest)) {
             for (let code of set) {
@@ -424,14 +427,12 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
   }));
 });
 
-// --- 健康檢查/ping ---
 app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 setInterval(() => {
   https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode)).on("error", e => {});
 }, 10 * 60 * 1000);
 
-// --- 服務啟動 ---
 app.listen(PORT, async () => {
   try {
     await loadLang();
