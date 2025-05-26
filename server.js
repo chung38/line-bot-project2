@@ -83,9 +83,6 @@ function restoreMentions(text, segments) {
   return restored;
 }
 
-// 輔助：簡單延遲，避免 API 過快被限流
-function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
-
 // === DeepSeek API 雙向翻譯 ===
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
@@ -108,7 +105,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
     return out;
   } catch (e) {
     if (e.response?.status === 429 && retry < 3) {
-      await delay((retry + 1) * 4000);
+      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return translateWithDeepSeek(text, targetLang, retry + 1);
     }
     console.error("翻譯失敗:", e.message);
@@ -274,14 +271,14 @@ const sendMenu = async (gid, retry = 0) => {
     console.log(`✅ FlexMessage 已送出給 ${gid}`);
   } catch (e) {
     if (e.statusCode === 429 && retry < 3) {
-      await delay((retry + 1) * 4000);
+      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return sendMenu(gid, retry + 1);
     }
     console.error("選單發送失敗:", e.message);
   }
 };
 
-// === 主 Webhook（分段分行聚合，mention/符號保留，所有功能齊全）===
+// === 分段偵測 + 聚合格式主 Webhook ===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -351,80 +348,75 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 主翻譯：分段、分行送翻譯、格式聚合，保留所有功能 ---
+      // --- 聚合格式翻譯主區塊 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        // 分段：空行為段落
-        const paragraphs = masked.split(/\n{2,}/g);
-        let outputBlocks = [];
-
-        for (const para of paragraphs) {
-          const lines = para.split(/\r?\n/);
-          let blockLines = [];
-          for (const line of lines) {
+        // 以「連續空行/分段」切分再逐段處理
+        const paragraphSplit = masked.split(/\n{2,}/).map(p => p.split('\n'));
+        let outputLines = [];
+        for (let paraLines of paragraphSplit) {
+          let paraResults = [];
+          for (let line of paraLines) {
             if (!line.trim()) {
-              blockLines.push(""); // 保留空行
+              paraResults.push("");
               continue;
             }
+            // 檢查 mention
             let mentionPart = "", rest = line;
-            // 支援多 mention 格式
-            const mentionRegex = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$\s*)|(?:@\S+(?:$begin:math:text$[^$end:math:text$]*\))?\s*)+)/;
-            const match = line.match(mentionRegex);
-            if (match) {
-              mentionPart = match[0];
-              rest = line.slice(mentionPart.length).trim();
+            const mentionRegex = /^(($begin:math:display$@MENTION_\\d+$end:math:display$|\@[^\s]+(?:（[^）]*）|$begin:math:text$[^)]+$end:math:text$)?)\s*)/;
+            const mentionMatch = line.match(mentionRegex);
+            if (mentionMatch) {
+              mentionPart = mentionMatch[1];
+              rest = line.slice(mentionPart.length).trimStart();
             }
-            // 只有 mention，不翻譯
+
+            // 只有 mention 不翻
             if (!rest) {
-              blockLines.push(mentionPart.trim());
+              paraResults.push(mentionPart.trim());
               continue;
             }
-            // 標點、數字符號保留原文
             if (isSymbolOrNum(rest)) {
-              blockLines.push(mentionPart + rest);
+              paraResults.push(mentionPart + rest);
               continue;
             }
-            // mention+外語，只翻繁中
+            // mention + 外語：只翻繁中
             if (mentionPart && !isChinese(rest)) {
               const zh = await translateWithDeepSeek(rest, "zh-TW");
-              blockLines.push(`${mentionPart}${zh}`);
-              await delay(400);
+              paraResults.push(`${mentionPart}${zh}`);
               continue;
             }
-            // mention+中文，依語言選單多語翻
+            // mention + 中文：依語言選單（不翻繁中）
             if (mentionPart && isChinese(rest)) {
               for (let code of set) {
                 if (code === "zh-TW") continue;
                 const tr = await translateWithDeepSeek(rest, code);
-                blockLines.push(`${mentionPart}${tr}`);
-                await delay(400);
+                paraResults.push(`${mentionPart}${tr}`);
               }
               continue;
             }
-            // 無 mention，外語
-            if (!mentionPart && !isChinese(rest)) {
-              const zh = await translateWithDeepSeek(rest, "zh-TW");
-              blockLines.push(zh);
-              await delay(400);
-              continue;
-            }
-            // 無 mention，中文
+            // 沒 mention
             if (!mentionPart && isChinese(rest)) {
               for (let code of set) {
                 if (code === "zh-TW") continue;
                 const tr = await translateWithDeepSeek(rest, code);
-                blockLines.push(tr);
-                await delay(400);
+                paraResults.push(tr);
               }
               continue;
             }
+            // 沒 mention + 外語，只翻繁中
+            if (!mentionPart && !isChinese(rest)) {
+              const zh = await translateWithDeepSeek(rest, "zh-TW");
+              paraResults.push(zh);
+              continue;
+            }
+            // 其它情形（保險用）
+            paraResults.push(line);
           }
-          outputBlocks.push(blockLines.join('\n'));
+          outputLines.push(paraResults.join('\n'));
         }
-
-        let translated = restoreMentions(outputBlocks.join('\n\n'), segments);
+        let translated = restoreMentions(outputLines.join('\n\n'), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
           type: "text",
