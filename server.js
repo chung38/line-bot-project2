@@ -197,10 +197,10 @@ const sendMenu = async (gid, retry = 0) => {
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
       type: "button",
-      action: {
-        type: "postback",
-        label: `${LANG_ICONS[code] || ""} ${label}`,
-        data: `action=set_lang&code=${code}`
+      action: { 
+        type: "postback", 
+        label: `${LANG_ICONS[code] || ""} ${label}`, 
+        data: `action=set_lang&code=${code}` 
       },
       style: "primary",
       color: "#3b82f6",
@@ -278,7 +278,25 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（精準 mention/分段偵測/聚合翻譯）===
+// === 分段偵測、逐段聚合翻譯、mention規則 ===
+function splitParagraphsPreserveNewline(text) {
+  return text.split(/\r?\n/);
+}
+
+function detectMention(line) {
+  // LINE mention遮罩（正規），或純@人名
+  const mentionRegex = /^(($begin:math:display$@MENTION_\\d+$end:math:display$|\@[^\s@]+(?:\s*$begin:math:text$[^)]+$end:math:text$)?)\s*)+/;
+  const match = line.match(mentionRegex);
+  if (match) {
+    return {
+      mention: match[0],
+      rest: line.slice(match[0].length)
+    };
+  }
+  return { mention: "", rest: line };
+}
+
+// === 主 Webhook ===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,97 +366,90 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 分段偵測 + mention分割 + 聚合格式翻譯 ---
+      // --- 聚合翻譯區塊（含 mention+外語/中文/多語夾雜/分段）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
+        const paragraphs = splitParagraphsPreserveNewline(masked);
+        const langList = [...set];
+        let outputByLang = langList.map(() => []);
 
-        // 分段：連續空行分段，換行當作一個分句，分段聚合
-        let resultBlocks = [];
-        let lines = masked.split(/\r?\n/);
-        let block = [];
-        for (let line of lines) {
-          if (line.trim() === "") {
-            if (block.length) resultBlocks.push(block), block = [];
-            resultBlocks.push([""]); // 空行保留
-          } else {
-            block.push(line);
+        // 依每一段落單獨處理
+        for (const para of paragraphs) {
+          if (!para.trim()) {
+            outputByLang.forEach(lines => lines.push(""));
+            continue;
           }
-        }
-        if (block.length) resultBlocks.push(block);
+          const { mention, rest } = detectMention(para);
 
-        let outputLines = [];
-        for (let para of resultBlocks) {
-          // 空行直接加
-          if (para.length === 1 && para[0].trim() === "") {
-            outputLines.push("");
+          if (!rest) {
+            outputByLang.forEach(lines => lines.push(mention.trim()));
+            continue;
+          }
+          if (isSymbolOrNum(rest)) {
+            outputByLang.forEach(lines => lines.push(mention + rest));
             continue;
           }
 
-          // 檢查每段是否全為 @mention+外語/中文/符號
-          for (let line of para) {
-            if (!line.trim()) {
-              outputLines.push("");
-              continue;
-            }
-
-            // 支援多個 LINE mention 或純文字 @人名
-            let mentionPart = "", rest = line;
-            const mentionRegex = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$|\s|@[^ ]+(?:$begin:math:text$[^$end:math:text$]*\))?)+)\s*/;
-            const mentionMatch = line.match(mentionRegex);
-            if (mentionMatch) {
-              mentionPart = mentionMatch[1];
-              rest = line.slice(mentionPart.length).trimStart();
-            }
-
-            // 標點、數字符號直接保留
-            if (!rest || isSymbolOrNum(rest)) {
-              outputLines.push(mentionPart + rest);
-              continue;
-            }
-
-            // mention + 外語 or mention + 中文
-            if (mentionPart) {
-              if (!isChinese(rest)) {
-                // mention + 外語，只翻成繁體中文
-                const zh = await translateWithDeepSeek(rest, "zh-TW");
-                outputLines.push(mentionPart + zh);
-              } else {
-                // mention + 中文，依語言選單多語聚合
-                let zhGroup = [];
-                for (let code of set) {
-                  if (code === "zh-TW") continue;
-                  const tr = await translateWithDeepSeek(rest, code);
-                  zhGroup.push(mentionPart + tr);
-                }
-                outputLines = outputLines.concat(zhGroup);
-              }
-            } else {
-              // 沒 mention
-              if (isChinese(rest)) {
-                for (let code of set) {
-                  if (code === "zh-TW") continue;
-                  const tr = await translateWithDeepSeek(rest, code);
-                  outputLines.push(tr);
-                }
-              } else {
-                const zh = await translateWithDeepSeek(rest, "zh-TW");
-                outputLines.push(zh);
-              }
-            }
+          // mention + 外語，只翻繁體中文
+          if (mention && !isChinese(rest)) {
+            const zh = await translateWithDeepSeek(rest, "zh-TW");
+            outputByLang.forEach((lines, idx) => {
+              if (langList[idx] === "zh-TW")
+                lines.push(mention + zh);
+              else
+                lines.push(""); // 其他語言留空行
+            });
+            continue;
           }
-          // 段落之間自動換行
-          outputLines.push("");
-        }
-        // 去除最後多餘空行
-        if (outputLines[outputLines.length - 1] === "") outputLines.pop();
 
-        let translated = restoreMentions(outputLines.join('\n'), segments);
+          // mention + 中文，依語言選單多語翻譯，每段都帶mention
+          if (mention && isChinese(rest)) {
+            langList.forEach(async (code, idx) => {
+              if (code === "zh-TW") {
+                outputByLang[idx].push(""); // 繁中留空行
+              } else {
+                const tr = await translateWithDeepSeek(rest, code);
+                outputByLang[idx].push(mention + tr);
+              }
+            });
+            continue;
+          }
+
+          // 無 mention，純外語
+          if (!mention && !isChinese(rest)) {
+            const zh = await translateWithDeepSeek(rest, "zh-TW");
+            langList.forEach((code, idx) => {
+              if (code === "zh-TW")
+                outputByLang[idx].push(zh);
+              else
+                outputByLang[idx].push("");
+            });
+            continue;
+          }
+
+          // 無 mention，純中文，群組選擇語言多語聚合
+          if (!mention && isChinese(rest)) {
+            langList.forEach(async (code, idx) => {
+              if (code === "zh-TW") {
+                outputByLang[idx].push(""); // 繁中留空
+              } else {
+                const tr = await translateWithDeepSeek(rest, code);
+                outputByLang[idx].push(tr);
+              }
+            });
+            continue;
+          }
+        }
+
+        // 格式聚合
+        let merged = outputByLang.map(lines => lines.filter(x=>x).join("\n")).filter(x=>x).join("\n\n");
+        merged = restoreMentions(merged, segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
           type: "text",
-          text: `【${userName}】說：\n${translated}`
+          text: `【${userName}】說：\n${merged}`
         });
       }
     } catch (e) {
