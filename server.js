@@ -32,8 +32,8 @@ const lineConfig = {
 const client = new Client(lineConfig);
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
-const groupLang = new Map();
-const groupInviter = new Map();
+const groupLang = new Map();      // groupId -> Set<langCode>
+const groupInviter = new Map();   // groupId -> userId
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
@@ -197,10 +197,10 @@ const sendMenu = async (gid, retry = 0) => {
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
       type: "button",
-      action: { 
-        type: "postback", 
-        label: `${LANG_ICONS[code] || ""} ${label}`, 
-        data: `action=set_lang&code=${code}` 
+      action: {
+        type: "postback",
+        label: `${LANG_ICONS[code] || ""} ${label}`,
+        data: `action=set_lang&code=${code}`
       },
       style: "primary",
       color: "#3b82f6",
@@ -278,7 +278,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主要 Webhook ===
+// === 主 Webhook（精準 mention/分段偵測/聚合翻譯）===
 app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(lineConfig), express.json(), async (req, res) => {
   res.sendStatus(200);
 
@@ -348,54 +348,93 @@ app.post("/webhook", bodyParser.raw({ type: "application/json" }), middleware(li
         return;
       }
 
-      // --- 主翻譯：分段偵測 + 逐段送翻譯 + 聚合還原 ---
+      // --- 分段偵測 + mention分割 + 聚合格式翻譯 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
-
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const lines = masked.split(/\r?\n/);
-        let resultLines = [];
 
-        for (const line of lines) {
-          if (!line.trim()) {
-            resultLines.push("");
-            continue;
-          }
-
-          // 偵測 mention
-          let mentionPart = "", rest = line;
-          const mentionRegex = /^(($begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)/;
-          const mentionMatch = line.match(mentionRegex);
-          if (mentionMatch) {
-            mentionPart = mentionMatch[1];
-            rest = line.slice(mentionPart.length).trimStart();
-          }
-
-          // 標點、數字符號直接保留
-          if (!rest || isSymbolOrNum(rest)) {
-            resultLines.push(mentionPart + rest);
-            continue;
-          }
-
-          // 外語（非中文）全翻繁中，中文依選單群組聚合翻譯
-          if (!isChinese(rest)) {
-            // 外語只翻一段繁中
-            const zh = await translateWithDeepSeek(rest, "zh-TW");
-            resultLines.push(mentionPart + zh);
+        // 分段：連續空行分段，換行當作一個分句，分段聚合
+        let resultBlocks = [];
+        let lines = masked.split(/\r?\n/);
+        let block = [];
+        for (let line of lines) {
+          if (line.trim() === "") {
+            if (block.length) resultBlocks.push(block), block = [];
+            resultBlocks.push([""]); // 空行保留
           } else {
-            // 中文依照群組語言多語聚合
-            let zhGroup = [];
-            for (let code of set) {
-              if (code === "zh-TW") continue;
-              const tr = await translateWithDeepSeek(rest, code);
-              zhGroup.push(mentionPart + tr);
-            }
-            resultLines = resultLines.concat(zhGroup);
+            block.push(line);
           }
         }
+        if (block.length) resultBlocks.push(block);
 
-        let translated = restoreMentions(resultLines.join('\n'), segments);
+        let outputLines = [];
+        for (let para of resultBlocks) {
+          // 空行直接加
+          if (para.length === 1 && para[0].trim() === "") {
+            outputLines.push("");
+            continue;
+          }
+
+          // 檢查每段是否全為 @mention+外語/中文/符號
+          for (let line of para) {
+            if (!line.trim()) {
+              outputLines.push("");
+              continue;
+            }
+
+            // 支援多個 LINE mention 或純文字 @人名
+            let mentionPart = "", rest = line;
+            const mentionRegex = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$|\s|@[^ ]+(?:$begin:math:text$[^$end:math:text$]*\))?)+)\s*/;
+            const mentionMatch = line.match(mentionRegex);
+            if (mentionMatch) {
+              mentionPart = mentionMatch[1];
+              rest = line.slice(mentionPart.length).trimStart();
+            }
+
+            // 標點、數字符號直接保留
+            if (!rest || isSymbolOrNum(rest)) {
+              outputLines.push(mentionPart + rest);
+              continue;
+            }
+
+            // mention + 外語 or mention + 中文
+            if (mentionPart) {
+              if (!isChinese(rest)) {
+                // mention + 外語，只翻成繁體中文
+                const zh = await translateWithDeepSeek(rest, "zh-TW");
+                outputLines.push(mentionPart + zh);
+              } else {
+                // mention + 中文，依語言選單多語聚合
+                let zhGroup = [];
+                for (let code of set) {
+                  if (code === "zh-TW") continue;
+                  const tr = await translateWithDeepSeek(rest, code);
+                  zhGroup.push(mentionPart + tr);
+                }
+                outputLines = outputLines.concat(zhGroup);
+              }
+            } else {
+              // 沒 mention
+              if (isChinese(rest)) {
+                for (let code of set) {
+                  if (code === "zh-TW") continue;
+                  const tr = await translateWithDeepSeek(rest, code);
+                  outputLines.push(tr);
+                }
+              } else {
+                const zh = await translateWithDeepSeek(rest, "zh-TW");
+                outputLines.push(zh);
+              }
+            }
+          }
+          // 段落之間自動換行
+          outputLines.push("");
+        }
+        // 去除最後多餘空行
+        if (outputLines[outputLines.length - 1] === "") outputLines.pop();
+
+        let translated = restoreMentions(outputLines.join('\n'), segments);
         const userName = await getUserName(gid, uid);
         await client.replyMessage(event.replyToken, {
           type: "text",
