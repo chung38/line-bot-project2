@@ -189,24 +189,38 @@ async function sendImagesToGroup(gid, dateStr) {
         originalContentUrl: url,
         previewImageUrl: url
       });
+      console.log(`✅ 推播圖片成功：${url} 到群組 ${gid}`);
     } catch (e) {
       console.error(`推播圖片失敗: ${url}`, e.message);
     }
   }
 }
 
-// === 每天下午四點（16:00）自動推播當天文宣圖 ===
-cron.schedule("0 16 * * *", async () => {
-  const today = new Date().toISOString().slice(0, 10);
-  console.log(`⏰ 開始推播 ${today} 文宣圖`);
-  for (const [gid] of groupLang.entries()) {
-    try {
-      await sendImagesToGroup(gid, today);
-    } catch (e) {
-      console.error(`推播群組 ${gid} 文宣圖失敗`, e.message);
+// === 每天下午四點（16:00）自動推播當天文宣圖，台灣時區，加入詳細 log ===
+cron.schedule("0 17 * * *", async () => {
+  try {
+    const today = new Date().toLocaleDateString("zh-TW", {
+      timeZone: "Asia/Taipei",
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).replace(/\//g, "-");
+    console.log(`⏰ 定時任務觸發，日期: ${today}，時間: ${new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}`);
+
+    for (const [gid] of groupLang.entries()) {
+      try {
+        await sendImagesToGroup(gid, today);
+        console.log(`✅ 群組 ${gid} 推播成功`);
+      } catch (e) {
+        console.error(`❌ 群組 ${gid} 推播失敗`, e);
+      }
     }
+    console.log(`⏰ 每天下午五點推播完成，時間: ${new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}`);
+  } catch (e) {
+    console.error("定時任務整體錯誤:", e);
   }
-  console.log("⏰ 每天下午四點推播完成", new Date().toLocaleString());
+}, {
+  timezone: "Asia/Taipei"
 });
 
 // === Flex Message（國旗美化語言選單） ===
