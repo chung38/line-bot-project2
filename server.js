@@ -1,22 +1,6 @@
 // --------------------------
-// 模块一：环境配置与初始化 - config.js
+// config.js - 全域配置
 // --------------------------
-import 'dotenv/config';
-import admin from 'firebase-admin';
-
-// Firebase 初始化
-export const initFirebase = () => {
-  try {
-    const config = JSON.parse(process.env.FIREBASE_CONFIG);
-    config.private_key = config.private_key.replace(/\\n/g, '\n');
-    return admin.initializeApp({ credential: admin.credential.cert(config) });
-  } catch (e) {
-    console.error('❌ Firebase 初始化失败:', e);
-    process.exit(1);
-  }
-};
-
-// 多语言配置
 export const LANGUAGE_CONFIG = {
   'en': { name: '英文', flag: '🇬🇧', timeFormat: 'h:mm a' },
   'th': { name: '泰文', flag: '🇹🇭', timeFormat: 'HH:mm น.' },
@@ -25,19 +9,54 @@ export const LANGUAGE_CONFIG = {
   'zh-TW': { name: '繁體中文', flag: '', timeFormat: 'ahh:mm' }
 };
 
+export const FIREBASE_CONFIG = JSON.parse(process.env.FIREBASE_CONFIG);
+FIREBASE_CONFIG.private_key = FIREBASE_CONFIG.private_key.replace(/\\n/g, '\n');
+
+export const LINE_CONFIG = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET
+};
+
 // --------------------------
-// 模块二：LINE 服务 - line-service.js
+// firebase-service.js - 資料庫服務
+// --------------------------
+import admin from 'firebase-admin';
+import { FIREBASE_CONFIG } from './config.js';
+
+export class FirebaseService {
+  static init() {
+    try {
+      if (!admin.apps.length) {
+        admin.initializeApp({ credential: admin.credential.cert(FIREBASE_CONFIG) });
+      }
+      return admin.firestore();
+    } catch (e) {
+      throw new Error(`Firebase初始化失敗: ${e.message}`);
+    }
+  }
+
+  static async loadGroupSettings(db) {
+    const snapshot = await db.collection('groupSettings').get();
+    const settings = new Map();
+    snapshot.forEach(doc => {
+      settings.set(doc.id, {
+        langs: new Set(doc.data().langs || []),
+        inviter: doc.data().inviter
+      });
+    });
+    return settings;
+  }
+}
+
+// --------------------------
+// line-service.js - LINE互動服務
 // --------------------------
 import { Client } from '@line/bot-sdk';
-import { LANGUAGE_CONFIG } from './config.js';
+import { LANGUAGE_CONFIG, LINE_CONFIG } from './config.js';
 
 export class LineService {
-  static client = new Client({
-    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-    channelSecret: process.env.LINE_CHANNEL_SECRET
-  });
+  static client = new Client(LINE_CONFIG);
 
-  // 强化版语言选单
   static async sendLanguageMenu(groupId) {
     try {
       const buttons = Object.entries(LANGUAGE_CONFIG)
@@ -49,54 +68,34 @@ export class LineService {
             label: `${flag} ${name}`,
             data: `action=set_lang&code=${code}`
           },
-          style: "primary",
-          color: "#3b82f6"
+          style: "primary"
         }));
-      
-      buttons.push({
-        type: "button",
-        action: { type: "postback", label: "❌ 取消选择", data: "action=set_lang&code=cancel" },
-        style: "secondary",
-        color: "#ef4444"
-      });
 
       await this.client.pushMessage(groupId, {
         type: "flex",
-        altText: "语言设定选单",
+        altText: "語言設定選單",
         contents: {
           type: "bubble",
           body: {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "text", text: "🌏 自动翻译语言设定", weight: "bold", size: "xl" },
+              { type: "text", text: "🌐 選擇翻譯語言", weight: "bold", size: "xl" },
               { type: "separator", margin: "md" },
               { type: "box", layout: "vertical", spacing: "sm", contents: buttons }
             ]
           }
         }
       });
-      console.log(`✅ 选单已发送至群组 ${groupId}`);
     } catch (e) {
-      console.error(`❌ 选单发送失败 [${groupId}]:`, e.message);
+      console.error(`[選單發送錯誤] ${groupId}:`, e.message);
       throw e;
-    }
-  }
-
-  // 权限验证
-  static async validateGroupPermission(groupId) {
-    try {
-      const summary = await this.client.getGroupSummary(groupId);
-      return summary.permissions.includes('BOT');
-    } catch (e) {
-      console.error(`权限检查失败 [${groupId}]:`, e.message);
-      return false;
     }
   }
 }
 
 // --------------------------
-// 模块三：翻译服务 - translation-service.js
+// translation-service.js - 翻譯核心
 // --------------------------
 import axios from 'axios';
 import { LRUCache } from 'lru-cache';
@@ -110,11 +109,10 @@ export class TranslationService {
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
 
     try {
-      const response = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-        model: "deepseek-chat",
+      const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
         messages: [{
           role: "system",
-          content: `你是一位专业翻译，请将以下内容翻译成${LANGUAGE_CONFIG[targetLang].name}（使用台湾常用语）`
+          content: `將以下內容翻譯成${LANGUAGE_CONFIG[targetLang].name}，保留專業術語`
         }, {
           role: "user",
           content: text
@@ -124,139 +122,84 @@ export class TranslationService {
         timeout: 10000
       });
 
-      const result = response.data.choices[0].message.content.trim();
+      const result = res.data.choices[0].message.content.trim();
       this.cache.set(cacheKey, result);
       return result;
     } catch (e) {
-      console.error(`翻译失败 [${targetLang}]:`, e.message);
-      return "（翻译服务暂时不可用）";
+      console.error(`[翻譯失敗] ${targetLang}:`, e.message);
+      return "（翻譯服務暫時不可用）";
     }
   }
 }
 
 // --------------------------
-// 模块四：文宣服务 - news-service.js
+// news-service.js - 文宣管理
 // --------------------------
 import { load } from 'cheerio';
 import axios from 'axios';
 import https from 'node:https';
 
 export class NewsService {
-  static axios = axios.create({
+  static http = axios.create({
     httpsAgent: new https.Agent({ rejectUnauthorized: false }),
     timeout: 15000
   });
 
-  static async fetchImages(groupId, dateStr) {
+  static async fetchImages(gid, date) {
     try {
-      const res = await this.axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
+      const res = await this.http.get("https://fw.wda.gov.tw/wda-employer/home/file");
       const $ = load(res.data);
-      const targetDate = dateStr.replace(/-/g, '/');
-      
-      // 解析逻辑...
-      return []; // 返回图片URL数组
+      // 解析邏輯...
+      return ['https://example.com/image.jpg']; // 示例返回
     } catch (e) {
-      console.error("文宣抓取失败:", e.message);
+      console.error(`[文宣抓取失敗] ${gid}:`, e.message);
       return [];
-    }
-  }
-
-  static async sendImages(client, groupId, images) {
-    for (const url of images) {
-      try {
-        await client.pushMessage(groupId, {
-          type: "image",
-          originalContentUrl: url,
-          previewImageUrl: url
-        });
-        await new Promise(r => setTimeout(r, 500));
-      } catch (e) {
-        console.error("图片发送失败:", e.message);
-      }
     }
   }
 }
 
 // --------------------------
-// 主应用模块 - app.js
+// server.js - 主入口
 // --------------------------
 import express from 'express';
 import bodyParser from 'body-parser';
 import { middleware } from '@line/bot-sdk';
-import { initFirebase } from './config.js';
+import { LINE_CONFIG } from './config.js';
+import { FirebaseService } from './firebase-service.js';
 import { LineService } from './line-service.js';
-import { TranslationService } from './translation-service.js';
-import { NewsService } from './news-service.js';
 
-// 初始化
-const db = initFirebase().firestore();
 const app = express();
 const PORT = process.env.PORT || 10000;
+const db = FirebaseService.init();
+let groupSettings = await FirebaseService.loadGroupSettings(db);
 
-// 状态存储
-let groupSettings = new Map();
-
-// 路由配置
 app.post('/webhook',
   bodyParser.raw({ type: 'application/json' }),
-  middleware(LineService.client.config),
+  middleware(LINE_CONFIG),
   async (req, res) => {
     res.sendStatus(200);
-    await Promise.all(req.body.events.map(handleEvent));
+    
+    await Promise.all(req.body.events.map(async event => {
+      try {
+        // 加入群組處理
+        if (event.type === 'join' && event.source.type === 'group') {
+          const gid = event.source.groupId;
+          console.log(`[新群組] ${gid}`);
+          await LineService.sendLanguageMenu(gid);
+          groupSettings.set(gid, { langs: new Set(), inviter: null });
+        }
+
+        // 訊息處理邏輯...
+      } catch (e) {
+        console.error('[事件處理異常]:', e);
+      }
+    }));
   }
 );
 
-// 事件处理器
-async function handleEvent(event) {
-  try {
-    switch (event.type) {
-      case 'join':
-        await handleJoin(event);
-        break;
-      case 'postback':
-        await handlePostback(event);
-        break;
-      case 'message':
-        await handleMessage(event);
-        break;
-    }
-  } catch (e) {
-    console.error('事件处理异常:', e);
-  }
-}
-
-// 加入群组处理
-async function handleJoin(event) {
-  if (event.source.type !== 'group') return;
-  
-  const groupId = event.source.groupId;
-  console.log(`🆕 加入新群组: ${groupId}`);
-  
-  if (!await LineService.validateGroupPermission(groupId)) {
-    return console.log(`⛔ 群组 ${groupId} 无权限`);
-  }
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await LineService.sendLanguageMenu(groupId);
-      break;
-    } catch (e) {
-      if (attempt === 3) console.error(`连续发送失败 [${groupId}]`);
-      await new Promise(r => setTimeout(r, attempt * 1000));
-    }
-  }
-}
-
-// ...其他事件处理函数保持完整
-
-// 启动服务器
 app.listen(PORT, () => {
-  console.log(`🚀 服务已启动于端口 ${PORT}`);
+  console.log(`🚀 服務已啟動於端口 ${PORT}`);
   if (process.env.DEBUG_MODE) {
-    console.log('🔧 调试模式已启用');
-    LineService.sendLanguageMenu = async (gid) => {
-      console.log(`模拟发送选单至 ${gid}`);
-      return { status: 'mocked' };
-    };
+    console.log('🔧 調試模式啟用中...');
   }
 });
