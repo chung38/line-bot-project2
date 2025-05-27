@@ -276,9 +276,9 @@ app.post("/webhook",
           return;
         }
 
-        // !設定 指令
+        // !設定 指令 (已修正語法錯誤)
         if (event.type === "message" && txt === "!設定" && gid) {
-          if (groupInviter.has(gid) {
+          if (groupInviter.has(gid)) {  // 修正右括號
             const inviter = groupInviter.get(gid);
             if (inviter !== uid) {
               await client.replyMessage(event.replyToken, {
@@ -377,7 +377,7 @@ app.post("/webhook",
 
           const { masked, segments } = extractMentionsFromLineMessage(event.message);
           const lines = masked.split(/\r?\n/);
-          const outputLines = []; // 明確定義在此處
+          const outputLines = [];
 
           const mentionPattern = /^((?:@\w+|\[\@\w+\]\s*)+)/;
           const splitMentions = line => {
