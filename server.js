@@ -94,6 +94,15 @@ function restoreMentions(text, segments) {
   return restored;
 }
 
+// --- 輪班用語預處理函式 ---
+function preprocessShiftTerms(text) {
+  return text
+    .replace(/ลงทำงาน/g, "เข้างาน")   // 將「ลงทำงาน」替換為「เข้างาน」（上班）
+    .replace(/เข้าเวร/g, "เข้างาน")   // 輪班上班
+    .replace(/ออกเวร/g, "เลิกงาน")   // 輪班下班
+    .replace(/เลิกงาน/g, "เลิกงาน");  // 下班（標準詞）
+}
+
 // === DeepSeek API 雙向翻譯 ===
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
@@ -196,7 +205,7 @@ async function sendImagesToGroup(gid, dateStr) {
   }
 }
 
-// === 每天下午四點（16:00）自動推播當天文宣圖，台灣時區，加入詳細 log ===
+// === 每天下午五點（17:00）自動推播當天文宣圖，台灣時區，加入詳細 log ===
 cron.schedule("0 17 * * *", async () => {
   try {
     const today = new Date().toLocaleDateString("zh-TW", {
@@ -418,7 +427,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
         // mention 分段邏輯：取所有開頭連續 @xxx（含括號），剩餘為內容
         function splitMentionsAndContent(line) {
-          // 修正正則，不帶不明標記
           const mentionPattern = /^((?:[@\[][^@\s]+\s*)+)/;
           const match = line.match(mentionPattern);
           if (match) {
@@ -431,21 +439,22 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           if (!line.trim()) continue;
           let [mentionPart, rest] = splitMentionsAndContent(line);
           if (!rest) {
-            outputLines.push(mentionPart); // mention only or blank
+            outputLines.push(mentionPart);
             continue;
           }
           if (isSymbolOrNum(rest)) {
             outputLines.push(mentionPart + rest);
             continue;
           }
-          // 有 mention
+
+          // 輪班用語預處理
+          rest = preprocessShiftTerms(rest);
+
           if (mentionPart) {
             if (!isChinese(rest)) {
-              // @mention + 外語，只翻成繁體中文
               const zh = await translateWithDeepSeek(rest, "zh-TW");
               outputLines.push(`${mentionPart} ${zh}`);
             } else {
-              // @mention + 中文，依語言選單多語翻，每段都帶mention
               for (let code of set) {
                 if (code === "zh-TW") continue;
                 const tr = await translateWithDeepSeek(rest, code);
@@ -453,7 +462,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               }
             }
           } else {
-            // 沒 mention
             if (isChinese(rest)) {
               for (let code of set) {
                 if (code === "zh-TW") continue;
