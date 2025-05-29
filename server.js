@@ -396,7 +396,62 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return;
       }
 
-      // 其他事件與訊息處理（略，包含語言設定、文宣搜圖、翻譯等）
+      // !設定 指令顯示語言選單，只有設定者可用
+      if (event.type === "message" && txt === "!設定" && gid) {
+        if (groupInviter.has(gid) && groupInviter.get(gid) !== uid) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
+          return;
+        }
+        if (!groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
+          console.log(`群組 ${gid} 設定者設為 ${uid}`);
+        }
+        await sendMenu(gid);
+        return;
+      }
+
+      // 點語言選單（postback）
+      if (event.type === "postback" && gid) {
+        if (!groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
+          console.log(`群組 ${gid} 設定者設為 ${uid} (postback)`);
+        }
+        if (groupInviter.get(gid) !== uid) return;
+        const p = new URLSearchParams(event.postback.data);
+        if (p.get("action") === "set_lang") {
+          const code = p.get("code");
+          let set = groupLang.get(gid) || new Set();
+          if (code === "cancel") {
+            set.clear();
+          } else {
+            if (set.has(code)) {
+              set.delete(code);
+            } else {
+              set.add(code);
+            }
+          }
+          set.size ? groupLang.set(gid, set) : groupLang.delete(gid);
+          await saveLang();
+          const cur = [...(groupLang.get(gid) || [])].map(c => SUPPORTED_LANGS[c]).join("、") || "無";
+          await client.replyMessage(event.replyToken, { type: "text", text: `目前選擇：${cur}` });
+          console.log(`群組 ${gid} 語言選單更新：${cur}`);
+        }
+        return;
+      }
+
+      // 文宣搜圖指令
+      if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
+        const d = txt.split(" ")[1];
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
+          return;
+        }
+        await sendImagesToGroup(gid, d);
+        return;
+      }
+
       // --- 主訊息翻譯區塊 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
