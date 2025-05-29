@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
+import bodyParser from "body-parser";
 import axios from "axios";
 import https from "node:https";
 import { load } from "cheerio";
@@ -101,7 +102,7 @@ function restoreMentions(text, segments) {
   return restored;
 }
 
-// --- 專有用語預處理函式 ---
+// --- 輪班用語預處理函式 ---
 function preprocessShiftTerms(text) {
   for (const [term, intent] of shiftTermDict.entries()) {
     if (text.includes(term)) {
@@ -339,9 +340,9 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（含詞庫管理指令）===
+// === 主 Webhook（精準處理 mention + 外語、mention + 中文，含新增詞彙指令）===
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
-  res.sendStatus(200);
+  res.sendStatus(200); // 先回應，避免 LINE 端重試
 
   const events = req.body.events || [];
   await Promise.all(events.map(async event => {
@@ -350,7 +351,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       const uid = event.source?.userId;
       const txt = event.message?.text?.trim();
 
-      // 詞庫管理指令：新增詞彙
+      // 新增詞彙指令
       if (event.type === "message" && txt?.startsWith("!新增詞彙") && gid) {
         const parts = txt.split(" ");
         if (parts.length < 3) {
@@ -360,12 +361,12 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         const term = parts[1];
         const intent = parts.slice(2).join(" ");
         await db.collection("shiftTerms").doc(term).set({ term, intent });
-        await loadShiftTerms();
+        await loadShiftTerms(); // 重新載入詞庫
         await client.replyMessage(event.replyToken, { type: "text", text: `✅ 已新增詞彙：「${term}」對應語意：「${intent}」` });
         return;
       }
 
-      // 詞庫管理指令：刪除詞彙
+      // 刪除詞彙指令
       if (event.type === "message" && txt?.startsWith("!刪除詞彙") && gid) {
         const parts = txt.split(" ");
         if (parts.length !== 2) {
@@ -379,7 +380,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return;
       }
 
-      // 詞庫管理指令：查詢詞彙
+      // 查詢詞彙指令
       if (event.type === "message" && txt?.startsWith("!查詢詞彙") && gid) {
         const parts = txt.split(" ");
         if (parts.length !== 2) {
@@ -393,6 +394,24 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         } else {
           await client.replyMessage(event.replyToken, { type: "text", text: `找不到詞彙「${term}」` });
         }
+        return;
+      }
+
+      // 其他功能保持不變，包含語言選單、文宣搜圖、翻譯等
+      // 離開群組自動清理
+      if (event.type === "leave" && gid) {
+        groupInviter.delete(gid);
+        groupLang.delete(gid);
+        await db.collection("groupInviters").doc(gid).delete();
+        await db.collection("groupLanguages").doc(gid).delete();
+        console.log(`群組 ${gid} 已離開，資料已清除`);
+        return;
+      }
+
+      // 加入群組時只發語言選單，不設設定者
+      if (event.type === "join" && gid) {
+        await sendMenu(gid);
+        console.log(`群組 ${gid} 新成員加入，發送語言選單`);
         return;
       }
 
@@ -482,7 +501,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 專有用語預處理
+          // 輪班用語預處理
           rest = preprocessShiftTerms(rest);
 
           if (mentionPart) {
@@ -541,7 +560,7 @@ app.listen(PORT, async () => {
   try {
     await loadLang();
     await loadInviter();
-    await loadShiftTerms();
+    await loadShiftTerms(); // 新增詞庫載入
     console.log(`🚀 服務已啟動，監聽於 ${PORT}`);
   } catch (e) {
     console.error("❌ 啟動失敗:", e);
