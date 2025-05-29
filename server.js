@@ -101,7 +101,7 @@ function restoreMentions(text, segments) {
   return restored;
 }
 
-// --- 輪班用語預處理函式 ---
+// --- 專有用語預處理函式 ---
 function preprocessShiftTerms(text) {
   for (const [term, intent] of shiftTermDict.entries()) {
     if (text.includes(term)) {
@@ -482,7 +482,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 輪班用語預處理
+          // 專有用語預處理
           rest = preprocessShiftTerms(rest);
 
           if (mentionPart) {
