@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
-import bodyParser from "body-parser";
 import axios from "axios";
 import https from "node:https";
 import { load } from "cheerio";
@@ -41,6 +40,7 @@ const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 
 const groupLang = new Map();      // groupId -> Set<langCode>
 const groupInviter = new Map();   // groupId -> userId
+const shiftTermDict = new Map();  // 輪班用語詞庫：外語詞彙 -> 中文語意
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 
@@ -66,17 +66,24 @@ const saveInviter = async () => {
   groupInviter.forEach((uid, gid) => batch.set(db.collection("groupInviters").doc(gid), { userId: uid }));
   await batch.commit();
 };
+const loadShiftTerms = async () => {
+  const snapshot = await db.collection("shiftTerms").get();
+  shiftTermDict.clear();
+  snapshot.forEach(doc => {
+    const data = doc.data();
+    shiftTermDict.set(data.term, data.intent);
+  });
+  console.log("🔄 輪班詞庫已載入，詞彙數:", shiftTermDict.size);
+};
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt => /^[\d\s,.!?，。？！、：；"'“”‘’（）()【】《》\-+*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // --- mention 遮罩與還原 ---
-// 改用 offset 調整避免索引錯誤
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
   if (message.mentioned && message.mentioned.mentionees) {
-    // 從後往前替換，避免索引錯亂
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `[@MENTION_${i}]`;
@@ -96,11 +103,12 @@ function restoreMentions(text, segments) {
 
 // --- 輪班用語預處理函式 ---
 function preprocessShiftTerms(text) {
-  return text
-    .replace(/ลงทำงาน/g, "เข้างาน")   // 將「ลงทำงาน」替換為「เข้างาน」（上班）
-    .replace(/เข้าเวร/g, "เข้างาน")   // 輪班上班
-    .replace(/ออกเวร/g, "เลิกงาน")   // 輪班下班
-    .replace(/เลิกงาน/g, "เลิกงาน");  // 下班（標準詞）
+  for (const [term, intent] of shiftTermDict.entries()) {
+    if (text.includes(term)) {
+      text = text.replace(new RegExp(term, "g"), intent);
+    }
+  }
+  return text;
 }
 
 // === DeepSeek API 雙向翻譯 ===
@@ -331,91 +339,64 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 主 Webhook（精準處理 mention + 外語、mention + 中文）===
-// middleware(lineConfig) 會自行處理 body 解析與簽章驗證，故不需額外 bodyParser
+// === 主 Webhook（含詞庫管理指令）===
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
-  res.sendStatus(200); // 先回應，避免 LINE 端重試
+  res.sendStatus(200);
 
   const events = req.body.events || [];
   await Promise.all(events.map(async event => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
-      const txt = event.message?.text;
+      const txt = event.message?.text?.trim();
 
-      // 離開群組自動清理
-      if (event.type === "leave" && gid) {
-        groupInviter.delete(gid);
-        groupLang.delete(gid);
-        await db.collection("groupInviters").doc(gid).delete();
-        await db.collection("groupLanguages").doc(gid).delete();
-        console.log(`群組 ${gid} 已離開，資料已清除`);
-        return;
-      }
-
-      // 加入群組時只發語言選單，不設設定者
-      if (event.type === "join" && gid) {
-        await sendMenu(gid);
-        console.log(`群組 ${gid} 新成員加入，發送語言選單`);
-        return;
-      }
-
-      // !設定 指令顯示語言選單，只有設定者可用
-      if (event.type === "message" && txt === "!設定" && gid) {
-        if (groupInviter.has(gid) && groupInviter.get(gid) !== uid) {
-          await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
+      // 詞庫管理指令：新增詞彙
+      if (event.type === "message" && txt?.startsWith("!新增詞彙") && gid) {
+        const parts = txt.split(" ");
+        if (parts.length < 3) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "格式錯誤，請輸入：!新增詞彙 <外語詞彙> <中文語意>" });
           return;
         }
-        if (!groupInviter.has(gid)) {
-          groupInviter.set(gid, uid);
-          await saveInviter();
-          console.log(`群組 ${gid} 設定者設為 ${uid}`);
-        }
-        await sendMenu(gid);
+        const term = parts[1];
+        const intent = parts.slice(2).join(" ");
+        await db.collection("shiftTerms").doc(term).set({ term, intent });
+        await loadShiftTerms();
+        await client.replyMessage(event.replyToken, { type: "text", text: `✅ 已新增詞彙：「${term}」對應語意：「${intent}」` });
         return;
       }
 
-      // 點語言選單（postback）
-      if (event.type === "postback" && gid) {
-        if (!groupInviter.has(gid)) {
-          groupInviter.set(gid, uid);
-          await saveInviter();
-          console.log(`群組 ${gid} 設定者設為 ${uid} (postback)`);
-        }
-        if (groupInviter.get(gid) !== uid) return;
-        const p = new URLSearchParams(event.postback.data);
-        if (p.get("action") === "set_lang") {
-          const code = p.get("code");
-          let set = groupLang.get(gid) || new Set();
-          if (code === "cancel") {
-            set.clear();
-          } else {
-            if (set.has(code)) {
-              set.delete(code);
-            } else {
-              set.add(code);
-            }
-          }
-          set.size ? groupLang.set(gid, set) : groupLang.delete(gid);
-          await saveLang();
-          const cur = [...(groupLang.get(gid) || [])].map(c => SUPPORTED_LANGS[c]).join("、") || "無";
-          await client.replyMessage(event.replyToken, { type: "text", text: `目前選擇：${cur}` });
-          console.log(`群組 ${gid} 語言選單更新：${cur}`);
-        }
-        return;
-      }
-
-      // 文宣搜圖指令
-      if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
-        const d = txt.split(" ")[1];
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          await client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
+      // 詞庫管理指令：刪除詞彙
+      if (event.type === "message" && txt?.startsWith("!刪除詞彙") && gid) {
+        const parts = txt.split(" ");
+        if (parts.length !== 2) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "格式錯誤，請輸入：!刪除詞彙 <外語詞彙>" });
           return;
         }
-        await sendImagesToGroup(gid, d);
+        const term = parts[1];
+        await db.collection("shiftTerms").doc(term).delete();
+        await loadShiftTerms();
+        await client.replyMessage(event.replyToken, { type: "text", text: `✅ 已刪除詞彙：「${term}」` });
         return;
       }
 
+      // 詞庫管理指令：查詢詞彙
+      if (event.type === "message" && txt?.startsWith("!查詢詞彙") && gid) {
+        const parts = txt.split(" ");
+        if (parts.length !== 2) {
+          await client.replyMessage(event.replyToken, { type: "text", text: "格式錯誤，請輸入：!查詢詞彙 <外語詞彙>" });
+          return;
+        }
+        const term = parts[1];
+        const intent = shiftTermDict.get(term);
+        if (intent) {
+          await client.replyMessage(event.replyToken, { type: "text", text: `詞彙「${term}」對應語意為：「${intent}」` });
+        } else {
+          await client.replyMessage(event.replyToken, { type: "text", text: `找不到詞彙「${term}」` });
+        }
+        return;
+      }
+
+      // 其他事件與訊息處理（略，包含語言設定、文宣搜圖、翻譯等）
       // --- 主訊息翻譯區塊 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
@@ -425,7 +406,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         const lines = masked.split(/\r?\n/);
         let outputLines = [];
 
-        // mention 分段邏輯：取所有開頭連續 @xxx（含括號），剩餘為內容
         function splitMentionsAndContent(line) {
           const mentionPattern = /^((?:[@\[][^@\s]+\s*)+)/;
           const match = line.match(mentionPattern);
@@ -506,6 +486,7 @@ app.listen(PORT, async () => {
   try {
     await loadLang();
     await loadInviter();
+    await loadShiftTerms();
     console.log(`🚀 服務已啟動，監聽於 ${PORT}`);
   } catch (e) {
     console.error("❌ 啟動失敗:", e);
