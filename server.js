@@ -36,8 +36,8 @@ const client = new Client(lineConfig);
 
 // === 快取與設定 ===
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
-const groupLang = new Map(); // groupId → Set<lang>
-const groupInviter = new Map(); // groupId → userId
+const groupLang = new Map();
+const groupInviter = new Map();
 
 const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
@@ -47,11 +47,10 @@ Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
   NAME_TO_CODE[v] = k;
 });
-
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
-  /^[-\d\s,.!?，。？！、：；"'“”‘’（）【】《》+*/\$begin:math:display$$end:math:display${}|…%$#@~^`_=]+$/.test(txt);
-// === Firestore 語言與設定者資料操作 ===
+  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt); // ✅ 正規表達式修正
+
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
@@ -77,7 +76,6 @@ const saveInviter = async () => {
   await batch.commit();
 };
 
-// === mention 遮罩與還原 ===
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -98,8 +96,6 @@ function restoreMentions(text, segments) {
   });
   return restored;
 }
-
-// === 輪班詞預處理 ===
 function preprocessShiftTerms(text) {
   return text
     .replace(/ลงทำงาน/g, "เข้างาน")
@@ -107,6 +103,7 @@ function preprocessShiftTerms(text) {
     .replace(/ออกเวร/g, "เลิกงาน")
     .replace(/เลิกงาน/g, "เลิกงาน");
 }
+
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -136,7 +133,6 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   }
 };
 
-// === 智慧預處理：針對加班詞句優化翻譯前的語意 ===
 async function smartPreprocess(text, langCode) {
   if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
 
@@ -157,57 +153,6 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-// === 文宣圖片抓取功能 ===
-async function fetchImageUrlsByDate(gid, dateStr) {
-  try {
-    const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
-    const $ = load(res.data);
-    const detailUrls = [];
-
-    $("table.sub-table tbody.tbody tr").each((_, tr) => {
-      const tds = $(tr).find("td");
-      if (tds.eq(1).text().trim() === dateStr.replace(/-/g, "/")) {
-        const href = tds.eq(0).find("a").attr("href");
-        if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
-      }
-    });
-
-    const wanted = groupLang.get(gid) || new Set();
-    const images = [];
-    for (const url of detailUrls) {
-      try {
-        const d = await axios.get(url);
-        const $$ = load(d.data);
-        $$(".text-photo a").each((_, el) => {
-          const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
-          const code = NAME_TO_CODE[label];
-          if (code && wanted.has(code)) {
-            const imgUrl = $$(el).find("img").attr("src");
-            if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
-          }
-        });
-      } catch (e) {
-        console.error("細節頁失敗:", e.message);
-      }
-    }
-    return images;
-  } catch (e) {
-    console.error("主頁抓圖失敗:", e.message);
-    return [];
-  }
-}
-
-async function sendImagesToGroup(gid, dateStr) {
-  const imgs = await fetchImageUrlsByDate(gid, dateStr);
-  for (const url of imgs) {
-    await client.pushMessage(gid, {
-      type: "image",
-      originalContentUrl: url,
-      previewImageUrl: url
-    });
-  }
-}
-// === FlexMessage 語言選單 ===
 const rateLimit = new Map();
 const INTERVAL = 60000;
 const canSend = gid => {
@@ -225,10 +170,10 @@ const sendMenu = async (gid, retry = 0) => {
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
       type: "button",
-      action: { 
-        type: "postback", 
-        label: `${LANG_ICONS[code] || ""} ${label}`, 
-        data: `action=set_lang&code=${code}` 
+      action: {
+        type: "postback",
+        label: `${LANG_ICONS[code] || ""} ${label}`,
+        data: `action=set_lang&code=${code}`
       },
       style: "primary",
       color: "#3b82f6",
@@ -297,22 +242,23 @@ const sendMenu = async (gid, retry = 0) => {
     console.error("Flex 選單發送失敗:", e.message);
   }
 };
-
-// === webhook 主邏輯 ===
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
+
   await Promise.all(events.map(async event => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
       const txt = event.message?.text;
 
+      // ➤ 加入群組時顯示語言選單
       if (event.type === "join" && gid) {
         await sendMenu(gid);
         return;
       }
 
+      // ➤ 離開群組時刪除資料
       if (event.type === "leave" && gid) {
         groupLang.delete(gid);
         groupInviter.delete(gid);
@@ -321,20 +267,34 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return;
       }
 
+      // ➤ 顯示語言設定選單（需 inviter 身分）
       if (event.type === "message" && txt === "!設定" && gid) {
         if (groupInviter.has(gid) && groupInviter.get(gid) !== uid) {
           await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
           return;
         }
         if (!groupInviter.has(gid)) {
-          groupInviter.set(gid, uid);
+          groupInviter.set(gid, uid); // ✅ 首次設為管理者
           await saveInviter();
         }
         await sendMenu(gid);
         return;
       }
 
+      // ➤ 點選語言選單的 postback 事件（加入 inviter 驗證）
       if (event.type === "postback" && gid) {
+        if (!groupInviter.has(gid)) {
+          groupInviter.set(gid, uid);
+          await saveInviter();
+        }
+        if (groupInviter.get(gid) !== uid) {
+          await client.replyMessage(event.replyToken, {
+            type: "text",
+            text: "只有設定者可以更改語言選單。"
+          });
+          return;
+        }
+
         const p = new URLSearchParams(event.postback.data);
         if (p.get("action") === "set_lang") {
           const code = p.get("code");
@@ -352,17 +312,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return;
       }
 
-      if (event.type === "message" && txt?.startsWith("!文宣") && gid) {
-        const d = txt.split(" ")[1];
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-          await client.replyMessage(event.replyToken, { type: "text", text: "請輸入：!文宣 YYYY-MM-DD" });
-          return;
-        }
-        await sendImagesToGroup(gid, d);
-        return;
-      }
-
-      // 翻譯主邏輯（下一段貼）
+      // ➤ 翻譯主程式
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
@@ -412,13 +362,64 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           text: `【${userName}】說：\n${translated}`
         });
       }
+
     } catch (e) {
       console.error("處理事件錯誤:", e);
     }
   }));
 });
+// === 文宣圖片抓取與推播功能 ===
+async function fetchImageUrlsByDate(gid, dateStr) {
+  try {
+    const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
+    const $ = load(res.data);
+    const detailUrls = [];
 
-// === 定時推播文宣圖（每天下午 17:00）===
+    $("table.sub-table tbody.tbody tr").each((_, tr) => {
+      const tds = $(tr).find("td");
+      if (tds.eq(1).text().trim() === dateStr.replace(/-/g, "/")) {
+        const href = tds.eq(0).find("a").attr("href");
+        if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
+      }
+    });
+
+    const wanted = groupLang.get(gid) || new Set();
+    const images = [];
+    for (const url of detailUrls) {
+      try {
+        const d = await axios.get(url);
+        const $$ = load(d.data);
+        $$(".text-photo a").each((_, el) => {
+          const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
+          const code = NAME_TO_CODE[label];
+          if (code && wanted.has(code)) {
+            const imgUrl = $$(el).find("img").attr("src");
+            if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
+          }
+        });
+      } catch (e) {
+        console.error("細節頁失敗:", e.message);
+      }
+    }
+    return images;
+  } catch (e) {
+    console.error("主頁抓圖失敗:", e.message);
+    return [];
+  }
+}
+
+async function sendImagesToGroup(gid, dateStr) {
+  const imgs = await fetchImageUrlsByDate(gid, dateStr);
+  for (const url of imgs) {
+    await client.pushMessage(gid, {
+      type: "image",
+      originalContentUrl: url,
+      previewImageUrl: url
+    });
+  }
+}
+
+// === 每天下午 17:00 自動推播文宣 ===
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -442,11 +443,11 @@ setInterval(() => {
   https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
     .on("error", e => console.error("PING 失敗:", e.message));
 }, 10 * 60 * 1000);
-// === 路由監聽 ===
+
+// === Express 路由與啟動 ===
 app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 
-// === 全域錯誤監聽 ===
 process.on("unhandledRejection", (reason, promise) => {
   console.error("未捕捉的 Promise 拒絕:", reason);
 });
@@ -454,7 +455,6 @@ process.on("uncaughtException", err => {
   console.error("未捕捉的例外錯誤:", err);
 });
 
-// === 啟動 Express 並載入快取資料 ===
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, async () => {
   try {
