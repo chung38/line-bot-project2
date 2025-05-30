@@ -36,6 +36,7 @@ const client = new Client(lineConfig);
 
 // === 快取與設定 ===
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
+const smartPreprocessCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
 const groupLang = new Map();
 const groupInviter = new Map();
 
@@ -134,21 +135,46 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   }
 };
 
+// 新增：建構 prompt 的函式
+function buildSmartPreprocessPrompt(text) {
+  return `
+你是專門判斷泰文工廠輪班加班語意的 AI。
+請判斷下列句子是否表示「工廠整廠加班」：
+- 如果是，請直接回覆「全廠加班」。
+- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
+原文：${text}
+`.trim();
+}
+
+// 新增：呼叫 DeepSeek API 的函式
+async function callDeepSeekAPI(prompt) {
+  const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
+    model: "deepseek-chat",
+    messages: [
+      { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
+      { role: "user", content: prompt }
+    ]
+  }, {
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+  });
+  return res.data.choices[0].message.content.trim();
+}
+
+// 優化後的 smartPreprocess 函式
 async function smartPreprocess(text, langCode) {
   if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
 
-  const prompt = `請判斷這句話是否是在說「工廠要加班」，如果是，請以「全廠加班」中文形式輸出。否則請照原句翻成中文。原文：${text}`;
+  if (smartPreprocessCache.has(text)) {
+    return smartPreprocessCache.get(text);
+  }
+
+  const prompt = buildSmartPreprocessPrompt(text);
   try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
-      messages: [
-        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
-        { role: "user", content: prompt }
-      ]
-    }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
-    });
-    return res.data.choices[0].message.content.trim();
+    const result = await callDeepSeekAPI(prompt);
+    smartPreprocessCache.set(text, result);
+    console.log(`smartPreprocess 輸入: ${text}`);
+    console.log(`smartPreprocess 輸出: ${result}`);
+    return result;
   } catch (e) {
     console.error("smartPreprocess API 錯誤:", e.message);
     return text;
@@ -243,8 +269,8 @@ const sendMenu = async (gid, retry = 0) => {
     console.log(`✅ 成功發送 FlexMenu 給群組: ${gid}`);
   } catch (e) {
     console.error(`❌ FlexMenu 發送失敗 (${gid}):`, e.message);
-    if (e.statusCode === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
+    if (e.response?.status === 429 && retry < 3) {
+      await new Promise(r => setTimeout(r, (retry + 1) * 10000));
       return sendMenu(gid, retry + 1);
     }
   }
@@ -282,7 +308,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           return;
         }
         if (!groupInviter.has(gid)) {
-          groupInviter.set(gid, uid); // ✅ 首次設為管理者
+          groupInviter.set(gid, uid); // 首次設為管理者
           await saveInviter();
         }
         await sendMenu(gid);
