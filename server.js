@@ -50,7 +50,8 @@ Object.entries(LANGS).forEach(([k, v]) => {
 });
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
-const isSymbolOrNum = txt => /^[\\d\\s,.!?，。？！、：；"'“”‘’（）()【】《》\\-+*/\\\\[\\]{}|…%$#@~^`_=]+$/.test(txt);
+const isSymbolOrNum = txt =>
+  /^[-\d\s,.!?，。？！、：；"'“”‘’（）【】《》+*/\$begin:math:display$$end:math:display${}|…%$#@~^`_=]+$/.test(txt);
 // === Firestore 語言與設定者資料操作 ===
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
