@@ -163,9 +163,14 @@ const canSend = gid => {
   }
   return false;
 };
-
 const sendMenu = async (gid, retry = 0) => {
-  if (!canSend(gid)) return;
+  console.log(`🔵 sendMenu() 呼叫，群組 ID: ${gid}, retry: ${retry}`);
+
+  if (!canSend(gid)) {
+    console.log(`🟡 跳過 sendMenu，因為 ${gid} 在 ${INTERVAL} 毫秒內已發送過`);
+    return;
+  }
+
   const langButtons = Object.entries(SUPPORTED_LANGS)
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
@@ -180,6 +185,7 @@ const sendMenu = async (gid, retry = 0) => {
       margin: "md",
       height: "sm"
     }));
+  
   langButtons.push({
     type: "button",
     action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
@@ -216,10 +222,7 @@ const sendMenu = async (gid, retry = 0) => {
             align: "center",
             margin: "md"
           },
-          {
-            type: "separator",
-            margin: "md"
-          },
+          { type: "separator", margin: "md" },
           {
             type: "box",
             layout: "vertical",
@@ -233,13 +236,15 @@ const sendMenu = async (gid, retry = 0) => {
   };
 
   try {
+    console.log(`🟢 嘗試發送 FlexMenu 給群組: ${gid}`);
     await client.pushMessage(gid, msg);
+    console.log(`✅ 成功發送 FlexMenu 給群組: ${gid}`);
   } catch (e) {
+    console.error(`❌ FlexMenu 發送失敗 (${gid}):`, e.message);
     if (e.statusCode === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return sendMenu(gid, retry + 1);
     }
-    console.error("Flex 選單發送失敗:", e.message);
   }
 };
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
