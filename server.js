@@ -49,7 +49,7 @@ Object.entries(LANGS).forEach(([k, v]) => {
 });
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt); // ✅ 正規表達式修正
+  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
@@ -92,23 +92,24 @@ function extractMentionsFromLineMessage(message) {
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
-    restored = restored.replace(seg.key, seg.text);
+    const reg = new RegExp(seg.key, "g");
+    restored = restored.replace(reg, seg.text);
   });
   return restored;
 }
 function preprocessShiftTerms(text) {
   return text
-    .replace(/ลงทำงาน/g, "เข้างาน")
-    .replace(/เข้าเวร/g, "เข้างาน")
-    .replace(/ออกเวร/g, "เลิกงาน")
-    .replace(/เลิกงาน/g, "เลิกงาน");
+    .replace(/ลงทำงาน/g, "下班")
+    .replace(/เข้าเวร/g, "上班")
+    .replace(/ออกเวร/g, "下班")
+    .replace(/เลิกงาน/g, "下班");
 }
 
 const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   const cacheKey = `${targetLang}:${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
-  const systemPrompt = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang]}，使用台灣慣用語並只回傳翻譯後的文字。`;
+  const systemPrompt = `你是一位台灣在地的翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang] || targetLang}，使用台灣慣用語並只回傳翻譯後的文字。`;
 
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
@@ -149,6 +150,7 @@ async function smartPreprocess(text, langCode) {
     });
     return res.data.choices[0].message.content.trim();
   } catch (e) {
+    console.error("smartPreprocess API 錯誤:", e.message);
     return text;
   }
 }
@@ -185,7 +187,7 @@ const sendMenu = async (gid, retry = 0) => {
       margin: "md",
       height: "sm"
     }));
-  
+
   langButtons.push({
     type: "button",
     action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
@@ -247,6 +249,7 @@ const sendMenu = async (gid, retry = 0) => {
     }
   }
 };
+
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -373,6 +376,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
     }
   }));
 });
+
 // === 文宣圖片抓取與推播功能 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
@@ -416,11 +420,16 @@ async function fetchImageUrlsByDate(gid, dateStr) {
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
-    await client.pushMessage(gid, {
-      type: "image",
-      originalContentUrl: url,
-      previewImageUrl: url
-    });
+    try {
+      await client.pushMessage(gid, {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      });
+      console.log(`✅ 推播圖片成功：${url} 到群組 ${gid}`);
+    } catch (e) {
+      console.error(`❌ 推播圖片失敗: ${url}`, e.message);
+    }
   }
 }
 
@@ -436,9 +445,9 @@ cron.schedule("0 17 * * *", async () => {
   for (const [gid] of groupLang.entries()) {
     try {
       await sendImagesToGroup(gid, today);
-      console.log(`✅ ${gid} 已推播`);
+      console.log(`✅ 群組 ${gid} 已推播`);
     } catch (e) {
-      console.error(`❌ ${gid} 推播失敗:`, e.message);
+      console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
     }
   }
 }, { timezone: "Asia/Taipei" });
