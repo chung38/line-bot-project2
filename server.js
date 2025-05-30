@@ -20,7 +20,6 @@ try {
 const db = admin.firestore();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
 
 const requiredEnv = ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"];
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
