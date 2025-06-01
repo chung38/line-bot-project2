@@ -335,7 +335,13 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       const uid = event.source?.userId;
       const txt = event.message?.text;
 
-      // ...（join、leave、設定選單等事件不變）...
+      // === 新增：join 事件處理 ===
+      if (event.type === "join" && gid) {
+        await sendMenu(gid);
+        return;
+      }
+
+      // ...（其餘 leave、!設定、postback、翻譯主程式等事件處理與你原本相同，略）...
 
       // === 翻譯主程式 ===
       if (event.type === "message" && event.message.type === "text" && gid) {
@@ -366,7 +372,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           rest = preprocessShiftTerms(rest);
 
-          // === 核心：預設所有外語都自動翻成中文 ===
+          // 預設所有外語都自動翻成中文
           if (!isChinese(rest)) {
             const zh = await smartPreprocess(rest, "th");
             // 1. 一定會翻成中文
@@ -395,7 +401,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           text: `【${userName}】說：\n${translated}`
         });
       }
- // ...（其他事件不變）...
     } catch (e) {
       console.error("處理事件錯誤:", e);
     }
@@ -488,7 +493,6 @@ process.on("unhandledRejection", (reason, promise) => {
 process.on("uncaughtException", err => {
   console.error("未捕捉的例外錯誤:", err);
 });
-
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, async () => {
   try {
