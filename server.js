@@ -21,7 +21,12 @@ const db = admin.firestore();
 
 const app = express();
 
-const requiredEnv = ["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"];
+const requiredEnv = [
+  "LINE_CHANNEL_ACCESS_TOKEN",
+  "LINE_CHANNEL_SECRET",
+  "DEEPSEEK_API_KEY",
+  "PING_URL"
+];
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
 if (missingEnv.length > 0) {
   console.error(`❌ 缺少環境變數: ${missingEnv.join(", ")}`);
@@ -41,9 +46,21 @@ const groupLang = new Map();
 const groupInviter = new Map();
 const groupIndustry = new Map();
 
-const SUPPORTED_LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+const SUPPORTED_LANGS = {
+  en: "英文",
+  th: "泰文",
+  vi: "越南文",
+  id: "印尼文",
+  "zh-TW": "繁體中文"
+};
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
-const LANGS = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
+const LANGS = {
+  en: "英文",
+  th: "泰文",
+  vi: "越南文",
+  id: "印尼文",
+  "zh-TW": "繁體中文"
+};
 const NAME_TO_CODE = {};
 Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v + "版"] = k;
@@ -55,10 +72,17 @@ const INDUSTRY_LIST = [
   "電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業"
 ];
 
+// ====== 判斷語言函式 ======
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
+// **改進：只要沒有中文且有非ASCII字元，一律當作外語自動翻譯**
+function isAllForeign(text) {
+  return !/[\u4e00-\u9fff]/.test(text) && /[^\x00-\x7F]/.test(text);
+}
+
+// ====== Firestore 設定相關 ======
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
@@ -97,6 +121,7 @@ const saveIndustry = async () => {
   await batch.commit();
 };
 
+// ====== LINE提及處理 ======
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -126,7 +151,7 @@ function preprocessShiftTerms(text) {
     .replace(/เลิกงาน/g, "下班");
 }
 
-// 行業別選單
+// ====== 行業別選單 ======
 function buildIndustryMenu() {
   return {
     type: "flex",
@@ -158,7 +183,7 @@ function buildIndustryMenu() {
   };
 }
 
-// 翻譯API
+// ====== DeepSeek翻譯API ======
 const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) => {
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -189,7 +214,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   }
 };
 
-// 智慧輪班語意判斷
+// ====== 智慧判斷泰文加班語意（有需要才送入，否則直接翻譯） ======
 function buildSmartPreprocessPrompt(text) {
   return `
 你是專門判斷泰文工廠輪班加班語意的 AI。
@@ -228,7 +253,7 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-// 語言選單
+// ====== 語言選單 ======
 const rateLimit = new Map();
 const INTERVAL = 60000;
 const canSend = gid => {
@@ -324,7 +349,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// webhook
+// ====== Webhook主要邏輯（已修正版）======
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -333,19 +358,18 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
-      const txt = event.message?.text;
 
-      // --- 加入群組時，彈出語言選單 ---
+      // --- 加入群組時彈出語言選單 ---
       if (event.type === "join" && gid) {
         await sendMenu(gid);
         return;
       }
 
-      // --- postback 事件處理（重點！） ---
+      // --- postback 事件處理 ---
       if (event.type === "postback" && gid) {
         const data = event.postback.data || "";
 
-        // 處理語言選單的點選
+        // 語言多選
         if (data.startsWith("action=set_lang")) {
           const code = data.split("code=")[1];
           let set = groupLang.get(gid) || new Set();
@@ -358,7 +382,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
           groupLang.set(gid, set);
           await saveLang();
-          // 回覆最新狀態
           await client.replyMessage(event.replyToken, {
             type: "text",
             text: set.size
@@ -366,7 +389,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               : `❌ 已取消所有語言`
           });
         }
-        // 行業別設定
+        // 行業別選擇
         else if (data.startsWith("action=set_industry")) {
           const industry = decodeURIComponent(data.split("industry=")[1]);
           if (industry) {
@@ -385,14 +408,14 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             });
           }
         }
-        // 跳出行業別 FlexMenu
+        // 彈出行業別 FlexMenu
         else if (data === "action=show_industry_menu") {
           await client.replyMessage(event.replyToken, buildIndustryMenu());
         }
         return; // 已處理 postback
       }
 
-      // --- 原有文字訊息、翻譯主程式 ---
+      // --- 主翻譯流程 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
@@ -418,17 +441,20 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             outputLines.push(mentionPart + rest);
             continue;
           }
-
           rest = preprocessShiftTerms(rest);
 
-          // 預設所有外語都自動翻成中文
-          if (!isChinese(rest)) {
-            const zh = await smartPreprocess(rest, "th");
-            // 1. 一定會翻成中文
+          // ===== 重點：自動偵測外語強制翻譯 =====
+          if (isAllForeign(rest)) {
+            let zh = rest;
+            // 泰文且含加班語句才特別送 smartPreprocess
+            if (/[\u0E00-\u0E7F]/.test(rest) && /ทำโอ/.test(rest)) {
+              zh = await smartPreprocess(rest, "th");
+            }
+            // 1. 強制翻成繁體中文
             const final = await translateWithDeepSeek(zh, "zh-TW");
             outputLines.push(mentionPart ? `${mentionPart} ${final}` : final);
 
-            // 2. 其他語言也翻（如群組有設定其他語言）
+            // 2. 依設定翻其它語言
             for (let code of set) {
               if (code === "zh-TW") continue;
               const tr = await translateWithDeepSeek(zh, code);
@@ -532,7 +558,7 @@ setInterval(() => {
     .on("error", e => console.error("PING 失敗:", e.message));
 }, 10 * 60 * 1000);
 
-// Express 路由與啟動
+// ===== Express 路由與啟動 =====
 app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 
