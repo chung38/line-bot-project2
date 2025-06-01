@@ -335,15 +335,64 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       const uid = event.source?.userId;
       const txt = event.message?.text;
 
-      // === 新增：join 事件處理 ===
+      // --- 加入群組時，彈出語言選單 ---
       if (event.type === "join" && gid) {
         await sendMenu(gid);
         return;
       }
 
-      // ...（其餘 leave、!設定、postback、翻譯主程式等事件處理與你原本相同，略）...
+      // --- postback 事件處理（重點！） ---
+      if (event.type === "postback" && gid) {
+        const data = event.postback.data || "";
 
-      // === 翻譯主程式 ===
+        // 處理語言選單的點選
+        if (data.startsWith("action=set_lang")) {
+          const code = data.split("code=")[1];
+          let set = groupLang.get(gid) || new Set();
+          if (code === "cancel") {
+            set = new Set();
+          } else if (set.has(code)) {
+            set.delete(code);
+          } else {
+            set.add(code);
+          }
+          groupLang.set(gid, set);
+          await saveLang();
+          // 回覆最新狀態
+          await client.replyMessage(event.replyToken, {
+            type: "text",
+            text: set.size
+              ? `✅ 已選擇語言：${[...set].map(c => SUPPORTED_LANGS[c]).join("、")}`
+              : `❌ 已取消所有語言`
+          });
+        }
+        // 行業別設定
+        else if (data.startsWith("action=set_industry")) {
+          const industry = decodeURIComponent(data.split("industry=")[1]);
+          if (industry) {
+            groupIndustry.set(gid, industry);
+            await saveIndustry();
+            await client.replyMessage(event.replyToken, {
+              type: "text",
+              text: `🏭 行業別已設為：${industry}`
+            });
+          } else {
+            groupIndustry.delete(gid);
+            await saveIndustry();
+            await client.replyMessage(event.replyToken, {
+              type: "text",
+              text: `❌ 已清除行業別`
+            });
+          }
+        }
+        // 跳出行業別 FlexMenu
+        else if (data === "action=show_industry_menu") {
+          await client.replyMessage(event.replyToken, buildIndustryMenu());
+        }
+        return; // 已處理 postback
+      }
+
+      // --- 原有文字訊息、翻譯主程式 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
