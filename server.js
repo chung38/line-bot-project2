@@ -188,20 +188,32 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
+  // 強化 prompt，請模型「只回翻譯、不要解釋」
   const systemPrompt = customPrompt ||
-    `你是一位台灣在地的翻譯員，請將以下句子翻譯成${SUPPORTED_LANGS[targetLang] || targetLang}，請使用台灣常用語，僅回傳翻譯後的文字。`;
+    `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
 
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
       messages: [
+        { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
     }, {
       headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
-    const out = res.data.choices[0].message.content.trim();
+
+    let out = res.data.choices[0].message.content.trim();
+
+    // 自動去除括號（如有出現括號標註，常見於 DeepSeek 回傳）
+    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, ""); // 去掉前導括號
+
+    // 若翻譯成繁中，卻不是中文，顯示錯誤提示
+    if (targetLang === "zh-TW" && !/[\u4e00-\u9fff]/.test(out)) {
+      out = "（翻譯異常，請稍後再試）";
+    }
+
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
@@ -213,7 +225,6 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
     return "（翻譯暫時不可用）";
   }
 };
-
 // ====== 智慧判斷泰文加班語意（有需要才送入，否則直接翻譯） ======
 function buildSmartPreprocessPrompt(text) {
   return `
