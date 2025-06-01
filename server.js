@@ -189,8 +189,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
 
   // 強化 prompt，請模型「只回翻譯、不要解釋」
   const systemPrompt = customPrompt ||
-    `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
-
+  `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，且 "ลงทำงาน" 統一翻譯為「上班」，"เลิกงาน" 翻譯為「下班」。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -439,6 +438,7 @@ for (const line of lines) {
   let mentionPart = "";
   let textPart = line;
 
+  // mention pattern
   const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
   const match = line.match(mentionPattern);
   if (match) {
@@ -451,32 +451,34 @@ for (const line of lines) {
     continue;
   }
 
-  // 純中文
-  if (/^[\u4e00-\u9fff\s]+$/.test(textPart)) {
+  // 判斷是否「純中文」（且不是只有標點）
+  if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
+    // 純中文根據群組設定多語翻譯
     for (let code of set) {
       if (code === "zh-TW") continue;
       const tr = await translateWithDeepSeek(textPart, code);
       outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
     }
+    // 如果沒有設定任何語言，就什麼都不做
     continue;
   }
 
-  // 純外語或混合：直接翻譯（只輸出翻譯，不再列出原文）
+  // 只要不是純中文，一律只要「mention+翻譯」！不要列出 mention+原文
   let zh = textPart;
   if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
     zh = await smartPreprocess(textPart, "th");
   }
-  // 1. 繁體中文
+  // 1. 強制繁體中文（只要不是純中文都會有這一行）
   const final = await translateWithDeepSeek(zh, "zh-TW");
   outputLines.push((mentionPart ? mentionPart + " " : "") + final);
 
-  // 2. 依設定其它語言
+  // 2. 依設定翻其它語言
   for (let code of set) {
     if (code === "zh-TW") continue;
     const tr = await translateWithDeepSeek(zh, code);
     outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
   }
-  // ⚠️ 不要再把 (mention+原文) 加入 outputLines ！
+  // ❗️不要加上原文
 }
 
   // 還原 mention 並組成最終訊息，過濾重複行
