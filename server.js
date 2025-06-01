@@ -145,12 +145,11 @@ function restoreMentions(text, segments) {
 }
 function preprocessShiftTerms(text) {
   return text
-    .replace(/ลงทำงาน/g, "下班")
+    .replace(/ลงทำงาน/g, "上班")      // 正確是「上班」
     .replace(/เข้าเวร/g, "上班")
     .replace(/ออกเวร/g, "下班")
     .replace(/เลิกงาน/g, "下班");
 }
-
 // ====== 行業別選單 ======
 function buildIndustryMenu() {
   return {
@@ -434,57 +433,51 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
   const { masked, segments } = extractMentionsFromLineMessage(event.message);
   const lines = masked.split(/\r?\n/);
   let outputLines = [];
+for (const line of lines) {
+  if (!line.trim()) continue;
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
+  let mentionPart = "";
+  let textPart = line;
 
-    // 處理 mention
-    let mentionPart = "";
-    let textPart = line;
+  const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
+  const match = line.match(mentionPattern);
+  if (match) {
+    mentionPart = match[1].trim();
+    textPart = match[2].trim();
+  }
 
-    // 這裡比原本更嚴謹：如果 line 前面有 [@MENTION] 就分離
-    const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
-    const match = line.match(mentionPattern);
-    if (match) {
-      mentionPart = match[1].trim();
-      textPart = match[2].trim();
-    }
+  if (isSymbolOrNum(textPart) || !textPart) {
+    outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
+    continue;
+  }
 
-    // Symbol or number, 不翻譯
-    if (isSymbolOrNum(textPart) || !textPart) {
-      outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
-      continue;
-    }
-
-    // **判斷是否需要翻譯**
-    let result = "";
-    // 純中文：只依設定翻成其它語言，不做多餘重複
-    if (/^[\u4e00-\u9fff\s]+$/.test(textPart)) {
-      for (let code of set) {
-        if (code === "zh-TW") continue;
-        const tr = await translateWithDeepSeek(textPart, code);
-        outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
-      }
-      continue;
-    }
-
-    // 純外語或中外混合（包含英文、泰文、越文、印尼文），全部直接翻成繁體中文＋依設定翻成其它語言
-    let zh = textPart;
-    if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
-      // 泰文加班語意特殊判斷
-      zh = await smartPreprocess(textPart, "th");
-    }
-    // 1. 強制繁體中文（只要不是純中文就一定要有繁體翻譯）
-    const final = await translateWithDeepSeek(zh, "zh-TW");
-    outputLines.push((mentionPart ? mentionPart + " " : "") + final);
-
-    // 2. 依設定翻其它語言
+  // 純中文
+  if (/^[\u4e00-\u9fff\s]+$/.test(textPart)) {
     for (let code of set) {
       if (code === "zh-TW") continue;
-      const tr = await translateWithDeepSeek(zh, code);
+      const tr = await translateWithDeepSeek(textPart, code);
       outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
     }
+    continue;
   }
+
+  // 純外語或混合：直接翻譯（只輸出翻譯，不再列出原文）
+  let zh = textPart;
+  if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
+    zh = await smartPreprocess(textPart, "th");
+  }
+  // 1. 繁體中文
+  const final = await translateWithDeepSeek(zh, "zh-TW");
+  outputLines.push((mentionPart ? mentionPart + " " : "") + final);
+
+  // 2. 依設定其它語言
+  for (let code of set) {
+    if (code === "zh-TW") continue;
+    const tr = await translateWithDeepSeek(zh, code);
+    outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
+  }
+  // ⚠️ 不要再把 (mention+原文) 加入 outputLines ！
+}
 
   // 還原 mention 並組成最終訊息，過濾重複行
   const translated = restoreMentions([...new Set(outputLines)].join('\n'), segments);
