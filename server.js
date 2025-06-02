@@ -186,9 +186,8 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
-  // 強化 prompt，請模型「只回翻譯、不要解釋」
   const systemPrompt = customPrompt ||
-  `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，且 "ลงทำงาน" 統一翻譯為「上班」，"เลิกงาน" 翻譯為「下班」。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
+    `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，且 "ลงทำงาน" 統一翻譯為「上班」，"เลิกงาน" 翻譯為「下班」。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -202,11 +201,8 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
     });
 
     let out = res.data.choices[0].message.content.trim();
+    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
 
-    // 自動去除括號（如有出現括號標註，常見於 DeepSeek 回傳）
-    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, ""); // 去掉前導括號
-
-    // 若翻譯成繁中，卻不是中文，顯示錯誤提示
     if (targetLang === "zh-TW" && !/[\u4e00-\u9fff]/.test(out)) {
       out = "（翻譯異常，請稍後再試）";
     }
@@ -222,7 +218,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
     return "（翻譯暫時不可用）";
   }
 };
-// ====== 智慧判斷泰文加班語意（有需要才送入，否則直接翻譯） ======
+// ====== 智慧判斷泰文加班語意 ======
 function buildSmartPreprocessPrompt(text) {
   return `
 你是專門判斷泰文工廠輪班加班語意的 AI。
@@ -356,7 +352,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// ====== Webhook主要邏輯（已修正版）======
+// ====== Webhook主要邏輯（防止重複）======
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -423,14 +419,14 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return; // 已處理 postback
       }
 
-      // --- 主翻譯流程 ---
+      // --- 主翻譯流程（去除重複與原文） ---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
-        // 擷取 mention、還原機制
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
         let outputLines = [];
+
         for (const line of lines) {
           if (!line.trim()) continue;
 
@@ -449,40 +445,38 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 判斷是否「純中文」（且不是只有標點）
+          // 純中文 → 只翻其它語言
           if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
-            if (set.size === 0) continue;
             for (let code of set) {
               if (code === "zh-TW") continue;
               const tr = await translateWithDeepSeek(textPart, code);
-              tr.split('\n').forEach(line => {
-                outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+              tr.split('\n').forEach(tl => {
+                outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
               });
             }
             continue;
           }
 
-          // 非純中文
+          // 其它語言（只給翻譯，不留原文）
           let zh = textPart;
           if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
           }
+          // 1. 先繁中
           const final = await translateWithDeepSeek(zh, "zh-TW");
-          final.split('\n').forEach(line => {
-            if (/[\u4e00-\u9fff]/.test(line)) {
-              outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-            }
-          });
+          if (/[\u4e00-\u9fff]/.test(final)) {
+            outputLines.push((mentionPart ? mentionPart + " " : "") + final.trim());
+          }
+          // 2. 其它語言
           for (let code of set) {
             if (code === "zh-TW") continue;
             const tr = await translateWithDeepSeek(zh, code);
-            tr.split('\n').forEach(line => {
-              outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+            tr.split('\n').forEach(tl => {
+              outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
             });
           }
         }
 
-        // 還原 mention 並組成最終訊息，過濾重複行
         const translated = restoreMentions([...new Set(outputLines)].join('\n'), segments);
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
