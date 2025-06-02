@@ -410,74 +410,78 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       }
 
       // --- 主翻譯流程 ---
-      if (event.type === "message" && event.message.type === "text" && gid) {
-        const set = groupLang.get(gid) || new Set();
-        const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const lines = masked.split(/\r?\n/);
-        let outputLines = [];
+      // --- 主翻譯流程 ---
+if (event.type === "message" && event.message.type === "text" && gid) {
+  const set = groupLang.get(gid) || new Set();
+  const { masked, segments } = extractMentionsFromLineMessage(event.message);
+  const lines = masked.split(/\r?\n/);
+  let outputLines = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
+    let mentionPart = "";
+    let textPart = line;
+    const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
+    const match = line.match(mentionPattern);
+    if (match) {
+      mentionPart = match[1].trim();
+      textPart = match[2].trim();
+    }
 
-          let mentionPart = "";
-          let textPart = line;
+    if (isSymbolOrNum(textPart) || !textPart) {
+      outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
+      continue;
+    }
 
-          // mention
-          const mentionPattern = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)(.*)$/;
-          const match = line.match(mentionPattern);
-          if (match) {
-            mentionPart = match[1].trim();
-            textPart = match[2].trim();
-          }
-
-          if (isSymbolOrNum(textPart) || !textPart) {
-            outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
-            continue;
-          }
-
-          // 純中文（但不是只有標點）
-          if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
-            if (set.size === 0) continue;
-            for (let code of set) {
-              if (code === "zh-TW") continue;
-              const tr = await translateWithDeepSeek(textPart, code);
-              tr.split('\n').forEach(line => {
-                outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-              });
-            }
-            continue;
-          }
-
-          // 非純中文
-          let zh = textPart;
-          if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
-            zh = await smartPreprocess(textPart, "th");
-          }
-          // 只要不是純中文，一律不加原文
-          const finalZh = await translateWithDeepSeek(zh, "zh-TW");
-          if (/[\u4e00-\u9fff]/.test(finalZh)) {
-            outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
-          }
-          for (let code of set) {
-            if (code === "zh-TW") continue;
-            const tr = await translateWithDeepSeek(zh, code);
-            tr.split('\n').forEach(line => {
-              outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-            });
-          }
-        }
-
-        // 防止巢狀/重複
-        let linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
-        linesOut = linesOut.filter(line => !/^【.*?】說：/.test(line));
-        const translated = restoreMentions(linesOut.join('\n'), segments);
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${translated}`
+    // 判斷是否純中文（且不是只有標點）
+    if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
+      if (set.size === 0) continue;
+      for (let code of set) {
+        if (code === "zh-TW") continue;
+        const tr = await translateWithDeepSeek(textPart, code);
+        tr.split('\n').forEach(line => {
+          outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
         });
       }
+      continue;
+    }
+
+    // 非純中文（外語）=> 翻譯，**不留原文**
+    let zh = textPart;
+    if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
+      zh = await smartPreprocess(textPart, "th");
+    }
+    const finalZh = await translateWithDeepSeek(zh, "zh-TW");
+    if (/[\u4e00-\u9fff]/.test(finalZh)) {
+      outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
+    }
+    for (let code of set) {
+      if (code === "zh-TW") continue;
+      const tr = await translateWithDeepSeek(zh, code);
+      tr.split('\n').forEach(line => {
+        outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+      });
+    }
+  }
+
+  // **加這段，過濾掉多餘的「說：」巢狀**
+  let linesOut = [...new Set(outputLines)]
+    .filter(x => !!x && x.trim())
+    .filter(line => !/^【.*?】說：/.test(line)); // <--- 只保留最終內容，不再套娃
+
+  // 若全被過濾掉，則保留原本去重內容
+  if (linesOut.length === 0) {
+    linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
+  }
+
+  const translated = restoreMentions(linesOut.join('\n'), segments);
+  const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: `【${userName}】說：\n${translated}`
+  });
+}
     } catch (e) {
       console.error("處理事件錯誤:", e);
     }
