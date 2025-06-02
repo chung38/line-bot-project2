@@ -365,6 +365,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
   await Promise.all(events.map(async event => {
     try {
+      console.log("event =", JSON.stringify(event, null, 2));
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
 
