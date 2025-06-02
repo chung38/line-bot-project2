@@ -77,7 +77,6 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// **改進：只要沒有中文且有非ASCII字元，一律當作外語自動翻譯**
 function isAllForeign(text) {
   return !/[\u4e00-\u9fff]/.test(text) && /[^\x00-\x7F]/.test(text);
 }
@@ -145,7 +144,7 @@ function restoreMentions(text, segments) {
 }
 function preprocessShiftTerms(text) {
   return text
-    .replace(/ลงทำงาน/g, "上班")      // 正確是「上班」
+    .replace(/ลงทำงาน/g, "上班")
     .replace(/เข้าเวร/g, "上班")
     .replace(/ออกเวร/g, "下班")
     .replace(/เลิกงาน/g, "下班");
@@ -298,7 +297,6 @@ const sendMenu = async (gid, retry = 0) => {
     margin: "md",
     height: "sm"
   });
-  // 行業別按鈕
   langButtons.push({
     type: "button",
     action: { type: "postback", label: "🏭 設定行業別", data: "action=show_industry_menu" },
@@ -427,95 +425,78 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
       // --- 主翻譯流程 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
-  const set = groupLang.get(gid) || new Set();
+        const set = groupLang.get(gid) || new Set();
 
-  // 擷取 mention、還原機制
-  const { masked, segments } = extractMentionsFromLineMessage(event.message);
-  const lines = masked.split(/\r?\n/);
-  let outputLines = [];
-  for (const line of lines) {
-  if (!line.trim()) continue;
+        // 擷取 mention、還原機制
+        const { masked, segments } = extractMentionsFromLineMessage(event.message);
+        const lines = masked.split(/\r?\n/);
+        let outputLines = [];
+        for (const line of lines) {
+          if (!line.trim()) continue;
 
-  let mentionPart = "";
-  let textPart = line;
+          let mentionPart = "";
+          let textPart = line;
 
-  // mention pattern
-  const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
-  const match = line.match(mentionPattern);
-  if (match) {
-    mentionPart = match[1].trim();
-    textPart = match[2].trim();
-  }
+          const mentionPattern = /^((?:\[@MENTION_\d+\]\s*)+)(.*)$/;
+          const match = line.match(mentionPattern);
+          if (match) {
+            mentionPart = match[1].trim();
+            textPart = match[2].trim();
+          }
 
-  if (isSymbolOrNum(textPart) || !textPart) {
-    outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
-    continue;
-  }
+          if (isSymbolOrNum(textPart) || !textPart) {
+            outputLines.push((mentionPart ? mentionPart + " " : "") + textPart);
+            continue;
+          }
 
-  // 判斷是否「純中文」（且不是只有標點）
-  if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
-    if (set.size === 0) continue;
-    for (let code of set) {
-      if (code === "zh-TW") continue;
-      const tr = await translateWithDeepSeek(textPart, code);
-      tr.split('\n').forEach(line => {
-        outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-      });
-    }
-    continue;
-  }
+          // 判斷是否「純中文」（且不是只有標點）
+          if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
+            if (set.size === 0) continue;
+            for (let code of set) {
+              if (code === "zh-TW") continue;
+              const tr = await translateWithDeepSeek(textPart, code);
+              tr.split('\n').forEach(line => {
+                outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+              });
+            }
+            continue;
+          }
 
-  // 非純中文
-  let zh = textPart;
-  if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
-    zh = await smartPreprocess(textPart, "th");
-  }
-  const final = await translateWithDeepSeek(zh, "zh-TW");
-  final.split('\n').forEach(line => {
-    if (/[\u4e00-\u9fff]/.test(line)) {
-      outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-    }
-  });
-  for (let code of set) {
-    if (code === "zh-TW") continue;
-    const tr = await translateWithDeepSeek(zh, code);
-    tr.split('\n').forEach(line => {
-      outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
-    });
-  }
-}
-  // 只要不是純中文，一律只要「mention+翻譯」！不要列出 mention+原文
-  let zh = textPart;
-  if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
-    zh = await smartPreprocess(textPart, "th");
-  }
-  // 1. 強制繁體中文（只要不是純中文都會有這一行）
-  const final = await translateWithDeepSeek(zh, "zh-TW");
-  outputLines.push((mentionPart ? mentionPart + " " : "") + final);
+          // 非純中文
+          let zh = textPart;
+          if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
+            zh = await smartPreprocess(textPart, "th");
+          }
+          const final = await translateWithDeepSeek(zh, "zh-TW");
+          final.split('\n').forEach(line => {
+            if (/[\u4e00-\u9fff]/.test(line)) {
+              outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+            }
+          });
+          for (let code of set) {
+            if (code === "zh-TW") continue;
+            const tr = await translateWithDeepSeek(zh, code);
+            tr.split('\n').forEach(line => {
+              outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+            });
+          }
+        }
 
-  // 2. 依設定翻其它語言
-  for (let code of set) {
-    if (code === "zh-TW") continue;
-    const tr = await translateWithDeepSeek(zh, code);
-    outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
-  }
-  // ❗️不要加上原文
-}
+        // 還原 mention 並組成最終訊息，過濾重複行
+        const translated = restoreMentions([...new Set(outputLines)].join('\n'), segments);
+        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
-  // 還原 mention 並組成最終訊息，過濾重複行
-  const translated = restoreMentions([...new Set(outputLines)].join('\n'), segments);
-  const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text: `【${userName}】說：\n${translated}`
-  });
-}
+        await client.replyMessage(event.replyToken, {
+          type: "text",
+          text: `【${userName}】說：\n${translated}`
+        });
+      }
     } catch (e) {
       console.error("處理事件錯誤:", e);
     }
   }));
 });
+
 // 文宣圖片抓取與推播功能
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
