@@ -433,7 +433,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
   const { masked, segments } = extractMentionsFromLineMessage(event.message);
   const lines = masked.split(/\r?\n/);
   let outputLines = [];
-for (const line of lines) {
+  for (const line of lines) {
   if (!line.trim()) continue;
 
   let mentionPart = "";
@@ -454,16 +454,36 @@ for (const line of lines) {
 
   // 判斷是否「純中文」（且不是只有標點）
   if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
-    // 純中文根據群組設定多語翻譯
+    if (set.size === 0) continue;
     for (let code of set) {
       if (code === "zh-TW") continue;
       const tr = await translateWithDeepSeek(textPart, code);
-      outputLines.push((mentionPart ? mentionPart + " " : "") + tr);
+      tr.split('\n').forEach(line => {
+        outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+      });
     }
-    // 如果沒有設定任何語言，就什麼都不做
     continue;
   }
 
+  // 非純中文
+  let zh = textPart;
+  if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
+    zh = await smartPreprocess(textPart, "th");
+  }
+  const final = await translateWithDeepSeek(zh, "zh-TW");
+  final.split('\n').forEach(line => {
+    if (/[\u4e00-\u9fff]/.test(line)) {
+      outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+    }
+  });
+  for (let code of set) {
+    if (code === "zh-TW") continue;
+    const tr = await translateWithDeepSeek(zh, code);
+    tr.split('\n').forEach(line => {
+      outputLines.push((mentionPart ? mentionPart + " " : "") + line.trim());
+    });
+  }
+}
   // 只要不是純中文，一律只要「mention+翻譯」！不要列出 mention+原文
   let zh = textPart;
   if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
