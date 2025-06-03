@@ -367,14 +367,13 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// ====== Webhook主要邏輯 ======
+// ====== Webhook主要邏輯（已修正版：加入!設定、!文宣）======
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
 
   await Promise.all(events.map(async event => {
     try {
-      console.log("event =", JSON.stringify(event, null, 2));
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
 
@@ -388,17 +387,12 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       if (event.type === "postback" && gid) {
         const data = event.postback.data || "";
 
-        // 語言多選
         if (data.startsWith("action=set_lang")) {
           const code = data.split("code=")[1];
           let set = groupLang.get(gid) || new Set();
-          if (code === "cancel") {
-            set = new Set();
-          } else if (set.has(code)) {
-            set.delete(code);
-          } else {
-            set.add(code);
-          }
+          if (code === "cancel") set = new Set();
+          else if (set.has(code)) set.delete(code);
+          else set.add(code);
           groupLang.set(gid, set);
           await saveLang();
           await client.replyMessage(event.replyToken, {
@@ -407,9 +401,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               ? `✅ 已選擇語言：${[...set].map(c => SUPPORTED_LANGS[c]).join("、")}`
               : `❌ 已取消所有語言`
           });
-        }
-        // 行業別選擇
-        else if (data.startsWith("action=set_industry")) {
+        } else if (data.startsWith("action=set_industry")) {
           const industry = decodeURIComponent(data.split("industry=")[1]);
           if (industry) {
             groupIndustry.set(gid, industry);
@@ -426,52 +418,59 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               text: `❌ 已清除行業別`
             });
           }
-        }
-        // 彈出行業別 FlexMenu
-        else if (data === "action=show_industry_menu") {
+        } else if (data === "action=show_industry_menu") {
           await client.replyMessage(event.replyToken, buildIndustryMenu());
         }
-        return; // 已處理 postback
+        return;
       }
 
-      // --- 主翻譯流程（修正版，外語只翻繁體中文）---
+      // --- 訊息事件：指令判斷 ---
       if (event.type === "message" && event.message.type === "text" && gid) {
-        const set = groupLang.get(gid) || new Set();
+        const msgText = event.message.text.trim();
 
-        // 擷取 mention、還原機制
+        // === [1] !設定 指令：彈語言選單 ===
+        if (msgText === "!設定") {
+          await sendMenu(gid);
+          return;
+        }
+
+        // === [2] !文宣 yyyy-mm-dd 指令：手動推播 ===
+        const docMatch = msgText.match(/^!文宣\s*(\d{4}-\d{2}-\d{2})/);
+        if (docMatch && docMatch[1]) {
+          await sendImagesToGroup(gid, docMatch[1]);
+          return;
+        }
+
+        // ======（以下為原本翻譯主流程）======
+        const set = groupLang.get(gid) || new Set();
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const lines = masked.split(/\r?\n/);
         let outputLines = [];
-
         for (const line of lines) {
           if (!line.trim()) continue;
-
           let mentionPart = "";
           let textPart = line;
 
-          // 修正 mention 處理：明確分離 mention 與內容
+          // 明確分離 mention 與內容
           const mentionMatch = line.match(/^(@[^\s]+)(?:\s+(.*))?$/);
           if (mentionMatch) {
-            mentionPart = mentionMatch[1]; // 例如 @galant(魏灝)
-            textPart = mentionMatch[2] || ""; // 後面內容
+            mentionPart = mentionMatch[1];
+            textPart = mentionMatch[2] || "";
           }
 
-          // 跳過只有 mention 沒有內容的情況
           if (mentionPart && !textPart.trim()) continue;
-
-          // 只符號或數字
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
-          // 偵測原文語言
+          // 偵測語言
           const srcLang = detectLang(textPart);
 
           // 純中文：多語翻譯
           if (srcLang === "zh-TW") {
             if (set.size > 0) {
               for (let code of set) {
-                if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
+                if (code === "zh-TW" || code === srcLang) continue;
                 const tr = await translateWithDeepSeek(textPart, code);
-                if (tr.trim() === textPart.trim()) continue; // 避免原文重複
+                if (tr.trim() === textPart.trim()) continue;
                 tr.split('\n').forEach(tl => {
                   outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
                 });
@@ -480,7 +479,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 外語：只翻繁體中文
+          // 外語：只翻繁中
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
@@ -489,18 +488,14 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
             outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
-          // 不再翻譯成群組設定語言
         }
 
-        // 只保留唯一，且排除巢狀「【...】說：」
         let linesOut = [...new Set(outputLines)]
           .filter(x => !!x && x.trim())
           .filter(line => !/^【.*?】說：/.test(line));
         if (linesOut.length === 0) {
           linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
         }
-
-        // mention還原
         const translated = restoreMentions(linesOut.join('\n'), segments);
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
@@ -515,7 +510,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
   }));
 });
 
-// --- 文宣推播不變 ---
+// --- 文宣推播 ---
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
     const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -567,6 +562,7 @@ async function sendImagesToGroup(gid, dateStr) {
     }
   }
 }
+
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
