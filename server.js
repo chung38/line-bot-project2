@@ -434,7 +434,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return; // 已處理 postback
       }
 
-      // --- 主翻譯流程（修正版，強化語言偵測與重複過濾）---
+      // --- 主翻譯流程（修正版，外語只翻繁體中文）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
@@ -480,7 +480,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 外語：繁中+多語
+          // 外語：只翻繁體中文
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
@@ -489,16 +489,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
             outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
-          if (set.size > 0) {
-            for (let code of set) {
-              if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
-              const tr = await translateWithDeepSeek(zh, code);
-              if (tr.trim() === textPart.trim()) continue; // 避免原文重複
-              tr.split('\n').forEach(tl => {
-                outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
-              });
-            }
-          }
+          // 不再翻譯成群組設定語言
         }
 
         // 只保留唯一，且排除巢狀「【...】說：」
