@@ -81,13 +81,15 @@ function isAllForeign(text) {
   return !/[\u4e00-\u9fff]/.test(text) && /[^\x00-\x7F]/.test(text);
 }
 
-// ====== 新增：自動偵測原文語言 ======
+// ====== 強化版：自動偵測原文語言 ======
 const detectLang = (text) => {
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
   if (/[\u4e00-\u9fff]/.test(text)) return 'zh-TW';
   if (/[a-zA-Z]/.test(text)) return 'en';
-  if (/[\u0100-\u017F]/.test(text)) return 'vi';
-  if (/[\u0600-\u06FF]/.test(text)) return 'id';
+  // 越南文常用字元範圍與字母
+  if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
+  // 印尼文判斷常用詞彙
+  if (/\b(ini|dan|yang|untuk|dengan|tidak|akan)\b/i.test(text)) return 'id';
   return 'unknown';
 };
 
@@ -432,7 +434,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return; // 已處理 postback
       }
 
-      // --- 主翻譯流程（修正版，mention 與內容分離）---
+      // --- 主翻譯流程（修正版，強化語言偵測與重複過濾）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
@@ -469,6 +471,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               for (let code of set) {
                 if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
                 const tr = await translateWithDeepSeek(textPart, code);
+                if (tr.trim() === textPart.trim()) continue; // 避免原文重複
                 tr.split('\n').forEach(tl => {
                   outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
                 });
@@ -490,6 +493,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             for (let code of set) {
               if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
               const tr = await translateWithDeepSeek(zh, code);
+              if (tr.trim() === textPart.trim()) continue; // 避免原文重複
               tr.split('\n').forEach(tl => {
                 outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
               });
