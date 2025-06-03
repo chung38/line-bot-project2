@@ -432,7 +432,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return; // 已處理 postback
       }
 
-      // --- 主翻譯流程（修正版）---
+      // --- 主翻譯流程（修正版，mention 與內容分離）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
@@ -447,29 +447,20 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           let mentionPart = "";
           let textPart = line;
 
-          // 處理 mention
-          const mentionPattern = /^((?:@MENTION_\d+\s*)+)(.*)$/;
-          const match = line.match(mentionPattern);
-          if (match) {
-            mentionPart = match[1].trim();
-            textPart = match[2].trim();
+          // 修正 mention 處理：明確分離 mention 與內容
+          const mentionMatch = line.match(/^(@[^\s]+)(?:\s+(.*))?$/);
+          if (mentionMatch) {
+            mentionPart = mentionMatch[1]; // 例如 @galant(魏灝)
+            textPart = mentionMatch[2] || ""; // 後面內容
           }
 
-          // 跳過只有 @ALL/@xxx
-          if (/^@/.test(textPart) && !textPart.replace(/^@\S+\s*/, "")) continue;
-
-          // 若是「@All 內容」只翻內容不翻mention
-          let actualMention = mentionPart;
-          if (/^@/.test(textPart)) {
-            const split = textPart.split(/\s+/, 2);
-            actualMention = split[0];
-            textPart = split[1] || "";
-          }
+          // 跳過只有 mention 沒有內容的情況
+          if (mentionPart && !textPart.trim()) continue;
 
           // 只符號或數字
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
-          // ====== 修正：自動偵測原文語言 ======
+          // 偵測原文語言
           const srcLang = detectLang(textPart);
 
           // 純中文：多語翻譯
@@ -479,7 +470,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
                 if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
                 const tr = await translateWithDeepSeek(textPart, code);
                 tr.split('\n').forEach(tl => {
-                  outputLines.push((actualMention ? actualMention + " " : "") + tl.trim());
+                  outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
                 });
               }
             }
@@ -493,14 +484,14 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
           const finalZh = await translateWithDeepSeek(zh, "zh-TW");
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
-            outputLines.push((actualMention ? actualMention + " " : "") + finalZh.trim());
+            outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
           if (set.size > 0) {
             for (let code of set) {
               if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
               const tr = await translateWithDeepSeek(zh, code);
               tr.split('\n').forEach(tl => {
-                outputLines.push((actualMention ? actualMention + " " : "") + tl.trim());
+                outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
               });
             }
           }
