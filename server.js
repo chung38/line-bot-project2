@@ -81,6 +81,16 @@ function isAllForeign(text) {
   return !/[\u4e00-\u9fff]/.test(text) && /[^\x00-\x7F]/.test(text);
 }
 
+// ====== 新增：自動偵測原文語言 ======
+const detectLang = (text) => {
+  if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
+  if (/[\u4e00-\u9fff]/.test(text)) return 'zh-TW';
+  if (/[a-zA-Z]/.test(text)) return 'en';
+  if (/[\u0100-\u017F]/.test(text)) return 'vi';
+  if (/[\u0600-\u06FF]/.test(text)) return 'id';
+  return 'unknown';
+};
+
 // ====== Firestore 設定相關 ======
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
@@ -203,6 +213,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
 
     let out = res.data.choices[0].message.content.trim();
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, ""); // 去掉前導括號
+    out = out.split('\n')[0]; // 只取第一行
 
     if (targetLang === "zh-TW" && !/[\u4e00-\u9fff]/.test(out)) {
       out = "（翻譯異常，請稍後再試）";
@@ -219,6 +230,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
     return "（翻譯暫時不可用）";
   }
 };
+
 // ====== 智慧判斷泰文加班語意 ======
 function buildSmartPreprocessPrompt(text) {
   return `
@@ -420,7 +432,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         return; // 已處理 postback
       }
 
-      // --- 主翻譯流程（已重構，確保不重複）---
+      // --- 主翻譯流程（修正版）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
@@ -436,7 +448,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           let textPart = line;
 
           // 處理 mention
-          const mentionPattern = /^((?:$begin:math:display$@MENTION_\\d+$end:math:display$\s*)+)(.*)$/;
+          const mentionPattern = /^((?:@MENTION_\d+\s*)+)(.*)$/;
           const match = line.match(mentionPattern);
           if (match) {
             mentionPart = match[1].trim();
@@ -457,11 +469,14 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           // 只符號或數字
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
+          // ====== 修正：自動偵測原文語言 ======
+          const srcLang = detectLang(textPart);
+
           // 純中文：多語翻譯
-          if (/^[\u4e00-\u9fff\s.,!?，。？！]+$/.test(textPart)) {
+          if (srcLang === "zh-TW") {
             if (set.size > 0) {
               for (let code of set) {
-                if (code === "zh-TW") continue;
+                if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
                 const tr = await translateWithDeepSeek(textPart, code);
                 tr.split('\n').forEach(tl => {
                   outputLines.push((actualMention ? actualMention + " " : "") + tl.trim());
@@ -473,7 +488,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           // 外語：繁中+多語
           let zh = textPart;
-          if (/[\u0E00-\u0E7F]/.test(textPart) && /ทำโอ/.test(textPart)) {
+          if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
           }
           const finalZh = await translateWithDeepSeek(zh, "zh-TW");
@@ -482,7 +497,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
           if (set.size > 0) {
             for (let code of set) {
-              if (code === "zh-TW") continue;
+              if (code === "zh-TW" || code === srcLang) continue; // 跳過原文語言
               const tr = await translateWithDeepSeek(zh, code);
               tr.split('\n').forEach(tl => {
                 outputLines.push((actualMention ? actualMention + " " : "") + tl.trim());
