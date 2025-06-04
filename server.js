@@ -86,9 +86,7 @@ const detectLang = (text) => {
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
   if (/[\u4e00-\u9fff]/.test(text)) return 'zh-TW';
   if (/[a-zA-Z]/.test(text)) return 'en';
-  // 越南文常用字元範圍與字母
   if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
-  // 印尼文判斷常用詞彙
   if (/\b(ini|dan|yang|untuk|dengan|tidak|akan)\b/i.test(text)) return 'id';
   return 'unknown';
 };
@@ -367,13 +365,14 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// ====== Webhook主要邏輯（已修正版：加入!設定、!文宣）======
+// ====== Webhook主要邏輯 ======
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
 
   await Promise.all(events.map(async event => {
     try {
+      console.log("event =", JSON.stringify(event, null, 2));
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
 
@@ -386,13 +385,27 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       // --- postback 事件處理 ---
       if (event.type === "postback" && gid) {
         const data = event.postback.data || "";
+        const inviter = groupInviter.get(gid);
 
+        // 只有邀請人可操作語言與行業設定
+        if (["action=set_lang", "action=set_industry", "action=show_industry_menu"].some(a => data.startsWith(a))) {
+          if (inviter && uid !== inviter) {
+            // 非邀請人，忽略不回應
+            return;
+          }
+        }
+
+        // 語言多選
         if (data.startsWith("action=set_lang")) {
           const code = data.split("code=")[1];
           let set = groupLang.get(gid) || new Set();
-          if (code === "cancel") set = new Set();
-          else if (set.has(code)) set.delete(code);
-          else set.add(code);
+          if (code === "cancel") {
+            set = new Set();
+          } else if (set.has(code)) {
+            set.delete(code);
+          } else {
+            set.add(code);
+          }
           groupLang.set(gid, set);
           await saveLang();
           await client.replyMessage(event.replyToken, {
@@ -401,7 +414,9 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               ? `✅ 已選擇語言：${[...set].map(c => SUPPORTED_LANGS[c]).join("、")}`
               : `❌ 已取消所有語言`
           });
-        } else if (data.startsWith("action=set_industry")) {
+        }
+        // 行業別選擇
+        else if (data.startsWith("action=set_industry")) {
           const industry = decodeURIComponent(data.split("industry=")[1]);
           if (industry) {
             groupIndustry.set(gid, industry);
@@ -418,36 +433,40 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               text: `❌ 已清除行業別`
             });
           }
-        } else if (data === "action=show_industry_menu") {
+        }
+        // 彈出行業別 FlexMenu
+        else if (data === "action=show_industry_menu") {
           await client.replyMessage(event.replyToken, buildIndustryMenu());
         }
         return;
       }
 
-      // --- 訊息事件：指令判斷 ---
+      // --- 主翻譯流程（優化分行合併短句避免中文夾雜）---
       if (event.type === "message" && event.message.type === "text" && gid) {
-        const msgText = event.message.text.trim();
-
-        // === [1] !設定 指令：彈語言選單 ===
-        if (msgText === "!設定") {
-          await sendMenu(gid);
-          return;
-        }
-
-        // === [2] !文宣 yyyy-mm-dd 指令：手動推播 ===
-        const docMatch = msgText.match(/^!文宣\s*(\d{4}-\d{2}-\d{2})/);
-        if (docMatch && docMatch[1]) {
-          await sendImagesToGroup(gid, docMatch[1]);
-          return;
-        }
-
-        // ======（以下為原本翻譯主流程）======
         const set = groupLang.get(gid) || new Set();
+
+        // 擷取 mention、還原機制
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const lines = masked.split(/\r?\n/);
+
+        // 分行後合併過短中文行，避免短詞單獨翻譯
+        const rawLines = masked.split(/\r?\n/);
+        const lines = [];
+        for (let i = 0; i < rawLines.length; i++) {
+          let line = rawLines[i].trim();
+          if (!line) continue;
+          // 若是中文且長度小於4，合併到上一行
+          if (isChinese(line) && line.length < 4 && lines.length > 0) {
+            lines[lines.length - 1] += line;
+          } else {
+            lines.push(line);
+          }
+        }
+
         let outputLines = [];
+
         for (const line of lines) {
           if (!line.trim()) continue;
+
           let mentionPart = "";
           let textPart = line;
 
@@ -458,10 +477,13 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             textPart = mentionMatch[2] || "";
           }
 
+          // 跳過只有 mention 沒有內容的情況
           if (mentionPart && !textPart.trim()) continue;
+
+          // 只符號或數字
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
-          // 偵測語言
+          // 偵測原文語言
           const srcLang = detectLang(textPart);
 
           // 純中文：多語翻譯
@@ -479,7 +501,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 外語：只翻繁中
+          // 外語：只翻繁體中文
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
@@ -488,14 +510,18 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
             outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
+          // 不再翻譯成群組設定語言
         }
 
+        // 只保留唯一，且排除巢狀「【...】說：」
         let linesOut = [...new Set(outputLines)]
           .filter(x => !!x && x.trim())
           .filter(line => !/^【.*?】說：/.test(line));
         if (linesOut.length === 0) {
           linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
         }
+
+        // mention還原
         const translated = restoreMentions(linesOut.join('\n'), segments);
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
@@ -510,7 +536,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
   }));
 });
 
-// --- 文宣推播 ---
+// --- 文宣推播不變 ---
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
     const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
@@ -562,7 +588,6 @@ async function sendImagesToGroup(gid, dateStr) {
     }
   }
 }
-
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
