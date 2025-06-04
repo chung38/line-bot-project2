@@ -197,8 +197,9 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
+  // 移除強制替換詞彙的提示，改為忠實翻譯
   const systemPrompt = customPrompt ||
-  `你是一位台灣專業人工翻譯員，請將下列句子翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，且 "ลงทำงาน" 統一翻譯為「上班」，"เลิกงาน" 翻譯為「下班」。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
+  `你是一位台灣專業人工翻譯員，請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -232,34 +233,29 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
 };
 
 // ====== 智慧判斷泰文加班語意 ======
-function buildSmartPreprocessPrompt(text) {
-  return `
+async function smartPreprocess(text, langCode) {
+  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
+  if (smartPreprocessCache.has(text)) return smartPreprocessCache.get(text);
+
+  const prompt = `
 你是專門判斷泰文工廠輪班加班語意的 AI。
 請判斷下列句子是否表示「工廠整廠加班」：
 - 如果是，請直接回覆「全廠加班」。
 - 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
 原文：${text}
 `.trim();
-}
-async function callDeepSeekAPI(prompt) {
-  const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-    model: "deepseek-chat",
-    messages: [
-      { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
-      { role: "user", content: prompt }
-    ]
-  }, {
-    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
-  });
-  return res.data.choices[0].message.content.trim();
-}
-async function smartPreprocess(text, langCode) {
-  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
-  if (smartPreprocessCache.has(text)) return smartPreprocessCache.get(text);
 
-  const prompt = buildSmartPreprocessPrompt(text);
   try {
-    const result = await callDeepSeekAPI(prompt);
+    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
+        { role: "user", content: prompt }
+      ]
+    }, {
+      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+    });
+    const result = res.data.choices[0].message.content.trim();
     smartPreprocessCache.set(text, result);
     console.log(`smartPreprocess 輸入: ${text}`);
     console.log(`smartPreprocess 輸出: ${result}`);
@@ -372,30 +368,24 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
   await Promise.all(events.map(async event => {
     try {
-      console.log("event =", JSON.stringify(event, null, 2));
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
 
-      // --- 加入群組時彈出語言選單 ---
       if (event.type === "join" && gid) {
         await sendMenu(gid);
         return;
       }
 
-      // --- postback 事件處理 ---
       if (event.type === "postback" && gid) {
         const data = event.postback.data || "";
         const inviter = groupInviter.get(gid);
 
-        // 只有邀請人可操作語言與行業設定
         if (["action=set_lang", "action=set_industry", "action=show_industry_menu"].some(a => data.startsWith(a))) {
           if (inviter && uid !== inviter) {
-            // 非邀請人，忽略不回應
-            return;
+            return; // 非邀請人不處理
           }
         }
 
-        // 語言多選
         if (data.startsWith("action=set_lang")) {
           const code = data.split("code=")[1];
           let set = groupLang.get(gid) || new Set();
@@ -414,9 +404,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               ? `✅ 已選擇語言：${[...set].map(c => SUPPORTED_LANGS[c]).join("、")}`
               : `❌ 已取消所有語言`
           });
-        }
-        // 行業別選擇
-        else if (data.startsWith("action=set_industry")) {
+        } else if (data.startsWith("action=set_industry")) {
           const industry = decodeURIComponent(data.split("industry=")[1]);
           if (industry) {
             groupIndustry.set(gid, industry);
@@ -433,28 +421,23 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
               text: `❌ 已清除行業別`
             });
           }
-        }
-        // 彈出行業別 FlexMenu
-        else if (data === "action=show_industry_menu") {
+        } else if (data === "action=show_industry_menu") {
           await client.replyMessage(event.replyToken, buildIndustryMenu());
         }
         return;
       }
 
-      // --- 主翻譯流程（優化分行合併短句避免中文夾雜）---
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid) || new Set();
 
-        // 擷取 mention、還原機制
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
-        // 分行後合併過短中文行，避免短詞單獨翻譯
+        // 合併過短中文行避免短詞單獨翻譯
         const rawLines = masked.split(/\r?\n/);
         const lines = [];
         for (let i = 0; i < rawLines.length; i++) {
           let line = rawLines[i].trim();
           if (!line) continue;
-          // 若是中文且長度小於4，合併到上一行
           if (isChinese(line) && line.length < 4 && lines.length > 0) {
             lines[lines.length - 1] += line;
           } else {
@@ -470,23 +453,18 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           let mentionPart = "";
           let textPart = line;
 
-          // 明確分離 mention 與內容
           const mentionMatch = line.match(/^(@[^\s]+)(?:\s+(.*))?$/);
           if (mentionMatch) {
             mentionPart = mentionMatch[1];
             textPart = mentionMatch[2] || "";
           }
 
-          // 跳過只有 mention 沒有內容的情況
           if (mentionPart && !textPart.trim()) continue;
 
-          // 只符號或數字
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
-          // 偵測原文語言
           const srcLang = detectLang(textPart);
 
-          // 純中文：多語翻譯
           if (srcLang === "zh-TW") {
             if (set.size > 0) {
               for (let code of set) {
@@ -501,19 +479,22 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // 外語：只翻繁體中文
+          // smartPreprocess 回傳中文直接用，不再送翻譯API
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
+            if (/[\u4e00-\u9fff]/.test(zh)) {
+              outputLines.push((mentionPart ? mentionPart + " " : "") + zh.trim());
+              continue;
+            }
           }
+
           const finalZh = await translateWithDeepSeek(zh, "zh-TW");
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
             outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
-          // 不再翻譯成群組設定語言
         }
 
-        // 只保留唯一，且排除巢狀「【...】說：」
         let linesOut = [...new Set(outputLines)]
           .filter(x => !!x && x.trim())
           .filter(line => !/^【.*?】說：/.test(line));
@@ -521,7 +502,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
         }
 
-        // mention還原
         const translated = restoreMentions(linesOut.join('\n'), segments);
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
