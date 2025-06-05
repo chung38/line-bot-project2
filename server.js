@@ -197,9 +197,8 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
-  // 移除強制替換詞彙的提示，改為忠實翻譯
   const systemPrompt = customPrompt ||
-  `你是一位台灣專業人工翻譯員，請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
+    `你是一位台灣專業人工翻譯員，請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -213,8 +212,8 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
     });
 
     let out = res.data.choices[0].message.content.trim();
-    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, ""); // 去掉前導括號
-    out = out.split('\n')[0]; // 只取第一行
+    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
+    out = out.split('\n')[0];
 
     if (targetLang === "zh-TW" && !/[\u4e00-\u9fff]/.test(out)) {
       out = "（翻譯異常，請稍後再試）";
@@ -428,6 +427,42 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
       }
 
       if (event.type === "message" && event.message.type === "text" && gid) {
+        const text = event.message.text.trim();
+
+        // 指令 !設定
+        if (text === "!設定") {
+          await sendMenu(gid);
+          return;
+        }
+
+        // 指令 !文宣 YYYY-MM-DD
+        if (text.startsWith("!文宣")) {
+          const parts = text.split(/\s+/);
+          if (parts.length >= 2) {
+            const dateStr = parts[1];
+            try {
+              await sendImagesToGroup(gid, dateStr);
+              await client.replyMessage(event.replyToken, {
+                type: "text",
+                text: `✅ 已推播 ${dateStr} 的文宣圖片`
+              });
+            } catch (e) {
+              console.error("文宣推播錯誤:", e);
+              await client.replyMessage(event.replyToken, {
+                type: "text",
+                text: `❌ 推播失敗，請稍後再試`
+              });
+            }
+          } else {
+            await client.replyMessage(event.replyToken, {
+              type: "text",
+              text: "格式錯誤，請輸入 !文宣 YYYY-MM-DD"
+            });
+          }
+          return;
+        }
+
+        // 以下為翻譯流程，保持不變
         const set = groupLang.get(gid) || new Set();
 
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
