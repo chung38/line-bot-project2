@@ -382,7 +382,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         // 只有第一位設定者能操作語言與行業選單，其他人點擊無反應
         if (["action=set_lang", "action=set_industry", "action=show_industry_menu"].some(a => data.startsWith(a))) {
           if (inviter && uid !== inviter) {
-            return; // 非第一位設定者無反應，不回覆
+            return; // 非第一位設定者無回應
           }
         }
 
