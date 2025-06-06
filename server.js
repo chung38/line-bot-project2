@@ -72,7 +72,7 @@ const INDUSTRY_LIST = [
   "電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業"
 ];
 
-// ====== 判斷語言函式 ======
+// 判斷語言函式
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
@@ -81,7 +81,7 @@ function isAllForeign(text) {
   return !/[\u4e00-\u9fff]/.test(text) && /[^\x00-\x7F]/.test(text);
 }
 
-// ====== 強化版：自動偵測原文語言 ======
+// 自動偵測原文語言
 const detectLang = (text) => {
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
   if (/[\u4e00-\u9fff]/.test(text)) return 'zh-TW';
@@ -91,7 +91,7 @@ const detectLang = (text) => {
   return 'unknown';
 };
 
-// ====== Firestore 設定相關 ======
+// Firestore 設定相關
 const loadLang = async () => {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => groupLang.set(doc.id, new Set(doc.data().langs)));
@@ -130,7 +130,7 @@ const saveIndustry = async () => {
   await batch.commit();
 };
 
-// ====== LINE提及處理 ======
+// LINE提及處理
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -160,7 +160,7 @@ function preprocessShiftTerms(text) {
     .replace(/เลิกงาน/g, "下班");
 }
 
-// ====== 行業別選單 ======
+// 行業別選單
 function buildIndustryMenu() {
   return {
     type: "flex",
@@ -192,7 +192,7 @@ function buildIndustryMenu() {
   };
 }
 
-// ====== DeepSeek翻譯API ======
+// DeepSeek翻譯API
 const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) => {
   const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -231,7 +231,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   }
 };
 
-// ====== 智慧判斷泰文加班語意 ======
+// 智慧判斷泰文加班語意（只處理ทำโอ相關）
 async function smartPreprocess(text, langCode) {
   if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
   if (smartPreprocessCache.has(text)) return smartPreprocessCache.get(text);
@@ -265,7 +265,7 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-// ====== 語言選單 ======
+// 語言選單
 const rateLimit = new Map();
 const INTERVAL = 60000;
 const canSend = gid => {
@@ -360,7 +360,7 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// ====== Webhook主要邏輯 ======
+// Webhook主要邏輯
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -379,9 +379,10 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         const data = event.postback.data || "";
         const inviter = groupInviter.get(gid);
 
+        // 只有第一位設定者能操作語言與行業選單
         if (["action=set_lang", "action=set_industry", "action=show_industry_menu"].some(a => data.startsWith(a))) {
           if (inviter && uid !== inviter) {
-            return; // 非邀請人不處理
+            return; // 非第一位設定者無反應
           }
         }
 
@@ -462,12 +463,11 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // 以下為翻譯流程，保持不變
+        // 其餘為翻譯流程，保持不變
         const set = groupLang.get(gid) || new Set();
 
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
-        // 合併過短中文行避免短詞單獨翻譯
         const rawLines = masked.split(/\r?\n/);
         const lines = [];
         for (let i = 0; i < rawLines.length; i++) {
@@ -514,7 +514,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
-          // smartPreprocess 回傳中文直接用，不再送翻譯API
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
@@ -551,7 +550,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
   }));
 });
 
-// --- 文宣推播不變 ---
+// 文宣推播
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
     const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
