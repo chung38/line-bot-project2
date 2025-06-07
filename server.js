@@ -80,7 +80,6 @@ const isSymbolOrNum = txt =>
 
 // 新增泰文預處理函式
 function preprocessThaiWorkPhrase(text) {
-  // 將「ลงทำงาน」替換為「ไปทำงาน」以正確表達「去上班」
   return text.replace(/ลงทำงาน/g, "ไปทำงาน");
 }
 
@@ -91,7 +90,7 @@ const detectLang = (text) => {
   if (/[a-zA-Z]/.test(text)) return 'en';
   if (/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(text)) return 'vi';
   if (/\b(ini|dan|yang|untuk|dengan|tidak|akan)\b/i.test(text)) return 'id';
-  return 'en'; // fallback
+  return 'en';
 };
 
 // LINE提及處理
@@ -120,9 +119,9 @@ function restoreMentions(text, segments) {
 // 智慧判斷泰文加班語意
 async function smartPreprocess(text, langCode) {
   if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
-  
+
   const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
-  
+
   if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
 
   const prompt = `
@@ -573,6 +572,21 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           if (srcLang === "th") {
             textPart = preprocessThaiWorkPhrase(textPart);
+          }
+
+          if (srcLang === "zh-TW") {
+            // 中文輸入，翻譯成設定語言
+            if (set.size > 0) {
+              for (let code of set) {
+                if (code === "zh-TW") continue; // 跳過中文
+                const tr = await translateWithDeepSeek(textPart, code);
+                if (tr.trim() === textPart.trim()) continue;
+                tr.split('\n').forEach(tl => {
+                  outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
+                });
+              }
+            }
+            continue;
           }
 
           let zh = textPart;
