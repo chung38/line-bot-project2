@@ -78,6 +78,12 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
+// 新增泰文預處理函式
+function preprocessThaiWorkPhrase(text) {
+  // 將「ลงทำงาน」替換為「ไปทำงาน」以正確表達「去上班」
+  return text.replace(/ลงทำงาน/g, "ไปทำงาน");
+}
+
 // 自動偵測原文語言
 const detectLang = (text) => {
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
@@ -531,7 +537,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
-        // 合併過短中文行避免短詞單獨翻譯
         const rawLines = masked.split(/\r?\n/);
         const lines = [];
         for (let i = 0; i < rawLines.length; i++) {
@@ -566,7 +571,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           console.log(`翻譯判斷: 原文語言 ${srcLang}，內容: ${textPart}`);
 
-          // **新增泰文預處理呼叫**
           if (srcLang === "th") {
             textPart = preprocessThaiWorkPhrase(textPart);
           }
