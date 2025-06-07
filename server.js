@@ -397,6 +397,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
       console.log(`處理事件類型: ${event.type}, 群組ID: ${gid}, 使用者ID: ${uid}`);
 
+      // Bot加入群組時，設定第一位邀請人
       if (event.type === "join" && gid) {
         console.log(`Bot 加入群組 ${gid}，發送語言選單`);
         if (!groupInviter.has(gid) && uid) {
@@ -410,18 +411,18 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
       if (event.type === "postback" && gid) {
         const data = event.postback.data || "";
-        const inviter = groupInviter.get(gid);
+        let inviter = groupInviter.get(gid);
 
-        if (inviter && uid !== inviter) {
-          try {
-            await client.getGroupMemberProfile(gid, inviter);
-          } catch (e) {
-            console.log(`Inviter ${inviter} 已不在群組 ${gid}，自動清除`);
-            groupInviter.delete(gid);
-            await saveInviter();
-          }
-          if (groupInviter.get(gid) && uid !== groupInviter.get(gid)) {
-            console.log(`非第一位設定者 ${uid} 嘗試操作，無回應`);
+        if (!inviter && uid) {
+          inviter = uid;
+          groupInviter.set(gid, inviter);
+          await saveInviter();
+          console.log(`群組 ${gid} 自動設定邀請人為 ${inviter}`);
+        }
+
+        if (["action=set_lang", "action=set_industry", "action=show_industry_menu"].some(a => data.startsWith(a))) {
+          if (inviter !== uid) {
+            console.log(`非邀請人 ${uid} 嘗試操作，無回應`);
             return;
           }
         }
@@ -476,19 +477,16 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
         console.log(`收到訊息: ${text}，群組: ${gid}，使用者: ${uid}`);
 
-        // 指令 !設定
         if (text === "!設定") {
-          console.log(`使用者 ${uid} 請求語言設定選單`);
           if (!groupInviter.has(gid) && uid) {
             groupInviter.set(gid, uid);
             await saveInviter();
-            console.log(`群組 ${gid} 設定第一位邀請者 ${uid}`);
+            console.log(`群組 ${gid} 設定第一位邀請者 ${uid} (指令)`);
           }
           await sendMenu(gid);
           return;
         }
 
-        // 指令 !文宣 YYYY-MM-DD
         if (text.startsWith("!文宣")) {
           const parts = text.split(/\s+/);
           if (parts.length >= 2) {
@@ -528,7 +526,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // 其餘為翻譯流程
+        // 翻譯流程
         const set = groupLang.get(gid) || new Set();
 
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
