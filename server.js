@@ -566,18 +566,9 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           console.log(`翻譯判斷: 原文語言 ${srcLang}，內容: ${textPart}`);
 
-          if (srcLang === "zh-TW") {
-            if (set.size > 0) {
-              for (let code of set) {
-                if (code === "zh-TW" || code === srcLang) continue;
-                const tr = await translateWithDeepSeek(textPart, code);
-                if (tr.trim() === textPart.trim()) continue;
-                tr.split('\n').forEach(tl => {
-                  outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
-                });
-              }
-            }
-            continue;
+          // **新增泰文預處理呼叫**
+          if (srcLang === "th") {
+            textPart = preprocessThaiWorkPhrase(textPart);
           }
 
           let zh = textPart;
