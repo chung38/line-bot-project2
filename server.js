@@ -153,13 +153,16 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-// DeepSeek翻譯API
-const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) => {
-  const cacheKey = `${targetLang}:${text}:${customPrompt || ""}`;
+// DeepSeek翻譯API (修改版，新增 gid 參數，加入行業提示)
+const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
+  const industry = gid ? groupIndustry.get(gid) : null;
+  const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
+  const systemPrompt = customPrompt ||
+    `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
+
+  const cacheKey = `${targetLang}:${text}:${industryPrompt}:${customPrompt || ""}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
-  const systemPrompt = customPrompt ||
-    `你是一位台灣專業人工翻譯員，請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -185,7 +188,7 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0, customPrompt) 
   } catch (e) {
     if (e.response?.status === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return translateWithDeepSeek(text, targetLang, retry + 1, customPrompt);
+      return translateWithDeepSeek(text, targetLang, gid, retry + 1, customPrompt);
     }
     console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
@@ -579,7 +582,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             if (set.size > 0) {
               for (let code of set) {
                 if (code === "zh-TW") continue; // 跳過中文
-                const tr = await translateWithDeepSeek(textPart, code);
+                const tr = await translateWithDeepSeek(textPart, code, gid);
                 if (tr.trim() === textPart.trim()) continue;
                 tr.split('\n').forEach(tl => {
                   outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
@@ -598,7 +601,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             }
           }
 
-          const finalZh = await translateWithDeepSeek(zh, "zh-TW");
+          const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
           if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
             outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
           }
