@@ -89,6 +89,9 @@ const detectLang = (text) => {
   return 'en';
 };
 
+// 判斷是否含有中文字
+const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
+
 // LINE提及處理
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
@@ -180,7 +183,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     });
 
     let out = res.data.choices[0].message.content.trim();
-    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
+    out = out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n')[0];
 
     // 若是中文翻譯，且結果與原文相同，嘗試重試一次，帶入更強提示詞
