@@ -566,7 +566,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
         }
 
-        // outputLines 改為 [{ lang, text }]
         let outputLines = [];
 
         for (const line of lines) {
@@ -593,7 +592,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
 
           if (srcLang === "zh-TW") {
-            // 中文輸入，分別翻譯成各設定語言
+            // 中文輸入，翻譯成設定語言
             if (set.size > 0) {
               for (let code of set) {
                 if (code === "zh-TW") continue; // 跳過中文
@@ -610,6 +609,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
             continue;
           }
 
+          // 所有非中文訊息，強制翻譯成繁體中文
           let zh = textPart;
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
@@ -624,7 +624,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
           if (finalZh) {
-            // 若翻譯結果和原文一樣，標示「（原文未翻譯）」
             if (finalZh.trim() === zh.trim()) {
               outputLines.push({
                 lang: "zh-TW",
