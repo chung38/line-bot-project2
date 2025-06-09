@@ -153,14 +153,22 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-// DeepSeek翻譯API (修改版，新增 gid 參數，加入行業提示)
+// DeepSeek翻譯API (修改版，新增重試與強化提示詞)
 const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
-  const systemPrompt = customPrompt ||
-    `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
 
-  const cacheKey = `${targetLang}:${text}:${industryPrompt}:${customPrompt || ""}`;
+  // 預設提示詞
+  let systemPrompt = customPrompt;
+  if (!systemPrompt) {
+    if (targetLang === "zh-TW") {
+      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+    } else {
+      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註、括號或符號。`;
+    }
+  }
+
+  const cacheKey = `${targetLang}:${text}:${industryPrompt}:${systemPrompt}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
@@ -179,8 +187,15 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n')[0];
 
-    if (targetLang === "zh-TW" && !/[\u4e00-\u9fff]/.test(out)) {
-      out = "（翻譯異常，請稍後再試）";
+    // 若是中文翻譯，且結果與原文相同，嘗試重試一次，帶入更強提示詞
+    if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
+      if (retry < 2) {
+        const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+        return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+      } else {
+        // 超過重試次數，回傳提示
+        out = "（翻譯異常，請稍後再試）";
+      }
     }
 
     translationCache.set(cacheKey, out);
@@ -551,6 +566,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
         }
 
+        // outputLines 改為 [{ lang, text }]
         let outputLines = [];
 
         for (const line of lines) {
@@ -566,7 +582,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
 
           if (mentionPart && !textPart.trim()) continue;
-
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
           const srcLang = detectLang(textPart);
@@ -578,14 +593,17 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           }
 
           if (srcLang === "zh-TW") {
-            // 中文輸入，翻譯成設定語言
+            // 中文輸入，分別翻譯成各設定語言
             if (set.size > 0) {
               for (let code of set) {
                 if (code === "zh-TW") continue; // 跳過中文
                 const tr = await translateWithDeepSeek(textPart, code, gid);
                 if (tr.trim() === textPart.trim()) continue;
                 tr.split('\n').forEach(tl => {
-                  outputLines.push((mentionPart ? mentionPart + " " : "") + tl.trim());
+                  outputLines.push({
+                    lang: code,
+                    text: (mentionPart ? mentionPart + " " : "") + tl.trim()
+                  });
                 });
               }
             }
@@ -596,32 +614,59 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
           if (srcLang === "th" && /ทำโอ/.test(textPart)) {
             zh = await smartPreprocess(textPart, "th");
             if (/[\u4e00-\u9fff]/.test(zh)) {
-              outputLines.push((mentionPart ? mentionPart + " " : "") + zh.trim());
+              outputLines.push({
+                lang: "zh-TW",
+                text: (mentionPart ? mentionPart + " " : "") + zh.trim()
+              });
               continue;
             }
           }
 
           const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
-          if (finalZh && /[\u4e00-\u9fff]/.test(finalZh)) {
-            outputLines.push((mentionPart ? mentionPart + " " : "") + finalZh.trim());
+          if (finalZh) {
+            // 若翻譯結果和原文一樣，標示「（原文未翻譯）」
+            if (finalZh.trim() === zh.trim()) {
+              outputLines.push({
+                lang: "zh-TW",
+                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim() + "（原文未翻譯）"
+              });
+            } else {
+              outputLines.push({
+                lang: "zh-TW",
+                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim()
+              });
+            }
           }
         }
 
-        let linesOut = [...new Set(outputLines)]
-          .filter(x => !!x && x.trim())
-          .filter(line => !/^【.*?】說：/.test(line));
-        if (linesOut.length === 0) {
-          linesOut = [...new Set(outputLines)].filter(x => !!x && x.trim());
+        // 按語言分組，每種語言一則訊息
+        let grouped = {};
+        outputLines.forEach(item => {
+          if (!grouped[item.lang]) grouped[item.lang] = [];
+          grouped[item.lang].push(item.text);
+        });
+
+        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+        let replyMsgs = [];
+
+        for (const [lang, texts] of Object.entries(grouped)) {
+          let linesOut = [...new Set(texts)]
+            .filter(x => !!x && x.trim())
+            .filter(line => !/^【.*?】說：/.test(line));
+          if (linesOut.length === 0) {
+            linesOut = [...new Set(texts)].filter(x => !!x && x.trim());
+          }
+          const translated = restoreMentions(linesOut.join('\n'), segments);
+          replyMsgs.push({
+            type: "text",
+            text: `【${userName}】說：\n${translated}`
+          });
         }
 
-        const translated = restoreMentions(linesOut.join('\n'), segments);
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${translated}`
-        });
-        console.log(`完成翻譯並回覆使用者 ${userName}`);
+        if (replyMsgs.length > 0) {
+          await client.replyMessage(event.replyToken, replyMsgs);
+          console.log(`完成多語翻譯並回覆使用者 ${userName}`);
+        }
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
