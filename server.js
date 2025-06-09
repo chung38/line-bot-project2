@@ -93,16 +93,16 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// === DeepSeek翻譯API（優化版）
+// === DeepSeek翻譯API（優化版，含保護 @mention）
 const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
   let systemPrompt = customPrompt;
   if (!systemPrompt) {
     if (targetLang === "zh-TW") {
-      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。@開頭的 @mention（如 @xxx）請完整保留原文，不要翻譯，不要改變，不要拆開。`;
     } else {
-      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不要額外加入「上班」或其他詞彙。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。@開頭的 @mention（如 @xxx）請完整保留原文，不要翻譯，不要改變，不要拆開。`;
     }
   }
 
@@ -113,7 +113,6 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
       messages: [
-        { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
@@ -127,7 +126,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
 
     if (targetLang === "zh-TW" && (out.normalize() === text.trim().normalize() || !/[\u4e00-\u9fff]/.test(out))) {
       if (retry < 2) {
-        const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+        const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt} @開頭的 @mention（如 @xxx）請完整保留原文，不要翻譯，不要改變，不要拆開。`;
         console.log(`⚠️ DeepSeek fallback 強化 retry=${retry + 1}, text=${text}`);
         return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
       } else {
@@ -548,8 +547,7 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
         }
 
         let outputLines = [];
-
-        for (const line of lines) {
+                for (const line of lines) {
           if (!line.trim()) continue;
 
           let mentionPart = "";
@@ -566,6 +564,11 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
 
           const srcLang = detectLang(textPart);
           console.log(`原文=${textPart} 判斷=${srcLang}`);
+
+          // 處理泰文 shift 替換 (你原本有 smartPreprocess + 自訂替換)
+          if (srcLang === "th") {
+            textPart = preprocessThaiWorkPhrase(textPart);
+          }
 
           if (srcLang === "zh-TW") {
             if (set.size > 0) {
@@ -646,7 +649,6 @@ app.post("/webhook", middleware(lineConfig), async (req, res) => {
     }
   }));
 });
-
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
@@ -703,7 +705,6 @@ async function sendImagesToGroup(gid, dateStr) {
     }
   }
 }
-
 // === cron 定時推播 ===
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
@@ -754,3 +755,4 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
+
