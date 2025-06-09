@@ -73,23 +73,19 @@ const INDUSTRY_LIST = [
   "電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業"
 ];
 
-// 判斷語言函式
-const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
-const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
-
-// 新增泰文預處理函式
-function preprocessThaiWorkPhrase(text) {
-  return text.replace(/ลงทำงาน/g, "ไปทำงาน");
-}
-
-// 自動偵測原文語言
+// 判斷語言函式（改為以中文字比例判斷）
 const detectLang = (text) => {
+  const totalLen = text.length;
+  const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+
+  // 中文字比例超過50%判為中文
+  if (totalLen > 0 && chineseLen / totalLen > 0.5) return 'zh-TW';
+
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
-  if (/[\u4e00-\u9fff]/.test(text)) return 'zh-TW';
   if (/[a-zA-Z]/.test(text)) return 'en';
   if (/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(text)) return 'vi';
   if (/\b(ini|dan|yang|untuk|dengan|tidak|akan)\b/i.test(text)) return 'id';
+
   return 'en';
 };
 
