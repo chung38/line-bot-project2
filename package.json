@@ -22,6 +22,7 @@
     "limiter": "^3.0.0",
     "lru-cache": "^10.2.1",
     "node-cron": "^3.0.3",
+    "express-rate-limit": "^6.7.0",
     "puppeteer": "^21.3.8"
   },
   "devDependencies": {
