@@ -23,7 +23,7 @@ const db = admin.firestore();
 
 // === Express 設定 ===
 const app = express();
-
+app.set('trust proxy', 1);
 const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
@@ -50,7 +50,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-
+app.use(limiter);
 // === 快取與設定 ===
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 const smartPreprocessCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
