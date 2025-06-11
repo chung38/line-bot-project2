@@ -622,23 +622,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           const line = lines[idx];
           if (!line.trim()) continue;
 
-          let mentionPart = "";
-          let textPart = line;
+          const textPart = line;
 
-          const mentionMatch = line.match(/^(@[^\s]+)(?:\s+(.*))?$/);
-          if (mentionMatch) {
-            mentionPart = mentionMatch[1];
-            textPart = mentionMatch[2] || "";
-          }
-
-          if (mentionPart && !textPart.trim()) continue;
           if (isSymbolOrNum(textPart) || !textPart) continue;
 
           const srcLang = detectLang(textPart);
           console.log(`原文=${textPart} 判斷=${srcLang}`);
 
           if (srcLang === "th") {
-            textPart = preprocessThaiWorkPhrase(textPart);
+            // 可加泰文預處理
           }
 
           if (srcLang === "zh-TW") {
@@ -650,7 +642,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 tr.split('\n').forEach(tl => {
                   outputLines.push({
                     lang: code,
-                    text: (mentionPart ? mentionPart + " " : "") + tl.trim(),
+                    text: tl.trim(),
                     index: idx
                   });
                 });
@@ -665,7 +657,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             if (/[\u4e00-\u9fff]/.test(zh)) {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + zh.trim(),
+                text: zh.trim(),
                 index: idx
               });
               continue;
@@ -677,13 +669,13 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             if (finalZh.trim() === zh.trim()) {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim() + "（原文未翻譯）",
+                text: finalZh.trim() + "（原文未翻譯）",
                 index: idx
               });
             } else {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim(),
+                text: finalZh.trim(),
                 index: idx
               });
             }
