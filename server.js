@@ -616,9 +616,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           }
         }
 
-        let outputLines = [];
+        let outputLines = []; // { lang, text, index }
 
-        for (const line of lines) {
+        for (let idx = 0; idx < lines.length; idx++) {
+          const line = lines[idx];
           if (!line.trim()) continue;
 
           let mentionPart = "";
@@ -649,7 +650,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 tr.split('\n').forEach(tl => {
                   outputLines.push({
                     lang: code,
-                    text: (mentionPart ? mentionPart + " " : "") + tl.trim()
+                    text: (mentionPart ? mentionPart + " " : "") + tl.trim(),
+                    index: idx
                   });
                 });
               }
@@ -663,7 +665,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             if (/[\u4e00-\u9fff]/.test(zh)) {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + zh.trim()
+                text: (mentionPart ? mentionPart + " " : "") + zh.trim(),
+                index: idx
               });
               continue;
             }
@@ -674,12 +677,14 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             if (finalZh.trim() === zh.trim()) {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim() + "（原文未翻譯）"
+                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim() + "（原文未翻譯）",
+                index: idx
               });
             } else {
               outputLines.push({
                 lang: "zh-TW",
-                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim()
+                text: (mentionPart ? mentionPart + " " : "") + finalZh.trim(),
+                index: idx
               });
             }
           }
@@ -688,19 +693,22 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         let grouped = {};
         outputLines.forEach(item => {
           if (!grouped[item.lang]) grouped[item.lang] = [];
-          grouped[item.lang].push(item.text);
+          grouped[item.lang].push(item);
         });
 
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
         let replyMsgs = [];
 
         for (const [lang, texts] of Object.entries(grouped)) {
-          let linesOut = [...new Set(texts)]
+          texts.sort((a, b) => a.index - b.index);
+          let linesOut = texts.map(t => t.text)
             .filter(x => !!x && x.trim())
             .filter(line => !/^【.*?】說：/.test(line));
+
           if (linesOut.length === 0) {
-            linesOut = [...new Set(texts)].filter(x => !!x && x.trim());
+            linesOut = texts.map(t => t.text).filter(x => !!x && x.trim());
           }
+
           const translated = restoreMentions(linesOut.join('\n'), segments);
           replyMsgs.push({
             type: "text",
