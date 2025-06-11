@@ -652,27 +652,24 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
-    const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file", {
-      timeout: 10000
-    });
+    const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
     const $ = load(res.data);
     const detailUrls = [];
-    $("a[href*='/wda-employer/home/file/detail']").each((_, el) => {
-      try {
-        const dateCell = $(el).closest('tr').find('td').eq(1).text().trim();
-        if (dateCell.includes(dateStr.replace(/-/g, '/'))) {
-          const href = $(el).attr('href');
-          if (href) detailUrls.push(new URL(href, res.config.url).href);
-        }
-      } catch (selectorError) {
-        console.error("選擇器解析錯誤:", selectorError);
+    $("table.sub-table tbody.tbody tr").each((_, tr) => {
+      const tds = $(tr).find("td");
+      const dateCell = tds.eq(1).text().trim().replace(/\s+/g, '');
+      if (/\d{4}\/\d{2}\/\d{2}/.test(dateCell) &&
+          dateCell === dateStr.replace(/-/g, "/")) {
+        const href = tds.eq(0).find("a").attr("href");
+        if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
       }
     });
+
     const wanted = groupLang.get(gid) || new Set();
     const images = [];
     for (const url of detailUrls) {
       try {
-        const d = await axios.get(url, { timeout: 10000 });
+        const d = await axios.get(url);
         const $$ = load(d.data);
         $$(".text-photo a").each((_, el) => {
           const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
@@ -692,6 +689,8 @@ async function fetchImageUrlsByDate(gid, dateStr) {
     return [];
   }
 }
+
+// 推送圖片到群組
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
@@ -707,6 +706,9 @@ async function sendImagesToGroup(gid, dateStr) {
     }
   }
 }
+
+// === 定時任務 ===
+// 定時推播文宣
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -714,6 +716,7 @@ cron.schedule("0 17 * * *", async () => {
     month: "2-digit",
     day: "2-digit"
   }).replace(/\//g, "-");
+
   for (const [gid] of groupLang.entries()) {
     try {
       await sendImagesToGroup(gid, today);
