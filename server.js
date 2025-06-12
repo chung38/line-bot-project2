@@ -615,6 +615,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 }
               } else {
                 let zh = seg.text;
+                // === 新增：泰文翻譯前預處理 ===
+                if (srcLang === "th") {
+                  zh = preprocessThaiWorkPhrase(zh);
+                }
                 if (srcLang === "th" && /ทำโอ/.test(seg.text)) {
                   zh = await smartPreprocess(seg.text, "th");
                   if (/[\u4e00-\u9fff]/.test(zh)) {
@@ -648,7 +652,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     }
   }));
 });
-
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
