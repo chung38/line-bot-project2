@@ -765,40 +765,23 @@ function preprocessThaiWorkPhrase(text) {
   // 轉換時間格式
   text = text.replace(/(\d{1,2})\.(\d{2})/, "$1:$2");
 
-  // 針對「ลงทำงาน」或「ลงงาน」表示開始上班
-  if (/ลงทำงาน|ลงงาน/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      return `今天我${timeMatch[1]}開始上班`;
-    }
-    return "今天我開始上班";
+  // 上班群
+if (/ลงทำงาน|ลงงาน|เข้าเวร/.test(text)) {
+  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+  if (timeMatch) {
+    return `今天我${timeMatch[1]}開始上班`;
   }
+  return "今天我開始上班";
+}
 
-  // 針對「เลิกงาน」表示下班
-  if (/เลิกงาน/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      return `今天我${timeMatch[1]}下班`;
-    }
-    return "今天我下班";
+// 下班群
+if (/เลิกงาน|ออกเวร/.test(text)) {
+  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+  if (timeMatch) {
+    return `今天我${timeMatch[1]}下班`;
   }
-  // 針對「เข้าเวร」表示開始上班
-  if (/เข้าเวร/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      return `今天我${timeMatch[1]}開始上班`;
-    }
-    return "今天我開始上班";
-  }
-
-// 針對「ออกเวร」表示下班
-  if (/ออกเวร/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      return `今天我${timeMatch[1]}下班`;
-    }
-    return "今天我下班";
-  }
+  return "今天我下班";
+}
   return text;
 }
 
