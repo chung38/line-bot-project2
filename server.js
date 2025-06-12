@@ -613,17 +613,23 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 }
               } else {
                 let zh = seg.text;
-                // === 新增：泰文翻譯前預處理 ===
+                // 【1】先針對泰文 → 做 preprocessThaiWorkPhrase
                 if (srcLang === "th") {
                   zh = preprocessThaiWorkPhrase(zh);
                 }
+
+                // 【2】針對泰文 + 有ทำโอ → smartPreprocess 智慧判斷「全廠加班 or 個人」
                 if (srcLang === "th" && /ทำโอ/.test(seg.text)) {
-                  zh = await smartPreprocess(seg.text, "th");
-                  if (/[\u4e00-\u9fff]/.test(zh)) {
-                    translatedLine += zh.trim();
-                    continue;
+                  const smartZh = await smartPreprocess(seg.text, "th");
+                // 如果 smartPreprocess 回傳已是中文 → 直接用
+                  if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                    translatedLine += smartZh.trim();
+                    continue; // skip 後續翻譯流程
                   }
+                 // 否則 → fallback 回 zh 繼續翻譯
                 }
+
+
                 const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
                 if (finalZh) {
                   if (finalZh.trim() === zh.trim()) {
