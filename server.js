@@ -432,6 +432,20 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
+      if (event.type === "leave" && event.source?.groupId) {
+  const gid = event.source.groupId;
+  const ops = [
+    { type: "delete", ref: db.collection("groupLanguages").doc(gid) },
+    { type: "delete", ref: db.collection("groupIndustries").doc(gid) },
+    { type: "delete", ref: db.collection("groupInviters").doc(gid) }
+  ];
+  await commitBatchInChunks(ops, db);
+  groupLang.delete(gid);
+  groupIndustry.delete(gid);
+  groupInviter.delete(gid);
+  console.log(`群組 ${gid} 離開，已刪除相關設定`);
+  return;
+}
 
       if (event.type === "join" && gid) {
         if (!groupInviter.has(gid) && uid) {
