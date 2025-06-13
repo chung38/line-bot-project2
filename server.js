@@ -529,6 +529,38 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           await sendMenu(gid);
           return;
         }
+        // 新增 !查詢 指令
+  if (text === "!查詢") {
+    const langsSet = groupLang.get(gid) || new Set();
+    const langs = langsSet.size > 0
+      ? [...langsSet].map(code => SUPPORTED_LANGS[code] || code).join("、")
+      : "尚未設定語言";
+
+    const industry = groupIndustry.get(gid) || "尚未設定行業別";
+
+    const inviterId = groupInviter.get(gid);
+    let inviterName = inviterId || "尚未設定邀請人";
+    if (inviterId) {
+      try {
+        const profile = await client.getGroupMemberProfile(gid, inviterId);
+        inviterName = profile.displayName || inviterId;
+      } catch {
+        // 取得失敗就用 ID 顯示
+        inviterName = inviterId;
+      }
+    }
+
+    const replyText = `📋 群組設定查詢：
+語言設定：${langs}
+行業別：${industry}
+第一位設定者：${inviterName}`;
+
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: replyText
+    });
+    return;
+  }
         if (text.startsWith("!文宣")) {
           const parts = text.split(/\s+/);
           if (parts.length >= 2) {
