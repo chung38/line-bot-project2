@@ -822,13 +822,12 @@ app.listen(PORT, async () => {
   }
 });
 
-// 泰文加班語意預處理示例函式
 function preprocessThaiWorkPhrase(text) {
   // 轉換時間格式
   text = text.replace(/(\d{1,2})\.(\d{2})/, "$1:$2");
 
   // 上班群
-  if (/ลงทำงาน|ลงงาน|เข้าเวร/.test(text) || (/ลง/.test(text) && /(\d{1,2}:\d{2})/.test(text))) {
+  if (/ลงทำงาน|ลงงาน|เข้าเวร|เข้างาน/.test(text) || (/ลง/.test(text) && /(\d{1,2}:\d{2})/.test(text))) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
       return `今天我${timeMatch[1]}開始上班`;
@@ -837,7 +836,7 @@ function preprocessThaiWorkPhrase(text) {
   }
 
   // 下班群
-  if (/เลิกงาน|ออกเวร/.test(text)) {
+  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
       return `今天我${timeMatch[1]}下班`;
