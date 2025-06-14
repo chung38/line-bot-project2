@@ -828,22 +828,23 @@ function preprocessThaiWorkPhrase(text) {
   text = text.replace(/(\d{1,2})\.(\d{2})/, "$1:$2");
 
   // 上班群
-if (/ลงทำงาน|ลงงาน|เข้าเวร/.test(text)) {
-  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-  if (timeMatch) {
-    return `今天我${timeMatch[1]}開始上班`;
+  if (/ลงทำงาน|ลงงาน|เข้าเวร/.test(text) || (/ลง/.test(text) && /(\d{1,2}:\d{2})/.test(text))) {
+    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+    if (timeMatch) {
+      return `今天我${timeMatch[1]}開始上班`;
+    }
+    return "今天我開始上班";
   }
-  return "今天我開始上班";
-}
 
-// 下班群
-if (/เลิกงาน|ออกเวร/.test(text)) {
-  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-  if (timeMatch) {
-    return `今天我${timeMatch[1]}下班`;
+  // 下班群
+  if (/เลิกงาน|ออกเวร/.test(text)) {
+    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+    if (timeMatch) {
+      return `今天我${timeMatch[1]}下班`;
+    }
+    return "今天我下班";
   }
-  return "今天我下班";
-}
+
   return text;
 }
 
