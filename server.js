@@ -697,6 +697,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 continue;
               }
             }
+            if (/[\u4e00-\u9fff]/.test(zh)) {
+                translatedLine += zh.trim();
+                continue;
+            }
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
             if (finalZh && finalZh.trim() !== "（翻譯異常，請稍後再試）" && finalZh.trim() !== "（翻譯暫時不可用）") {
   translatedLine += finalZh.trim();
