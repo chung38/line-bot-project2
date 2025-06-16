@@ -101,19 +101,24 @@ const i18n = {
 
 // === 判斷函式 ===
 const detectLang = (text) => {
+  let result = 'en';
   if (/\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada)\b/i.test(text)) {
-    if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) return 'id';
+    if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) result = 'id';
+    else {
+      const totalLen = text.length;
+      const idCharsLen = (text.match(/[aiueo]/gi) || []).length;
+      if (totalLen > 0 && idCharsLen / totalLen > 0.1) result = 'id';
+    }
+  } else {
     const totalLen = text.length;
-    const idCharsLen = (text.match(/[aiueo]/gi) || []).length;
-    if (totalLen > 0 && idCharsLen / totalLen > 0.1) return 'id';
+    const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    if (totalLen > 0 && chineseLen / totalLen > 0.3) result = 'zh-TW';
+    else if (/[\u0E00-\u0E7F]/.test(text)) result = 'th';
+    else if (/[a-zA-Z]/.test(text)) result = 'en';
+    else if (/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(text)) result = 'vi';
   }
-  const totalLen = text.length;
-  const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  if (totalLen > 0 && chineseLen / totalLen > 0.3) return 'zh-TW';
-  if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
-  if (/[a-zA-Z]/.test(text)) return 'en';
-  if (/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(text)) return 'vi';
-  return 'en';
+  console.log(`[語言判斷] "${text}" → ${result}`);
+  return result;
 };
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
@@ -177,6 +182,7 @@ async function smartPreprocess(text, langCode) {
 }
 
 const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
+  console.log(`[翻譯請求] "${text}" => ${targetLang} (gid: ${gid}, retry: ${retry})`);
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
   let systemPrompt = customPrompt;
@@ -201,6 +207,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
     let out = res.data.choices[0].message.content.trim();
+    
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n')[0];
     function isMostlyChinese(str) {
@@ -540,6 +547,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
+        console.log(`[收到訊息] group: ${gid}, user: ${uid}, text: "${text}"`);
         if (text === "!設定") {
           if (!groupInviter.has(gid) && uid) {
             groupInviter.set(gid, uid);
@@ -709,6 +717,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         outputLines.sort((a, b) => a.index - b.index);
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
         const replyText = restoreMentions(outputLines.map(x => x.text).join("\n"), segments);
+        console.log(`[LINE回覆] group: ${gid}, user: ${userName}, reply: "${replyText}"`);
         await client.replyMessage(event.replyToken, {
           type: "text",
           text: `【${userName}】說：\n${replyText}`
@@ -829,13 +838,13 @@ app.listen(PORT, async () => {
   }
 });
 function preprocessThaiWorkPhrase(text) {
-  // 標準化時間格式
+  const input = text;
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
+  console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
   // 例外排除關鍵字
   const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
 
-  // 上班判斷（只要有 "ลง" + HH:MM，且不含例外關鍵詞就自動處理為上班）
   if (
     /ลง/.test(text) &&
     /(\d{1,2}:\d{2})/.test(text) &&
@@ -843,20 +852,24 @@ function preprocessThaiWorkPhrase(text) {
   ) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
-      return `今天我${timeMatch[1]}開始上班`;
+      const result = `今天我${timeMatch[1]}開始上班`;
+      console.log(`[預處理結果] → "${result}"`);
+      return result;
     }
+    console.log(`[預處理結果] → "今天我開始上班"`);
     return "今天我開始上班";
   }
-
-  // 下班相關關鍵字
   if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
-      return `今天我${timeMatch[1]}下班`;
+      const result = `今天我${timeMatch[1]}下班`;
+      console.log(`[預處理結果] → "${result}"`);
+      return result;
     }
+    console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
-
+  console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
 
