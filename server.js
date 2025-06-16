@@ -685,13 +685,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
               }
             }
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
-            if (finalZh) {
-              if (finalZh.trim() === zh.trim()) {
-                translatedLine += finalZh.trim() + "（原文未翻譯）";
-              } else {
-                translatedLine += finalZh.trim();
-              }
-            }
+            if (finalZh && finalZh.trim() !== "（翻譯異常，請稍後再試）" && finalZh.trim() !== "（翻譯暫時不可用）") {
+  translatedLine += finalZh.trim();
+} else if (finalZh && finalZh.trim() === zh.trim()) {
+  // AI回原文才加註說明，否則不要拿舊值
+  translatedLine += zh.trim() + "（原文未翻譯）";
+} else {
+  // 完全失敗時顯示明確異常
+  translatedLine += "（翻譯異常，請稍後再試）";
+}
           }
         }
       }
