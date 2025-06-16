@@ -556,6 +556,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           await sendMenu(gid);
           return;
         }
+  
         // 新增 !查詢 指令
   if (text === "!查詢") {
     const langsSet = groupLang.get(gid) || new Set();
@@ -703,7 +704,7 @@ await client.replyMessage(event.replyToken, {
   type: "text",
   text: replyText
 });
-
+｝
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
