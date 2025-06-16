@@ -824,13 +824,17 @@ app.listen(PORT, async () => {
   }
 });
 function preprocessThaiWorkPhrase(text) {
-  // 標準化 15.00/15:00 格式
+  // 標準化時間格式
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
 
-  // 只要有 ลง（打卡/上班）+ 時間 或 只寫 "ผมลง15:00คับ" 這類
+  // 例外排除關鍵字
+  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
+
+  // 上班判斷（只要有 "ลง" + HH:MM，且不含例外關鍵詞就自動處理為上班）
   if (
-    (/ลงทำงาน|ลงงาน|เข้าเวร|เข้างาน/.test(text) || /ลง/.test(text)) &&
-    /(\d{1,2}:\d{2})/.test(text)
+    /ลง/.test(text) &&
+    /(\d{1,2}:\d{2})/.test(text) &&
+    !exceptionKeywords.test(text)
   ) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
@@ -839,21 +843,13 @@ function preprocessThaiWorkPhrase(text) {
     return "今天我開始上班";
   }
 
-  // 下班
+  // 下班相關關鍵字
   if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
       return `今天我${timeMatch[1]}下班`;
     }
     return "今天我下班";
-  }
-
-  // 只寫 "ผมลง" + 時間
-  if (/ลง/.test(text) && /(\d{1,2}:\d{2})/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      return `今天我${timeMatch[1]}開始上班`;
-    }
   }
 
   return text;
