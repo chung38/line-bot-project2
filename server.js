@@ -203,14 +203,19 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     let out = res.data.choices[0].message.content.trim();
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n')[0];
-    if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
-      if (retry < 2) {
-        const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-        return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
-      } else {
-        out = "（翻譯異常，請稍後再試）";
-      }
-    }
+    function isMostlyChinese(str) {
+  const zh = (str.match(/[\u4e00-\u9fff]/g) || []).length;
+  return str.length > 0 && zh / str.length > 0.5;
+}
+
+if (targetLang === "zh-TW" && (!isMostlyChinese(out))) {
+  if (retry < 2) {
+    const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+    return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+  } else {
+    out = "（翻譯異常，請稍後再試）";
+  }
+}
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
