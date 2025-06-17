@@ -608,42 +608,67 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
         // === 翻譯流程 ===
-        const set = groupLang.get(gid) || new Set();
-        const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const rawLines = masked.split(/\r?\n/);
-        const lines = [];
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
-        for (let i = 0; i < rawLines.length; i++) {
-          let line = rawLines[i].trim();
-          if (!line) continue;
-          if (isChinese(line) && line.length < 4 && lines.length > 0) {
-            lines[lines.length - 1] += line;
-          } else {
-            lines.push(line);
-          }
-        }
-        let outputLines = [];
-        for (let idx = 0; idx < lines.length; idx++) {
+const set = groupLang.get(gid) || new Set();
+const { masked, segments } = extractMentionsFromLineMessage(event.message);
+const rawLines = masked.split(/\r?\n/);
+const lines = [];
+const urlRegex = /(https?:\/\/[^\s]+)/gi;
+
+for (let i = 0; i < rawLines.length; i++) {
+  let line = rawLines[i].trim();
+  if (!line) continue;
+  if (isChinese(line) && line.length < 4 && lines.length > 0) {
+    lines[lines.length - 1] += line;
+  } else {
+    lines.push(line);
+  }
+}
+
+let outputLines = [];
+
+for (let idx = 0; idx < lines.length; idx++) {
   const line = lines[idx];
   if (!line.trim()) continue;
-  // 將行中所有 __MENTION_X__ 片段原樣保留，不送翻譯
+
+  // 先處理 __MENTION_X__ 片段，再處理 @人名（xxx）整段視為 mention
   const segs = [];
   let lastIndex = 0;
+
+  // 先找 __MENTION_X__ 片段
   const mentionRegex = /__MENTION_\d+__/g;
   let match;
+  const mentionPositions = [];
+
   while ((match = mentionRegex.exec(line)) !== null) {
-    if (match.index > lastIndex) {
-      segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
+    mentionPositions.push({ index: match.index, length: match[0].length, text: match[0] });
+  }
+
+  // 再找 @人名（xxx） 或 @人名(xxx) 片段
+  const mentionWithBracketRegex = /@\S+[\s]*[\(（][^)）]+[\)）]/g;
+  let mentionBracketMatches = [];
+  while ((match = mentionWithBracketRegex.exec(line)) !== null) {
+    mentionBracketMatches.push({ index: match.index, length: match[0].length, text: match[0] });
+  }
+
+  // 將兩種 mention 合併排序
+  const allMentions = [...mentionPositions, ...mentionBracketMatches].sort((a, b) => a.index - b.index);
+
+  for (const m of allMentions) {
+    if (m.index > lastIndex) {
+      segs.push({ type: "text", text: line.slice(lastIndex, m.index) });
     }
-    segs.push({ type: "mention", text: match[0] });
-    lastIndex = match.index + match[0].length;
+    segs.push({ type: "mention", text: m.text });
+    lastIndex = m.index + m.length;
   }
   if (lastIndex < line.length) {
     segs.push({ type: "text", text: line.slice(lastIndex) });
   }
+
   let translatedLine = "";
+
   for (const seg of segs) {
     if (seg.type === "mention") {
+      // mention 片段原樣保留，不翻譯
       translatedLine += seg.text;
     } else if (seg.type === "text" && seg.text.trim()) {
       // 這裡開始網址分段處理
@@ -685,8 +710,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
               }
             }
             if (/[\u4e00-\u9fff]/.test(zh)) {
-               translatedLine += zh.trim();
-                continue;
+              translatedLine += zh.trim();
+              continue;
             }
 
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
@@ -702,21 +727,20 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       }
     }
   }
+
   outputLines.push({ lang: "zh-TW", text: translatedLine, index: idx });
 }
-        outputLines.sort((a, b) => a.index - b.index);
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-        const replyText = restoreMentions(outputLines.map(x => x.text).join("\n"), segments);
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${replyText}`
-        });
-      }
-    } catch (e) {
-      console.error("處理事件錯誤:", e);
-    }
-  }));
+
+outputLines.sort((a, b) => a.index - b.index);
+
+const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+const replyText = restoreMentions(outputLines.map(x => x.text).join("\n"), segments);
+
+await client.replyMessage(event.replyToken, {
+  type: "text",
+  text: `【${userName}】說：\n${replyText}`
 });
+
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
