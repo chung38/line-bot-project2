@@ -121,7 +121,7 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// === LINE 訊息處理 ===
+// === mention 處理 ===
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -143,6 +143,18 @@ function restoreMentions(text, segments) {
     restored = restored.replace(reg, seg.text);
   });
   return restored;
+}
+
+// === 翻譯品質驗證 ===
+function isValidTranslation(original, translated, targetLang) {
+  if (!translated) return false;
+  if (original.trim() === translated.trim()) return false;
+  if (targetLang === 'zh-TW' && !/[\u4e00-\u9fff]/.test(translated)) return false;
+  if (targetLang === 'th' && !/[\u0E00-\u0E7F]/.test(translated)) return false;
+  if (targetLang === 'en' && !/[a-zA-Z]/.test(translated)) return false;
+  if (targetLang === 'vi' && !/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(translated)) return false;
+  if (targetLang === 'id' && !/[aiueo]/i.test(translated)) return false;
+  return true;
 }
 
 // === AI 翻譯 ===
@@ -176,17 +188,18 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
+// === 翻譯主流程（優化） ===
 const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
   let systemPrompt = customPrompt;
   if (!systemPrompt) {
-  if (targetLang === "zh-TW") {
-    systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
-  } else {
-    systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+    if (targetLang === "zh-TW") {
+      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+    } else {
+      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+    }
   }
-}
   const cacheKey = `group_${gid}:${targetLang}:${text}:${industryPrompt}:${systemPrompt}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
   try {
@@ -203,7 +216,9 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     let out = res.data.choices[0].message.content.trim();
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n')[0];
-    if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
+
+    // 翻譯品質驗證
+    if (!isValidTranslation(text, out, targetLang)) {
       if (retry < 2) {
         const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
         return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
@@ -214,11 +229,17 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
+    // 加強錯誤日誌
+    console.error("翻譯錯誤詳情:", {
+      originalText: text,
+      targetLang: targetLang,
+      errorMessage: e.message,
+      apiResponse: e.response?.data
+    });
     if (e.response?.status === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return translateWithDeepSeek(text, targetLang, gid, retry + 1, customPrompt);
     }
-    console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
   }
 };
@@ -423,6 +444,7 @@ function buildIndustryMenu() {
     }
   };
 }
+
 // === Webhook 主要邏輯 ===
 app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
@@ -608,7 +630,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // === 翻譯流程 ===
+        // === 翻譯流程（優化 mention 保護與品質驗證） ===
         const set = groupLang.get(gid) || new Set();
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const rawLines = masked.split(/\r?\n/);
@@ -672,8 +694,11 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                       for (let code of set) {
                         if (code === "zh-TW") continue;
                         const tr = await translateWithDeepSeek(part, code, gid);
-                        if (tr.trim() === part.trim()) continue;
-                        translatedLine += tr.trim();
+                        if (!isValidTranslation(part, tr, code)) {
+                          translatedLine += part + "（原文未翻譯）";
+                        } else {
+                          translatedLine += tr.trim();
+                        }
                       }
                     } else {
                       translatedLine += part;
@@ -695,12 +720,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                       continue;
                     }
                     const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
-                    if (finalZh) {
-                      if (finalZh.trim() === zh.trim()) {
-                        translatedLine += finalZh.trim() + "（原文未翻譯）";
-                      } else {
-                        translatedLine += finalZh.trim();
-                      }
+                    if (!isValidTranslation(zh, finalZh, "zh-TW")) {
+                      translatedLine += zh + "（原文未翻譯）";
+                    } else {
+                      translatedLine += finalZh.trim();
                     }
                   }
                 }
@@ -726,7 +749,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     }
   }));
 });
-
 
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
@@ -873,4 +895,3 @@ function preprocessThaiWorkPhrase(text) {
   console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
-
