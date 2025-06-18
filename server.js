@@ -739,7 +739,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         } else {
           // 輸入外語：只顯示繁體中文翻譯結果
           if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-            replyText = `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}`;
+            replyText = `${langOutputs["zh-TW"].join('\n')}`;
           } else {
             replyText = "(尚無翻譯結果)";
           }
