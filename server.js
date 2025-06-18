@@ -432,8 +432,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
-      if (event.type === "leave" && event.source?.groupId) {
-        const gid = event.source.groupId;
+
+      if (event.type === "leave" && gid) {
         const ops = [
           { type: "delete", ref: db.collection("groupLanguages").doc(gid) },
           { type: "delete", ref: db.collection("groupIndustries").doc(gid) },
@@ -536,6 +536,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       // === 這裡開始訊息翻譯區塊（已改為分語言集中顯示） ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
+
         if (text === "!設定") {
           if (!groupInviter.has(gid) && uid) {
             groupInviter.set(gid, uid);
@@ -741,22 +742,23 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           }
         }
 
-       const inputLang = detectLang(text); // 偵測輸入語言
+        // 偵測輸入語言
+        const inputLang = detectLang(text);
 
-let replyText = "";
-// 先輸出繁體中文（如果設定有繁體中文）
-if (set.has("zh-TW") && langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-  replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
-}
-// 輸出其他語言，但跳過輸入語言
-for (let code of set) {
-  if (code === "zh-TW") continue;
-  if (code === inputLang) continue;  // 跳過原文語言
-  if (langOutputs[code] && langOutputs[code].length) {
-    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-  }
-}
-
+        // 組裝輸出，排除輸入語言
+        let replyText = "";
+        // 先輸出繁體中文（若設定有）
+        if (set.has("zh-TW") && langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+          replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
+        }
+        // 輸出其他語言，但跳過輸入語言
+        for (let code of set) {
+          if (code === "zh-TW") continue;
+          if (code === inputLang) continue;  // 跳過原文語言
+          if (langOutputs[code] && langOutputs[code].length) {
+            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+          }
+        }
 
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
         await client.replyMessage(event.replyToken, {
@@ -769,6 +771,7 @@ for (let code of set) {
     }
   }));
 });
+
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
