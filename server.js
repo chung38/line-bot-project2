@@ -741,21 +741,25 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           }
         }
 
-        // 組裝輸出（只顯示翻譯語言，不顯示原文）
-let replyText = "";
-for (let code of set) {
-  if (code === "zh-TW") continue; // 不輸出繁體中文
-  if (langOutputs[code] && langOutputs[code].length) {
-    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-  }
-}
+        // 組裝輸出
+        let replyText = "";
+        // 中文原文
+        if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+          replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
+        }
+        // 其他語言依設定順序
+        for (let code of set) {
+          if (code === "zh-TW") continue;
+          if (langOutputs[code] && langOutputs[code].length) {
+            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+          }
+        }
 
-const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-await client.replyMessage(event.replyToken, {
-  type: "text",
-  text: `【${userName}】說：\n${replyText.trim()}`
-});
-
+        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+        await client.replyMessage(event.replyToken, {
+          type: "text",
+          text: `【${userName}】說：\n${replyText.trim()}`
+        });
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
