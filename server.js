@@ -425,6 +425,7 @@ function buildIndustryMenu() {
 }
 
 // === Webhook 主要邏輯 ===
+
 app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -677,10 +678,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                     if (srcLang === "th" && /ทำโอ/.test(part)) {
                       const smartZh = await smartPreprocess(part, "th");
                       if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        zhLine += smartZh.trim();
-                        continue;
+                        zh = smartZh.trim();
                       }
                     }
+                    // 如果預處理或智能預處理後已是中文，直接使用，不再呼叫翻譯API
                     if (/[\u4e00-\u9fff]/.test(zh)) {
                       zhLine += zh.trim();
                       continue;
@@ -759,6 +760,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
           }
         }
+
+        // 除錯輸出（可開啟查看翻譯結果）
+        // console.log("langOutputs:", langOutputs);
+        // console.log("replyText:", replyText);
 
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
         await client.replyMessage(event.replyToken, {
