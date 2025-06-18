@@ -741,19 +741,22 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           }
         }
 
-        // 組裝輸出
-        let replyText = "";
-        // 中文原文
-        if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-          replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
-        }
-        // 其他語言依設定順序
-        for (let code of set) {
-          if (code === "zh-TW") continue;
-          if (langOutputs[code] && langOutputs[code].length) {
-            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-          }
-        }
+       const inputLang = detectLang(text); // 偵測輸入語言
+
+let replyText = "";
+// 先輸出繁體中文（如果設定有繁體中文）
+if (set.has("zh-TW") && langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+  replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
+}
+// 輸出其他語言，但跳過輸入語言
+for (let code of set) {
+  if (code === "zh-TW") continue;
+  if (code === inputLang) continue;  // 跳過原文語言
+  if (langOutputs[code] && langOutputs[code].length) {
+    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+  }
+}
+
 
         const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
         await client.replyMessage(event.replyToken, {
