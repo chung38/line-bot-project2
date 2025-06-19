@@ -819,7 +819,6 @@ async function sendImagesToGroup(gid, dateStr) {
 }
 
 // === 定時任務 ===
-// 定時推播文宣
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -828,15 +827,56 @@ cron.schedule("0 17 * * *", async () => {
     day: "2-digit"
   }).replace(/\//g, "-");
 
+  console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
+  
+  let successCount = 0;
+  let failCount = 0;
+  
   for (const [gid] of groupLang.entries()) {
     try {
-      await sendImagesToGroup(gid, today);
-      console.log(`✅ 群組 ${gid} 已推播`);
+      const imgs = await fetchImageUrlsByDate(gid, today);
+      
+      if (!imgs || imgs.length === 0) {
+        console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
+        continue;
+      }
+      
+      // 逐張推播圖片，每張間隔 500ms
+      for (let i = 0; i < imgs.length; i++) {
+        const url = imgs[i];
+        try {
+          await client.pushMessage(gid, {
+            type: "image",
+            originalContentUrl: url,
+            previewImageUrl: url
+          });
+          console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
+          
+          // 每張圖片間延遲 500ms
+          if (i < imgs.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } catch (e) {
+          console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
+          failCount++;
+        }
+      }
+      
+      successCount++;
+      console.log(`✅ 群組 ${gid} 推播完成`);
+      
+      // 每個群組間延遲 2 秒，避免觸發速率限制
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
     } catch (e) {
       console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
+      failCount++;
     }
   }
+  
+  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
 }, { timezone: "Asia/Taipei" });
+
 
 // === PING 伺服器 ===
 setInterval(() => {
@@ -869,39 +909,39 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
-
 function preprocessThaiWorkPhrase(text) {
   const input = text;
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
   console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  // 例外排除關鍵字
-  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
-
-  if (
-    /ลง/.test(text) &&
-    /(\d{1,2}:\d{2})/.test(text) &&
-    !exceptionKeywords.test(text)
-  ) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}開始上班`;
-      console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
-    console.log(`[預處理結果] → "今天我開始上班"`);
-    return "今天我開始上班";
+  // 只處理非常明確的工作時間句式
+  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+  
+  // 明確的上班句式：包含「ลงงาน」或類似，且有時間，句子簡短
+  if (timeMatch && /ลง(งาน|เวร)/.test(text) && text.length < 30) {
+    const result = `今天我${timeMatch[1]}開始上班`;
+    console.log(`[預處理結果] → "${result}"`);
+    return result;
   }
-  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}下班`;
-      console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
+  
+  // 明確的下班句式：單純的下班表達，且有時間，排除疑問句和意願句
+  if (timeMatch && /เลิก(งาน|เวร)/.test(text) && text.length < 30 && 
+      !/[?？]/.test(text) && !/จะ|ควร|ต้อง|อยาก|ไป|มา/.test(text)) {
+    const result = `今天我${timeMatch[1]}下班`;
+    console.log(`[預處理結果] → "${result}"`);
+    return result;
+  }
+
+  // 特殊情況：非常簡單的下班句子（不含時間）
+  if (/^[^\u4e00-\u9fff]*เลิกงาน[^\u4e00-\u9fff]*$/.test(text.replace(/\s/g, '')) && 
+      text.length < 20 && !/[?？]/.test(text)) {
     console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
-  console.log(`[預處理結果] (無匹配) → "${text}"`);
+
+  // 其他情況不做預處理，交給正常翻譯流程
+  console.log(`[預處理結果] (無匹配，交給正常翻譯) → "${text}"`);
   return text;
 }
+
+
