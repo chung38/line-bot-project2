@@ -20,7 +20,19 @@ try {
   process.exit(1);
 }
 const db = admin.firestore();
-
+// Firestore 批次操作分批提交工具
+async function commitBatchInChunks(ops, db, chunkSize = 400) {
+  for (let i = 0; i < ops.length; i += chunkSize) {
+    const batch = db.batch();
+    const chunk = ops.slice(i, i + chunkSize);
+    for (const op of chunk) {
+      if (op.type === "set") batch.set(op.ref, op.data, { merge: true });
+      else if (op.type === "delete") batch.delete(op.ref);
+      // 你可以根據需求擴充更多操作
+    }
+    await batch.commit();
+  }
+}
 // === Express 設定 ===
 const app = express();
 app.set('trust proxy', 1);
@@ -616,7 +628,37 @@ async function loadIndustry() {
   snapshot.forEach(doc => groupIndustry.set(doc.id, doc.data().industry));
 }
 
-// === 你的其他函式如 sendMenu、saveLang、saveInviter、saveIndustry、fetchImageUrlsByDate、sendImagesToGroup 等請自行整合 ===
+// === 建立行業別選單 ===
+function buildIndustryMenu() {
+  return {
+    type: "flex",
+    altText: "請選擇行業別",
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "md",
+        contents: [
+          { type: "text", text: "🏭 請選擇行業別", weight: "bold", size: "lg", align: "center" },
+          ...INDUSTRY_LIST.map(ind => ({
+            type: "button",
+            action: { type: "postback", label: ind, data: `action=set_industry&industry=${encodeURIComponent(ind)}` },
+            style: "primary",
+            margin: "sm"
+          })),
+          {
+            type: "button",
+            action: { type: "postback", label: "❌ 不設定/清除行業別", data: "action=set_industry&industry=" },
+            style: "secondary",
+            margin: "md"
+          }
+        ]
+      }
+    }
+  };
+}
 // === 發送語言設定選單 ===
 const sendMenu = async (gid, retry = 0) => {
   const langButtons = Object.entries(SUPPORTED_LANGS)
