@@ -854,3 +854,48 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
+function preprocessThaiWorkPhrase(text) {
+  const input = text;
+  // 擴充時間格式匹配，並統一格式
+  const timeMatch = text.match(/(\d{1,2}[:. -]\d{2})/);
+  let time = null;
+  if (timeMatch) {
+    time = timeMatch[1].replace(/[. -]/, ":");
+  }
+  console.log(`[預處理] 原始: "${input}" → 標準化時間: "${time || '無'}"`);
+
+  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน|ไป|มา|จะ|อยาก|ต้อง|ควร|ไม่)/;
+
+  // 判斷上班：包含「ลงงาน」或「ลงเวร」或「ลง」+時間，且無例外關鍵字，且句子不長
+  if (time && /ลง(งาน|เวร)/.test(text) && !exceptionKeywords.test(text) && text.length < 40) {
+    const result = `今天我${time}開始上班`;
+    console.log(`[預處理結果] → "${result}"`);
+    return result;
+  }
+  if (time && /ลง/.test(text) && !exceptionKeywords.test(text) && text.length < 30) {
+    // 進一步判斷「ลง」後是否緊接時間，避免誤判
+    const pattern = new RegExp(`ลง\\s*${timeMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+    if (pattern.test(text)) {
+      const result = `今天我${time}開始上班`;
+      console.log(`[預處理結果] → "${result}"`);
+      return result;
+    }
+  }
+
+  // 判斷下班：包含「เลิกงาน」「ออกงาน」「เลิกเวร」「ออกเวร」+時間，且無例外關鍵字，且句子不長且非疑問句
+  if (time && (/เลิก(งาน|เวร)/.test(text) || /ออก(งาน|เวร)/.test(text)) && !exceptionKeywords.test(text) && text.length < 40 && !/[?？]/.test(text)) {
+    const result = `今天我${time}下班`;
+    console.log(`[預處理結果] → "${result}"`);
+    return result;
+  }
+
+  // 簡短下班句（無時間）
+  if (/^(เลิกงาน|ออกงาน|เลิกเวร|ออกเวร)$/.test(text.trim()) && !exceptionKeywords.test(text)) {
+    console.log(`[預處理結果] → "今天我下班"`);
+    return "今天我下班";
+  }
+
+  console.log(`[預處理結果] (無匹配，交給正常翻譯) → "${text}"`);
+  return text;
+}
+
