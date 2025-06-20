@@ -909,6 +909,7 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
+
 function preprocessThaiWorkPhrase(text) {
   const input = text;
   // 統一時間格式
