@@ -911,35 +911,37 @@ app.listen(PORT, async () => {
 });
 function preprocessThaiWorkPhrase(text) {
   const input = text;
+  // 將時間格式統一為 HH:mm
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
   console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  // 只處理非常明確的工作時間句式
+  // 排除不處理的關鍵字，避免誤判
+  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน|ไป|มา|จะ|อยาก|ต้อง|ควร|ไม่)/;
+
+  // 抓取時間
   const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-  
-  // 明確的上班句式：包含「ลงงาน」或類似，且有時間，句子簡短
-  if (timeMatch && /ลง(งาน|เวร)/.test(text) && text.length < 30) {
+
+  // 判斷是否為上班語句
+  if (timeMatch && /ลง(งาน|เวร)/.test(text) && !exceptionKeywords.test(text) && text.length < 40) {
     const result = `今天我${timeMatch[1]}開始上班`;
     console.log(`[預處理結果] → "${result}"`);
     return result;
   }
-  
-  // 明確的下班句式：單純的下班表達，且有時間，排除疑問句和意願句
-  if (timeMatch && /เลิก(งาน|เวร)/.test(text) && text.length < 30 && 
-      !/[?？]/.test(text) && !/จะ|ควร|ต้อง|อยาก|ไป|มา/.test(text)) {
+
+  // 判斷是否為下班語句
+  if (timeMatch && /เลิก(งาน|เวร)|ออก(งาน|เวร)/.test(text) && !exceptionKeywords.test(text) && text.length < 40 && !/[?？]/.test(text)) {
     const result = `今天我${timeMatch[1]}下班`;
     console.log(`[預處理結果] → "${result}"`);
     return result;
   }
 
-  // 特殊情況：非常簡單的下班句子（不含時間）
-  if (/^[^\u4e00-\u9fff]*เลิกงาน[^\u4e00-\u9fff]*$/.test(text.replace(/\s/g, '')) && 
-      text.length < 20 && !/[?？]/.test(text)) {
+  // 特殊簡短下班句（無時間）
+  if (/^(เลิกงาน|ออกงาน|เลิกเวร|ออกเวร)$/.test(text.trim()) && !exceptionKeywords.test(text)) {
     console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
 
-  // 其他情況不做預處理，交給正常翻譯流程
+  // 其他不符合條件的，回傳原文
   console.log(`[預處理結果] (無匹配，交給正常翻譯) → "${text}"`);
   return text;
 }
