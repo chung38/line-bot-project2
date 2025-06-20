@@ -51,6 +51,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use(limiter);
+
 // === 快取與設定 ===
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
 const smartPreprocessCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
@@ -425,8 +426,6 @@ function buildIndustryMenu() {
 }
 
 // === Webhook 主要邏輯 ===
-
-
 app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -760,65 +759,57 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   }));
 });
 
-// === 文宣推播 ===
-async function fetchImageUrlsByDate(gid, dateStr) {
-  try {
-    const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
-    const $ = load(res.data);
-    const detailUrls = [];
-    $("table.sub-table tbody.tbody tr").each((_, tr) => {
-      const tds = $(tr).find("td");
-      const dateCell = tds.eq(1).text().trim().replace(/\s+/g, '');
-      if (/\d{4}\/\d{2}\/\d{2}/.test(dateCell) &&
-          dateCell === dateStr.replace(/-/g, "/")) {
-        const href = tds.eq(0).find("a").attr("href");
-        if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
-      }
-    });
+// === 文宣推播批次優化 ===
+async function batchPushImages(dateStr) {
+  const groupArray = Array.from(groupLang.entries());
+  const batchSize = 5; // 每批推播 5 個群組
+  const batchDelay = 2000; // 批次間隔 2 秒
+  const imageDelay = 500; // 每張圖片推播間隔 500ms
 
-    const wanted = groupLang.get(gid) || new Set();
-    const images = [];
-    for (const url of detailUrls) {
+  for (let i = 0; i < groupArray.length; i += batchSize) {
+    const batch = groupArray.slice(i, i + batchSize);
+
+    await Promise.all(batch.map(async ([gid]) => {
       try {
-        const d = await axios.get(url);
-        const $$ = load(d.data);
-        $$(".text-photo a").each((_, el) => {
-          const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
-          const code = NAME_TO_CODE[label];
-          if (code && wanted.has(code)) {
-            const imgUrl = $$(el).find("img").attr("src");
-            if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
+        const imgs = await fetchImageUrlsByDate(gid, dateStr);
+        if (!imgs || imgs.length === 0) {
+          console.log(`⚠️ 群組 ${gid} 今日無可推播圖片`);
+          return;
+        }
+
+        // 推播所有圖片，無數量限制
+        for (let idx = 0; idx < imgs.length; idx++) {
+          const url = imgs[idx];
+          try {
+            await client.pushMessage(gid, {
+              type: "image",
+              originalContentUrl: url,
+              previewImageUrl: url
+            });
+            console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
+          } catch (e) {
+            console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
           }
-        });
+
+          // 圖片間隔延遲，避免瞬間大量請求
+          if (idx < imgs.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, imageDelay));
+          }
+        }
       } catch (e) {
-        console.error("細節頁失敗:", e.message);
+        console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
       }
-    }
-    return images;
-  } catch (e) {
-    console.error("主頁抓圖失敗:", e.message);
-    return [];
-  }
-}
+    }));
 
-// 推送圖片到群組
-async function sendImagesToGroup(gid, dateStr) {
-  const imgs = await fetchImageUrlsByDate(gid, dateStr);
-  for (const url of imgs) {
-    try {
-      await client.pushMessage(gid, {
-        type: "image",
-        originalContentUrl: url,
-        previewImageUrl: url
-      });
-      console.log(`✅ 推播圖片成功：${url} 到群組 ${gid}`);
-    } catch (e) {
-      console.error(`❌ 推播圖片失敗: ${url}`, e.message);
+    // 批次間隔延遲，避免同時推播過多群組
+    if (i + batchSize < groupArray.length) {
+      console.log(`等待 ${batchDelay}ms 後處理下一批群組...`);
+      await new Promise(resolve => setTimeout(resolve, batchDelay));
     }
   }
 }
 
-// === 定時任務 ===
+// === 定時任務改用批次推播 ===
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -828,55 +819,9 @@ cron.schedule("0 17 * * *", async () => {
   }).replace(/\//g, "-");
 
   console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
-  
-  let successCount = 0;
-  let failCount = 0;
-  
-  for (const [gid] of groupLang.entries()) {
-    try {
-      const imgs = await fetchImageUrlsByDate(gid, today);
-      
-      if (!imgs || imgs.length === 0) {
-        console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
-        continue;
-      }
-      
-      // 逐張推播圖片，每張間隔 500ms
-      for (let i = 0; i < imgs.length; i++) {
-        const url = imgs[i];
-        try {
-          await client.pushMessage(gid, {
-            type: "image",
-            originalContentUrl: url,
-            previewImageUrl: url
-          });
-          console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
-          
-          // 每張圖片間延遲 500ms
-          if (i < imgs.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        } catch (e) {
-          console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
-          failCount++;
-        }
-      }
-      
-      successCount++;
-      console.log(`✅ 群組 ${gid} 推播完成`);
-      
-      // 每個群組間延遲 2 秒，避免觸發速率限制
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-    } catch (e) {
-      console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
-      failCount++;
-    }
-  }
-  
-  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
+  await batchPushImages(today);
+  console.log(`推播任務完成`);
 }, { timezone: "Asia/Taipei" });
-
 
 // === PING 伺服器 ===
 setInterval(() => {
@@ -909,43 +854,3 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
-
-function preprocessThaiWorkPhrase(text) {
-  const input = text;
-  // 統一時間格式
-  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
-  console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
-
-  // 排除不處理的關鍵字
-  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน|ไป|มา|จะ|อยาก|ต้อง|ควร|ไม่)/;
-
-  // 抓取時間
-  const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-
-  // 判斷是否為上班語句（只要有「ลง」+時間，且不是例外關鍵字，就視為上班）
-  if (timeMatch && /ลง/.test(text) && !exceptionKeywords.test(text) && text.length < 40) {
-    const result = `今天我${timeMatch[1]}開始上班`;
-    console.log(`[預處理結果] → "${result}"`);
-    return result;
-  }
-
-  // 判斷是否為下班語句
-  if (timeMatch && (/เลิก(งาน|เวร)/.test(text) || /ออก(งาน|เวร)/.test(text)) && !exceptionKeywords.test(text) && text.length < 40 && !/[?？]/.test(text)) {
-    const result = `今天我${timeMatch[1]}下班`;
-    console.log(`[預處理結果] → "${result}"`);
-    return result;
-  }
-
-  // 特殊簡短下班句（無時間）
-  if (/^(เลิกงาน|ออกงาน|เลิกเวร|ออกเวร)$/.test(text.trim()) && !exceptionKeywords.test(text)) {
-    console.log(`[預處理結果] → "今天我下班"`);
-    return "今天我下班";
-  }
-
-  // 其他不符合條件的，回傳原文
-  console.log(`[預處理結果] (無匹配，交給正常翻譯) → "${text}"`);
-  return text;
-}
-
-
-
