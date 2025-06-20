@@ -911,25 +911,25 @@ app.listen(PORT, async () => {
 });
 function preprocessThaiWorkPhrase(text) {
   const input = text;
-  // 將時間格式統一為 HH:mm
+  // 統一時間格式
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
   console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  // 排除不處理的關鍵字，避免誤判
+  // 排除不處理的關鍵字
   const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน|ไป|มา|จะ|อยาก|ต้อง|ควร|ไม่)/;
 
   // 抓取時間
   const timeMatch = text.match(/(\d{1,2}:\d{2})/);
 
-  // 判斷是否為上班語句
-  if (timeMatch && /ลง(งาน|เวร)/.test(text) && !exceptionKeywords.test(text) && text.length < 40) {
+  // 判斷是否為上班語句（只要有「ลง」+時間，且不是例外關鍵字，就視為上班）
+  if (timeMatch && /ลง/.test(text) && !exceptionKeywords.test(text) && text.length < 40) {
     const result = `今天我${timeMatch[1]}開始上班`;
     console.log(`[預處理結果] → "${result}"`);
     return result;
   }
 
   // 判斷是否為下班語句
-  if (timeMatch && /เลิก(งาน|เวร)|ออก(งาน|เวร)/.test(text) && !exceptionKeywords.test(text) && text.length < 40 && !/[?？]/.test(text)) {
+  if (timeMatch && (/เลิก(งาน|เวร)/.test(text) || /ออก(งาน|เวร)/.test(text)) && !exceptionKeywords.test(text) && text.length < 40 && !/[?？]/.test(text)) {
     const result = `今天我${timeMatch[1]}下班`;
     console.log(`[預處理結果] → "${result}"`);
     return result;
@@ -945,5 +945,6 @@ function preprocessThaiWorkPhrase(text) {
   console.log(`[預處理結果] (無匹配，交給正常翻譯) → "${text}"`);
   return text;
 }
+
 
 
