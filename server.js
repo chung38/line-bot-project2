@@ -134,7 +134,7 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// === LINE 訊息處理 ===
+// === Mention 處理 ===
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -263,8 +263,7 @@ async function translateMessageBySegments(text, gid, targetLangSet) {
   }
 
   for (const lang of targetLangSet) {
-    if (lang === "zh-TW") continue; // 中文輸入時不翻譯成中文
-
+    // 這裡不跳過 zh-TW，確保繁體中文翻譯會執行
     let translatedText = "";
 
     for (const seg of segs) {
@@ -403,7 +402,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         return;
       }
 
-      // === 這裡開始訊息翻譯區塊（已改為分語言集中顯示） ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
 
