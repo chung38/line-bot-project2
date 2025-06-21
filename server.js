@@ -761,6 +761,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 });
 
 // === 文宣推播 ===
+// === 文宣推播 ===
 // 新增每日圖片抓取快取
 const dailyImageCache = new LRUCache({ max: 50, ttl: 24 * 60 * 60 * 1000 });
 
@@ -862,6 +863,31 @@ cron.schedule("0 17 * * *", async () => {
 
   console.log(`📢 今日推播任務完成`);
 }, { timezone: "Asia/Taipei" });
+
+// 加入詳細日誌的手動推播函式
+async function sendImagesToGroup(gid, dateStr) {
+  console.log(`開始手動抓取圖片, 群組: ${gid}, 日期: ${dateStr}`);
+  const imgs = await fetchCachedImages(dateStr, groupLang.get(gid) || new Set());
+
+  console.log(`抓取到的圖片網址:`, imgs);
+
+  if (!imgs.length) {
+    throw new Error(`日期 ${dateStr} 沒有找到符合的圖片`);
+  }
+
+  for (const url of imgs) {
+    try {
+      await client.pushMessage(gid, {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      });
+      await new Promise(r => setTimeout(r, 500));
+    } catch (e) {
+      console.error(`手動推播圖片失敗: ${url}`, e.message);
+    }
+  }
+}
 
 
 // === PING 伺服器 ===
