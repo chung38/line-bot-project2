@@ -761,53 +761,39 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 });
 
 // === 文宣推播 ===
-// === 文宣推播 ===
-// 新增每日圖片抓取快取
-const dailyImageCache = new LRUCache({ max: 50, ttl: 24 * 60 * 60 * 1000 });
-
-// 改寫抓取圖片函式，加入快取
-async function fetchCachedImages(dateStr, langsSet) {
-  const cacheKey = `${dateStr}:${[...langsSet].join(",")}`;
-
-  if (dailyImageCache.has(cacheKey)) {
-    return dailyImageCache.get(cacheKey);
-  }
-
-  const images = await fetchImageUrlsByDateInternal(dateStr, langsSet);
-  dailyImageCache.set(cacheKey, images);
-  return images;
-}
-
-// 原有圖片抓取邏輯，重構成獨立函式
-async function fetchImageUrlsByDateInternal(dateStr, langsSet) {
+async function fetchImageUrlsByDate(gid, dateStr) {
   try {
     const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file");
     const $ = load(res.data);
     const detailUrls = [];
-
     $("table.sub-table tbody.tbody tr").each((_, tr) => {
       const tds = $(tr).find("td");
       const dateCell = tds.eq(1).text().trim().replace(/\s+/g, '');
-      if (dateCell === dateStr.replace(/-/g, "/")) {
+      if (/\d{4}\/\d{2}\/\d{2}/.test(dateCell) &&
+          dateCell === dateStr.replace(/-/g, "/")) {
         const href = tds.eq(0).find("a").attr("href");
         if (href) detailUrls.push("https://fw.wda.gov.tw" + href);
       }
     });
 
+    const wanted = groupLang.get(gid) || new Set();
     const images = [];
     for (const url of detailUrls) {
-      const d = await axios.get(url);
-      const $$ = load(d.data);
-      $$(".text-photo a").each((_, el) => {
-        const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
-        const code = NAME_TO_CODE[label];
-        if (code && langsSet.has(code)) {
-          const imgUrl = $$(el).find("img").attr("src");
-          if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
-        }
-      });
+      try {
+        const d = await axios.get(url);
+        const $$ = load(d.data);
+        $$(".text-photo a").each((_, el) => {
+          const label = $$(el).find("p").text().trim().replace(/\d.*$/, "").trim();
+          const code = NAME_TO_CODE[label];
+          if (code && wanted.has(code)) {
+            const imgUrl = $$(el).find("img").attr("src");
+            if (imgUrl) images.push("https://fw.wda.gov.tw" + imgUrl);
+          }
+        });
+      } catch (e) {
+        console.error("細節頁失敗:", e.message);
+      }
     }
-
     return images;
   } catch (e) {
     console.error("主頁抓圖失敗:", e.message);
@@ -815,7 +801,27 @@ async function fetchImageUrlsByDateInternal(dateStr, langsSet) {
   }
 }
 
-// 改良後的 Cron Job
+// 推送圖片到群組
+async function sendImagesToGroup(gid, dateStr) {
+  const imgs = await fetchImageUrlsByDate(gid, dateStr);
+  for (const url of imgs) {
+    try {
+      await client.pushMessage(gid, {
+        type: "image",
+        originalContentUrl: url,
+        previewImageUrl: url
+      });
+      console.log(`✅ 推播圖片成功：${url} 到群組 ${gid}`);
+    } catch (e) {
+      console.error(`❌ 推播圖片失敗: ${url}`, e.message);
+    }
+  }
+}
+
+// === 定時任務 ===
+const BATCH_SIZE = 10;      // 每批群組數量
+const BATCH_INTERVAL = 60000; // 批次間隔時間，單位毫秒（1分鐘）
+
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -826,68 +832,68 @@ cron.schedule("0 17 * * *", async () => {
 
   console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
 
+  let successCount = 0;
+  let failCount = 0;
+
+  // 將群組ID陣列化
   const groupIds = Array.from(groupLang.keys());
 
-  for (let i = 0; i < groupIds.length; i += BATCH_SIZE) {
-    const batch = groupIds.slice(i, i + BATCH_SIZE);
+  // 分批處理
+  for (let batchStart = 0; batchStart < groupIds.length; batchStart += BATCH_SIZE) {
+    const batch = groupIds.slice(batchStart, batchStart + BATCH_SIZE);
 
-    await Promise.all(batch.map(async gid => {
-      const langsSet = groupLang.get(gid) || new Set();
-      const imgs = await fetchCachedImages(today, langsSet);
+    console.log(`開始推播第 ${Math.floor(batchStart / BATCH_SIZE) + 1} 批，共 ${batch.length} 個群組`);
 
-      if (!imgs.length) {
-        console.warn(`群組 ${gid} 今日無圖片推播`);
-        return;
-      }
+    for (const gid of batch) {
+      try {
+        const imgs = await fetchImageUrlsByDate(gid, today);
 
-      for (const url of imgs) {
-        try {
-          await client.pushMessage(gid, {
-            type: "image",
-            originalContentUrl: url,
-            previewImageUrl: url
-          });
-          await new Promise(r => setTimeout(r, 500)); // 圖片間間隔500ms
-        } catch (e) {
-          console.error(`群組 ${gid} 圖片推播失敗: ${url}`, e.message);
+        if (!imgs || imgs.length === 0) {
+          console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
+          continue;
         }
-      }
-      await new Promise(r => setTimeout(r, 2000)); // 群組間間隔2秒
-    }));
 
-    if (i + BATCH_SIZE < groupIds.length) {
-      console.log(`批次完成，等待${BATCH_INTERVAL / 1000}秒後繼續`);
-      await new Promise(r => setTimeout(r, BATCH_INTERVAL));
+        for (let i = 0; i < imgs.length; i++) {
+          const url = imgs[i];
+          try {
+            await client.pushMessage(gid, {
+              type: "image",
+              originalContentUrl: url,
+              previewImageUrl: url
+            });
+            console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
+
+            if (i < imgs.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 500)); // 圖片間隔500ms
+            }
+          } catch (e) {
+            console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
+            failCount++;
+          }
+        }
+
+        successCount++;
+        console.log(`✅ 群組 ${gid} 推播完成`);
+
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 群組間隔2秒
+
+      } catch (e) {
+        console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
+        failCount++;
+      }
+    }
+
+    // 批次間隔
+    if (batchStart + BATCH_SIZE < groupIds.length) {
+      console.log(`等待 ${BATCH_INTERVAL/1000} 秒後開始下一批推播...`);
+      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL));
     }
   }
 
-  console.log(`📢 今日推播任務完成`);
+  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
 }, { timezone: "Asia/Taipei" });
 
-// 加入詳細日誌的手動推播函式
-async function sendImagesToGroup(gid, dateStr) {
-  console.log(`開始手動抓取圖片, 群組: ${gid}, 日期: ${dateStr}`);
-  const imgs = await fetchCachedImages(dateStr, groupLang.get(gid) || new Set());
 
-  console.log(`抓取到的圖片網址:`, imgs);
-
-  if (!imgs.length) {
-    throw new Error(`日期 ${dateStr} 沒有找到符合的圖片`);
-  }
-
-  for (const url of imgs) {
-    try {
-      await client.pushMessage(gid, {
-        type: "image",
-        originalContentUrl: url,
-        previewImageUrl: url
-      });
-      await new Promise(r => setTimeout(r, 500));
-    } catch (e) {
-      console.error(`手動推播圖片失敗: ${url}`, e.message);
-    }
-  }
-}
 
 
 // === PING 伺服器 ===
