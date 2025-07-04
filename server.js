@@ -122,6 +122,7 @@ const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === LINE 訊息處理 ===
+// --- 優化後的 mention 遮罩函式 ---
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -129,13 +130,35 @@ function extractMentionsFromLineMessage(message) {
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      segments.push({ key, text: message.text.substring(m.index, m.index + m.length) });
+      const mentionText = message.text.substring(m.index, m.index + m.length);
+      segments.push({ key, text: mentionText, index: m.index, length: m.length });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   }
+  segments.sort((a, b) => a.index - b.index);
   return { masked, segments };
 }
 
+// --- 分段切割函式 ---
+function splitMessageByMentions(masked) {
+  const result = [];
+  let lastIdx = 0;
+  const mentionRegex = /__MENTION_\d+__/g;
+  let match;
+  while ((match = mentionRegex.exec(masked)) !== null) {
+    if (match.index > lastIdx) {
+      result.push({ type: "text", text: masked.slice(lastIdx, match.index) });
+    }
+    result.push({ type: "mention", text: match[0] });
+    lastIdx = match.index + match[0].length;
+  }
+  if (lastIdx < masked.length) {
+    result.push({ type: "text", text: masked.slice(lastIdx) });
+  }
+  return result;
+}
+
+// --- 還原 mention 函式 ---
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -610,152 +633,90 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // === 多語言分組翻譯（新版） ===
-        const set = groupLang.get(gid) || new Set();
-        const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const rawLines = masked.split(/\r?\n/);
-        const lines = [];
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
-        for (let i = 0; i < rawLines.length; i++) {
-          let line = rawLines[i].trim();
-          if (!line) continue;
-          if (isChinese(line) && line.length < 4 && lines.length > 0) {
-            lines[lines.length - 1] += line;
-          } else {
-            lines.push(line);
-          }
-        }
+              const set = groupLang.get(gid) || new Set();
+      if (set.size === 0) return; // 無設定語言不翻譯
 
-        // 建立語言暫存
-        const langOutputs = {};
-        for (let code of set) {
-          langOutputs[code] = [];
-        }
+      // 先遮罩 mention
+      const { masked, segments } = extractMentionsFromLineMessage(event.message);
+      // 分段切割
+      const parts = splitMessageByMentions(masked);
 
-        // 偵測輸入語言
-        const inputLang = detectLang(text);
+      // 偵測輸入語言
+      const inputLang = detectLang(text);
 
-        // 處理每一行
-        for (let idx = 0; idx < lines.length; idx++) {
-          const line = lines[idx];
-          if (!line.trim()) continue;
-          const segs = [];
-          let lastIndex = 0;
-          const mentionRegex = /__MENTION_\d+__/g;
-          let match;
-          while ((match = mentionRegex.exec(line)) !== null) {
-            if (match.index > lastIndex) {
-              segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
-            }
-            segs.push({ type: "mention", text: match[0] });
-            lastIndex = match.index + match[0].length;
-          }
-          if (lastIndex < line.length) {
-            segs.push({ type: "text", text: line.slice(lastIndex) });
-          }
-
-          if (inputLang === "zh-TW") {
-            // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
-            for (let code of set) {
-              if (code === "zh-TW") continue;
-              let outLine = "";
-              for (const seg of segs) {
-                if (seg.type === "mention") {
-                  outLine += seg.text;
-                } else if (seg.type === "text" && seg.text.trim()) {
-                  let textParts = seg.text.split(urlRegex);
-                  for (let i = 0; i < textParts.length; i++) {
-                    const part = textParts[i];
-                    if (urlRegex.test(part)) {
-                      outLine += part;
-                    } else if (part.trim()) {
-                      if (isSymbolOrNum(part)) {
-                        outLine += part;
-                        continue;
-                      }
-                      const tr = await translateWithDeepSeek(part, code, gid);
-                      outLine += tr.trim();
-                    }
-                  }
-                }
-              }
-              langOutputs[code].push(restoreMentions(outLine, segments));
-            }
-          } else {
-            // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
-            let zhLine = "";
-            for (const seg of segs) {
-              if (seg.type === "mention") {
-                zhLine += seg.text;
-              } else if (seg.type === "text" && seg.text.trim()) {
-                let textParts = seg.text.split(urlRegex);
-                for (let i = 0; i < textParts.length; i++) {
-                  const part = textParts[i];
-                  if (urlRegex.test(part)) {
-                    zhLine += part;
-                  } else if (part.trim()) {
-                    if (isSymbolOrNum(part)) {
-                      zhLine += part;
-                      continue;
-                    }
-                    let zh = part;
-                    if (detectLang(part) === "th") {
-                      zh = preprocessThaiWorkPhrase(zh);
-                    }
-                    if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
-                      const smartZh = await smartPreprocess(part, "th");
-                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        zh = smartZh.trim();
-                      }
-                    }
-                    if (/[\u4e00-\u9fff]/.test(zh)) {
-                      zhLine += zh.trim();
-                      continue;
-                    }
-                    const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
-                    zhLine += finalZh ? finalZh.trim() : zh.trim();
-                  }
-                }
-              }
-            }
-            langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
-            langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
-          }
-        }
-
-        // 組裝回覆文字
-        let replyText = "";
-        if (inputLang === "zh-TW") {
-          // 輸入中文：只顯示翻譯成其他語言的結果
-          for (let code of set) {
-            if (code === "zh-TW") continue;
-            if (langOutputs[code] && langOutputs[code].length) {
-              replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-            }
-          }
-          if (!replyText) {
-            replyText = "(尚無翻譯結果)";
-          }
-        } else {
-          // 輸入外語：只顯示繁體中文翻譯結果
-          if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-            replyText = `${langOutputs["zh-TW"].join('\n')}`;
-          } else {
-            replyText = "(尚無翻譯結果)";
-          }
-        }
-
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${replyText.trim()}`
-        });
+      // 建立翻譯結果容器
+      const langOutputs = {};
+      for (let code of set) {
+        langOutputs[code] = [];
       }
+
+      // 針對每個目標語言進行翻譯
+      for (let code of set) {
+        if (code === inputLang) continue; // 輸入語言不翻譯成自己
+
+        let translated = "";
+        for (const part of parts) {
+          if (part.type === "mention") {
+            translated += part.text; // mention 保留不翻譯
+          } else if (part.type === "text") {
+            if (part.text.trim()) {
+              // 先切割網址，網址直接保留
+              const textParts = part.text.split(urlRegex);
+              for (const subPart of textParts) {
+                if (urlRegex.test(subPart)) {
+                  translated += subPart; // 網址原樣保留
+                } else if (subPart.trim()) {
+                  // 針對泰文特殊預處理
+                  let toTranslate = subPart;
+                  if (code === "zh-TW" && detectLang(subPart) === "th") {
+                    toTranslate = preprocessThaiWorkPhrase(toTranslate);
+                    if (/ทำโอ/.test(subPart)) {
+                      const smartZh = await smartPreprocess(subPart, "th");
+                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                        toTranslate = smartZh.trim();
+                      }
+                    }
+                  }
+                  // 呼叫翻譯 API
+                  const tr = await translateWithDeepSeek(toTranslate, code, gid);
+                  translated += tr;
+                }
+              }
+            } else {
+              translated += part.text;
+            }
+          }
+        }
+        // 還原 mention
+        langOutputs[code].push(restoreMentions(translated, segments));
+      }
+
+      // 組合回覆文字（依你原本邏輯）
+      let replyText = "";
+      if (inputLang === "zh-TW") {
+        for (let code of set) {
+          if (code === "zh-TW") continue;
+          if (langOutputs[code].length) {
+            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+          }
+        }
+      } else {
+        if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+          replyText = langOutputs["zh-TW"].join('\n');
+        }
+      }
+      if (!replyText) replyText = "(尚無翻譯結果)";
+
+      // 取得使用者名稱
+      const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: `【${userName}】說：\n${replyText.trim()}`
+      });
+
     } catch (e) {
       console.error("處理事件錯誤:", e);
-      if (e.response?.data) {
-        console.error("LINE API 回應錯誤:", e.response.data);
-      }
     }
   }));
 });
