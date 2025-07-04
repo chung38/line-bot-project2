@@ -717,6 +717,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 
     } catch (e) {
       console.error("處理事件錯誤:", e);
+      if (e.response?.data) {
+        console.error("LINE API 回應錯誤:", e.response.data);
+      }
     }
   }));
 });
