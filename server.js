@@ -679,15 +679,14 @@ const urlRegex = /(https?:\/\/[^\s]+)/gi;
   }
 
   // 組合回覆文字
-  let replyText = "";
-  if (inputLang === "zh-TW") {
-    for (const code of set) {
-      if (code === "zh-TW") continue;
-      if (langOutputs[code].length) {
-        replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-      }
-    }
-    if (!replyText) replyText = "(尚無翻譯結果)";
+let replyText = "";
+for (const code of set) {
+  if (code === inputLang) continue;
+  if (langOutputs[code].length) {
+    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+  }
+}
+if (!replyText) replyText = "(尚無翻譯結果)";
   } else {
     if (langOutputs["zh-TW"] && langOutputs["zh-TW"].some(line => line.trim() && line.trim() !== "" && line.trim() !== "（翻譯異常，請稍後再試）" && line.trim() !== "（翻譯暫時不可用）")) {
   replyText = langOutputs["zh-TW"].join('\n');
