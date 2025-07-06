@@ -80,7 +80,7 @@ Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v] = k;
 });
 const INDUSTRY_LIST = [
-  "家具業","畜牧業","建築營造業","印染整理業", "紡紗及織布業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食品加工及農畜產品批發業"
+  "家具業","畜牧業","建築營造業","印染整理業", "紡紗及織布業","禽畜糞加工業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食品加工及農畜產品批發業"
 ];
 
 // === i18n 國際化設定 ===
@@ -122,7 +122,6 @@ const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === LINE 訊息處理 ===
-// --- 優化後的 mention 遮罩函式 ---
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -130,35 +129,13 @@ function extractMentionsFromLineMessage(message) {
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      const mentionText = message.text.substring(m.index, m.index + m.length);
-      segments.push({ key, text: mentionText, index: m.index, length: m.length });
+      segments.push({ key, text: message.text.substring(m.index, m.index + m.length) });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   }
-  segments.sort((a, b) => a.index - b.index);
   return { masked, segments };
 }
 
-// --- 分段切割函式 ---
-function splitMessageByMentions(masked) {
-  const result = [];
-  let lastIdx = 0;
-  const mentionRegex = /__MENTION_\d+__/g;
-  let match;
-  while ((match = mentionRegex.exec(masked)) !== null) {
-    if (match.index > lastIdx) {
-      result.push({ type: "text", text: masked.slice(lastIdx, match.index) });
-    }
-    result.push({ type: "mention", text: match[0] });
-    lastIdx = match.index + match[0].length;
-  }
-  if (lastIdx < masked.length) {
-    result.push({ type: "text", text: masked.slice(lastIdx) });
-  }
-  return result;
-}
-
-// --- 還原 mention 函式 ---
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -633,76 +610,147 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // 多語言分組翻譯（優化 mention 與網址不翻譯）
-  const set = groupLang.get(gid) || new Set();
-  if (set.size === 0) return;
-
-  const { masked, segments } = extractMentionsFromLineMessage(event.message);
-  const parts = splitMessageByMentions(masked);
-  const inputLang = detectLang(text);
-  const langOutputs = {};
-  for (const code of set) langOutputs[code] = [];
-const urlRegex = /(https?:\/\/[^\s]+)/gi;
-  for (const code of set) {
-    if (code === inputLang) continue;
-    let translated = "";
-    for (const part of parts) {
-      if (part.type === "mention") {
-        translated += part.text; // mention 保留
-      } else if (part.type === "text" && part.text) {
-        // 將純文字切割網址
-        const textParts = part.text.split(urlRegex);
-        for (const sub of textParts) {
-          // 避免 regex 狀態影響，改用 startsWith 判斷網址
-          if (sub.startsWith("http://") || sub.startsWith("https://")) {
-            translated += sub; // 網址保留
-          } else if (sub.trim()) {
-            if (isSymbolOrNum(sub)) {
-              translated += sub;
-            } else {
-              let toTrans = sub;
-              if (code === "zh-TW" && detectLang(sub) === "th") {
-                toTrans = preprocessThaiWorkPhrase(toTrans);
-                if (/ทำโอ/.test(sub)) {
-                  const smart = await smartPreprocess(sub, "th");
-                  if (/[\u4e00-\u9fff]/.test(smart)) toTrans = smart;
-                }
-              }
-              const tr = await translateWithDeepSeek(toTrans, code, gid);
-              translated += tr;
-            }
+        // === 多語言分組翻譯（新版） ===
+        const set = groupLang.get(gid) || new Set();
+        const { masked, segments } = extractMentionsFromLineMessage(event.message);
+        const rawLines = masked.split(/\r?\n/);
+        const lines = [];
+        const urlRegex = /(https?:\/\/[^\s]+)/gi;
+        for (let i = 0; i < rawLines.length; i++) {
+          let line = rawLines[i].trim();
+          if (!line) continue;
+          if (isChinese(line) && line.length < 4 && lines.length > 0) {
+            lines[lines.length - 1] += line;
+          } else {
+            lines.push(line);
           }
         }
+
+        // 建立語言暫存
+        const langOutputs = {};
+        for (let code of set) {
+          langOutputs[code] = [];
+        }
+
+        // 偵測輸入語言
+        const inputLang = detectLang(text);
+
+        // 處理每一行
+        for (let idx = 0; idx < lines.length; idx++) {
+          const line = lines[idx];
+          if (!line.trim()) continue;
+          const segs = [];
+          let lastIndex = 0;
+          const mentionRegex = /__MENTION_\d+__/g;
+          let match;
+          while ((match = mentionRegex.exec(line)) !== null) {
+            if (match.index > lastIndex) {
+              segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
+            }
+            segs.push({ type: "mention", text: match[0] });
+            lastIndex = match.index + match[0].length;
+          }
+          if (lastIndex < line.length) {
+            segs.push({ type: "text", text: line.slice(lastIndex) });
+          }
+
+          if (inputLang === "zh-TW") {
+            // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
+            for (let code of set) {
+              if (code === "zh-TW") continue;
+              let outLine = "";
+              for (const seg of segs) {
+                if (seg.type === "mention") {
+                  outLine += seg.text;
+                } else if (seg.type === "text" && seg.text.trim()) {
+                  let textParts = seg.text.split(urlRegex);
+                  for (let i = 0; i < textParts.length; i++) {
+                    const part = textParts[i];
+                    if (urlRegex.test(part)) {
+                      outLine += part;
+                    } else if (part.trim()) {
+                      if (isSymbolOrNum(part)) {
+                        outLine += part;
+                        continue;
+                      }
+                      const tr = await translateWithDeepSeek(part, code, gid);
+                      outLine += tr.trim();
+                    }
+                  }
+                }
+              }
+              langOutputs[code].push(restoreMentions(outLine, segments));
+            }
+          } else {
+            // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
+            let zhLine = "";
+            for (const seg of segs) {
+              if (seg.type === "mention") {
+                zhLine += seg.text;
+              } else if (seg.type === "text" && seg.text.trim()) {
+                let textParts = seg.text.split(urlRegex);
+                for (let i = 0; i < textParts.length; i++) {
+                  const part = textParts[i];
+                  if (urlRegex.test(part)) {
+                    zhLine += part;
+                  } else if (part.trim()) {
+                    if (isSymbolOrNum(part)) {
+                      zhLine += part;
+                      continue;
+                    }
+                    let zh = part;
+                    if (detectLang(part) === "th") {
+                      zh = preprocessThaiWorkPhrase(zh);
+                    }
+                    if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
+                      const smartZh = await smartPreprocess(part, "th");
+                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                        zh = smartZh.trim();
+                      }
+                    }
+                    if (/[\u4e00-\u9fff]/.test(zh)) {
+                      zhLine += zh.trim();
+                      continue;
+                    }
+                    const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
+                    zhLine += finalZh ? finalZh.trim() : zh.trim();
+                  }
+                }
+              }
+            }
+            langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
+            langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
+          }
+        }
+
+        // 組裝回覆文字
+        let replyText = "";
+        if (inputLang === "zh-TW") {
+          // 輸入中文：只顯示翻譯成其他語言的結果
+          for (let code of set) {
+            if (code === "zh-TW") continue;
+            if (langOutputs[code] && langOutputs[code].length) {
+              replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+            }
+          }
+          if (!replyText) {
+            replyText = "(尚無翻譯結果)";
+          }
+        } else {
+          // 輸入外語：只顯示繁體中文翻譯結果
+          if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+            replyText = `${langOutputs["zh-TW"].join('\n')}`;
+          } else {
+            replyText = "(尚無翻譯結果)";
+          }
+        }
+
+        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+        await client.replyMessage(event.replyToken, {
+          type: "text",
+          text: `【${userName}】說：\n${replyText.trim()}`
+        });
       }
-    }
-    langOutputs[code].push(restoreMentions(translated, segments));
-  }
-
-  // 組合回覆文字
-let replyText = "";
-for (const code of set) {
-  if (code === inputLang) continue;
-  if (langOutputs[code].length) {
-    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
-  }
-}
-if (!replyText) replyText = "(尚無翻譯結果)";
-  } else {
-    if (langOutputs["zh-TW"] && langOutputs["zh-TW"].some(line => line.trim() && line.trim() !== "" && line.trim() !== "（翻譯異常，請稍後再試）" && line.trim() !== "（翻譯暫時不可用）")) {
-  replyText = langOutputs["zh-TW"].join('\n');
-} else {
-  replyText = "(尚無翻譯結果)";
-}
-  }
-
-  const userName = await client.getGroupMemberProfile(gid, uid)
-    .then(p => p.displayName).catch(() => uid);
-
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text: `【${userName}】說：\n${replyText.trim()}`
-  });
-}
     } catch (e) {
       console.error("處理事件錯誤:", e);
       if (e.response?.data) {
@@ -711,6 +759,7 @@ if (!replyText) replyText = "(尚無翻譯結果)";
     }
   }));
 });
+
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
@@ -768,82 +817,6 @@ async function sendImagesToGroup(gid, dateStr) {
     }
   }
 }
-
-// === 定時任務 ===
-const BATCH_SIZE = 10;      // 每批群組數量
-const BATCH_INTERVAL = 90000; // 批次間隔時間，單位毫秒（1分鐘）
-
-cron.schedule("0 17 * * *", async () => {
-  const today = new Date().toLocaleDateString("zh-TW", {
-    timeZone: "Asia/Taipei",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).replace(/\//g, "-");
-
-  console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
-
-  let successCount = 0;
-  let failCount = 0;
-
-  // 將群組ID陣列化
-  const groupIds = Array.from(groupLang.keys());
-
-  // 分批處理
-  for (let batchStart = 0; batchStart < groupIds.length; batchStart += BATCH_SIZE) {
-    const batch = groupIds.slice(batchStart, batchStart + BATCH_SIZE);
-
-    console.log(`開始推播第 ${Math.floor(batchStart / BATCH_SIZE) + 1} 批，共 ${batch.length} 個群組`);
-
-    for (const gid of batch) {
-      try {
-        const imgs = await fetchImageUrlsByDate(gid, today);
-
-        if (!imgs || imgs.length === 0) {
-          console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
-          continue;
-        }
-
-        for (let i = 0; i < imgs.length; i++) {
-          const url = imgs[i];
-          try {
-            await client.pushMessage(gid, {
-              type: "image",
-              originalContentUrl: url,
-              previewImageUrl: url
-            });
-            console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
-
-            if (i < imgs.length - 1) {
-              await new Promise(resolve => setTimeout(resolve,1000)); // 圖片間隔500ms
-            }
-          } catch (e) {
-            console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
-            failCount++;
-          }
-        }
-
-        successCount++;
-        console.log(`✅ 群組 ${gid} 推播完成`);
-
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 群組間隔2秒
-
-      } catch (e) {
-        console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
-        failCount++;
-      }
-    }
-
-    // 批次間隔
-    if (batchStart + BATCH_SIZE < groupIds.length) {
-      console.log(`等待 ${BATCH_INTERVAL/1000} 秒後開始下一批推播...`);
-      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL));
-    }
-  }
-
-  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
-}, { timezone: "Asia/Taipei" });
-
 
 
 
@@ -914,3 +887,77 @@ function preprocessThaiWorkPhrase(text) {
   console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
+// === 定時任務 ===
+//const BATCH_SIZE = 10;      // 每批群組數量
+//const BATCH_INTERVAL = 90000; // 批次間隔時間，單位毫秒（1分鐘）
+
+//cron.schedule("0 17 * * *", async () => {
+//  const today = new Date().toLocaleDateString("zh-TW", {
+ //   timeZone: "Asia/Taipei",
+//    year: "numeric",
+//    month: "2-digit",
+//    day: "2-digit"
+//  }).replace(/\//g, "-");
+
+//  console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
+
+//  let successCount = 0;
+//  let failCount = 0;
+
+  // 將群組ID陣列化
+//  const groupIds = Array.from(groupLang.keys());
+
+  // 分批處理
+//  for (let batchStart = 0; batchStart < groupIds.length; batchStart += BATCH_SIZE) {
+//    const batch = groupIds.slice(batchStart, batchStart + BATCH_SIZE);
+
+//    console.log(`開始推播第 ${Math.floor(batchStart / BATCH_SIZE) + 1} 批，共 ${batch.length} 個群組`);
+
+//    for (const gid of batch) {
+//      try {
+//        const imgs = await fetchImageUrlsByDate(gid, today);
+
+//        if (!imgs || imgs.length === 0) {
+ //         console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
+//          continue;
+  //      }
+
+   //     for (let i = 0; i < imgs.length; i++) {
+  //        const url = imgs[i];
+  //        try {
+ //           await client.pushMessage(gid, {
+   //           type: "image",
+   //           originalContentUrl: url,
+   //           previewImageUrl: url
+  //          });
+    //        console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
+//
+   //         if (i < imgs.length - 1) {
+   //           await new Promise(resolve => setTimeout(resolve,1000)); // 圖片間隔500ms
+   //         }
+   //       } catch (e) {
+   //         console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
+  //          failCount++;
+  //        }
+  //      }
+
+//        successCount++;
+ //       console.log(`✅ 群組 ${gid} 推播完成`);
+
+  //      await new Promise(resolve => setTimeout(resolve, 3000)); // 群組間隔2秒
+
+ //     } catch (e) {
+ //       console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
+ //       failCount++;
+//      }
+//    }
+
+    // 批次間隔
+//    if (batchStart + BATCH_SIZE < groupIds.length) {
+//      console.log(`等待 ${BATCH_INTERVAL/1000} 秒後開始下一批推播...`);
+//      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL));
+//    }
+//  }
+
+//  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
+// }, { timezone: "Asia/Taipei" });
