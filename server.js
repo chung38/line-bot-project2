@@ -642,7 +642,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   const inputLang = detectLang(text);
   const langOutputs = {};
   for (const code of set) langOutputs[code] = [];
-
+const urlRegex = /(https?:\/\/[^\s]+)/gi;
   for (const code of set) {
     if (code === inputLang) continue;
     let translated = "";
