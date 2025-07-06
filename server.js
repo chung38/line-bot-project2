@@ -689,11 +689,11 @@ const urlRegex = /(https?:\/\/[^\s]+)/gi;
     }
     if (!replyText) replyText = "(尚無翻譯結果)";
   } else {
-    if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-      replyText = langOutputs["zh-TW"].join('\n');
-    } else {
-      replyText = "(尚無翻譯結果)";
-    }
+    if (langOutputs["zh-TW"] && langOutputs["zh-TW"].some(line => line.trim() && line.trim() !== "" && line.trim() !== "（翻譯異常，請稍後再試）" && line.trim() !== "（翻譯暫時不可用）")) {
+  replyText = langOutputs["zh-TW"].join('\n');
+} else {
+  replyText = "(尚無翻譯結果)";
+}
   }
 
   const userName = await client.getGroupMemberProfile(gid, uid)
