@@ -611,145 +611,160 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         }
 
         // === 多語言分組翻譯（新版） ===
-        const set = groupLang.get(gid) || new Set();
-        const { masked, segments } = extractMentionsFromLineMessage(event.message);
-        const rawLines = masked.split(/\r?\n/);
-        const lines = [];
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
-        for (let i = 0; i < rawLines.length; i++) {
-          let line = rawLines[i].trim();
-          if (!line) continue;
-          if (isChinese(line) && line.length < 4 && lines.length > 0) {
-            lines[lines.length - 1] += line;
-          } else {
-            lines.push(line);
-          }
-        }
+// === 多語言分組翻譯（新版） ===
+const set = groupLang.get(gid) || new Set();
+const { masked, segments } = extractMentionsFromLineMessage(event.message);
+const rawLines = masked.split(/\r?\n/);
+const lines = [];
+const urlRegex = /(https?:\/\/[^\s]+)/gi;
+for (let i = 0; i < rawLines.length; i++) {
+  let line = rawLines[i].trim();
+  if (!line) continue;
+  if (isChinese(line) && line.length < 4 && lines.length > 0) {
+    lines[lines.length - 1] += line;
+  } else {
+    lines.push(line);
+  }
+}
 
-        // 建立語言暫存
-        const langOutputs = {};
-        for (let code of set) {
-          langOutputs[code] = [];
-        }
+// 建立語言暫存
+const langOutputs = {};
+for (let code of set) {
+  langOutputs[code] = [];
+}
 
-        // 偵測輸入語言
-        const inputLang = detectLang(text);
+// 偵測輸入語言
+const inputLang = detectLang(text);
 
-        // 處理每一行
-        for (let idx = 0; idx < lines.length; idx++) {
-          const line = lines[idx];
-          if (!line.trim()) continue;
-          const segs = [];
-          let lastIndex = 0;
-          const mentionRegex = /__MENTION_\d+__/g;
-          let match;
-          while ((match = mentionRegex.exec(line)) !== null) {
-            if (match.index > lastIndex) {
-              segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
-            }
-            segs.push({ type: "mention", text: match[0] });
-            lastIndex = match.index + match[0].length;
-          }
-          if (lastIndex < line.length) {
-            segs.push({ type: "text", text: line.slice(lastIndex) });
-          }
+// 處理每一行
+for (let idx = 0; idx < lines.length; idx++) {
+  const line = lines[idx];
+  if (!line.trim()) continue;
 
-          if (inputLang === "zh-TW") {
-            // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
-            for (let code of set) {
-              if (code === "zh-TW") continue;
-              let outLine = "";
-              for (const seg of segs) {
-                if (seg.type === "mention") {
-                  outLine += seg.text;
-                } else if (seg.type === "text" && seg.text.trim()) {
-                  let textParts = seg.text.split(urlRegex);
-                  for (let i = 0; i < textParts.length; i++) {
-                    const part = textParts[i];
-                    if (urlRegex.test(part)) {
-                      outLine += part;
-                    } else if (part.trim()) {
-                      if (isSymbolOrNum(part)) {
-                        outLine += part;
-                        continue;
-                      }
-                      const tr = await translateWithDeepSeek(part, code, gid);
-                      outLine += tr.trim();
-                    }
-                  }
-                }
+  // === 分段：明確分離 mention 與純文字 ===
+  const segs = [];
+  let lastIndex = 0;
+  const mentionRegex = /__MENTION_\d+__/g;
+  let match;
+  while ((match = mentionRegex.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
+    }
+    segs.push({ type: "mention", text: match[0] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < line.length) {
+    segs.push({ type: "text", text: line.slice(lastIndex) });
+  }
+
+  // === 翻譯流程 ===
+  if (inputLang === "zh-TW") {
+    // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
+    for (let code of set) {
+      if (code === "zh-TW") continue;
+      let outLine = "";
+      for (const seg of segs) {
+        if (seg.type === "mention") {
+          outLine += seg.text;
+        } else if (seg.type === "text" && seg.text.trim()) {
+          // 將網址與純文字分開處理
+          let textParts = seg.text.split(urlRegex);
+          let urls = seg.text.match(urlRegex) || [];
+          let urlIdx = 0;
+          for (let i = 0; i < textParts.length; i++) {
+            const part = textParts[i];
+            if (part.trim()) {
+              if (isSymbolOrNum(part)) {
+                outLine += part;
+                continue;
               }
-              langOutputs[code].push(restoreMentions(outLine, segments));
+              const tr = await translateWithDeepSeek(part, code, gid);
+              outLine += tr.trim();
             }
-          } else {
-            // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
-            let zhLine = "";
-            for (const seg of segs) {
-              if (seg.type === "mention") {
-                zhLine += seg.text;
-              } else if (seg.type === "text" && seg.text.trim()) {
-                let textParts = seg.text.split(urlRegex);
-                for (let i = 0; i < textParts.length; i++) {
-                  const part = textParts[i];
-                  if (urlRegex.test(part)) {
-                    zhLine += part;
-                  } else if (part.trim()) {
-                    if (isSymbolOrNum(part)) {
-                      zhLine += part;
-                      continue;
-                    }
-                    let zh = part;
-                    if (detectLang(part) === "th") {
-                      zh = preprocessThaiWorkPhrase(zh);
-                    }
-                    if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
-                      const smartZh = await smartPreprocess(part, "th");
-                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        zh = smartZh.trim();
-                      }
-                    }
-                    if (/[\u4e00-\u9fff]/.test(zh)) {
-                      zhLine += zh.trim();
-                      continue;
-                    }
-                    const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
-                    zhLine += finalZh ? finalZh.trim() : zh.trim();
-                  }
-                }
+            // 插入網址
+            if (urlIdx < urls.length) {
+              outLine += urls[urlIdx++];
+            }
+          }
+        }
+      }
+      langOutputs[code].push(restoreMentions(outLine, segments));
+    }
+  } else {
+    // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
+    let zhLine = "";
+    for (const seg of segs) {
+      if (seg.type === "mention") {
+        zhLine += seg.text;
+      } else if (seg.type === "text" && seg.text.trim()) {
+        // 將網址與純文字分開處理
+        let textParts = seg.text.split(urlRegex);
+        let urls = seg.text.match(urlRegex) || [];
+        let urlIdx = 0;
+        for (let i = 0; i < textParts.length; i++) {
+          const part = textParts[i];
+          if (part.trim()) {
+            if (isSymbolOrNum(part)) {
+              zhLine += part;
+              continue;
+            }
+            let zh = part;
+            if (detectLang(part) === "th") {
+              zh = preprocessThaiWorkPhrase(zh);
+            }
+            if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
+              const smartZh = await smartPreprocess(part, "th");
+              if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                zh = smartZh.trim();
               }
             }
-            langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
-            langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
-          }
-        }
-
-        // 組裝回覆文字
-        let replyText = "";
-        if (inputLang === "zh-TW") {
-          // 輸入中文：只顯示翻譯成其他語言的結果
-          for (let code of set) {
-            if (code === "zh-TW") continue;
-            if (langOutputs[code] && langOutputs[code].length) {
-              replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+            if (/[\u4e00-\u9fff]/.test(zh)) {
+              zhLine += zh.trim();
+              continue;
             }
+            const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
+            zhLine += finalZh ? finalZh.trim() : zh.trim();
           }
-          if (!replyText) {
-            replyText = "(尚無翻譯結果)";
-          }
-        } else {
-          // 輸入外語：只顯示繁體中文翻譯結果
-          if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-            replyText = `${langOutputs["zh-TW"].join('\n')}`;
-          } else {
-            replyText = "(尚無翻譯結果)";
+          // 插入網址
+          if (urlIdx < urls.length) {
+            zhLine += urls[urlIdx++];
           }
         }
+      }
+    }
+    langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
+    langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
+  }
+}
 
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${replyText.trim()}`
-        });
+// 組裝回覆文字
+let replyText = "";
+if (inputLang === "zh-TW") {
+  // 輸入中文：只顯示翻譯成其他語言的結果
+  for (let code of set) {
+    if (code === "zh-TW") continue;
+    if (langOutputs[code] && langOutputs[code].length) {
+      replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+    }
+  }
+  if (!replyText) {
+    replyText = "(尚無翻譯結果)";
+  }
+} else {
+  // 輸入外語：只顯示繁體中文翻譯結果
+  if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+    replyText = `${langOutputs["zh-TW"].join('\n')}`;
+  } else {
+    replyText = "(尚無翻譯結果)";
+  }
+}
+
+const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+await client.replyMessage(event.replyToken, {
+  type: "text",
+  text: `【${userName}】說：\n${replyText.trim()}`
+});
+
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
