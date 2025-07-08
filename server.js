@@ -657,84 +657,116 @@ for (let idx = 0; idx < lines.length; idx++) {
     segs.push({ type: "text", text: line.slice(lastIndex) });
   }
 
-  // === 翻譯流程 ===
-  if (inputLang === "zh-TW") {
-    // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
-    for (let code of set) {
-      if (code === "zh-TW") continue;
-      let outLine = "";
-      for (const seg of segs) {
-        if (seg.type === "mention") {
-          outLine += seg.text;
-        } else if (seg.type === "text" && seg.text.trim()) {
-          // 將網址與純文字分開處理
-          let textParts = seg.text.split(urlRegex);
-          let urls = seg.text.match(urlRegex) || [];
-          let urlIdx = 0;
-          for (let i = 0; i < textParts.length; i++) {
-            const part = textParts[i];
-            if (part.trim()) {
-              if (isSymbolOrNum(part)) {
-                outLine += part;
-                continue;
-              }
-              const tr = await translateWithDeepSeek(part, code, gid);
+// === 翻譯流程（修正版） ===
+if (inputLang === "zh-TW") {
+  // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
+  for (let code of set) {
+    if (code === "zh-TW") continue;
+    let outLine = "";
+    for (const seg of segs) {
+      if (seg.type === "mention") {
+        outLine += seg.text;
+      } else if (seg.type === "text" && seg.text.trim()) {
+        // 處理純文字與網址分段
+        let lastIdx = 0;
+        let match;
+        while ((match = urlRegex.exec(seg.text)) !== null) {
+          // 翻譯網址前的純文字
+          const beforeUrl = seg.text.slice(lastIdx, match.index);
+          if (beforeUrl.trim()) {
+            if (isSymbolOrNum(beforeUrl)) {
+              outLine += beforeUrl;
+            } else {
+              const tr = await translateWithDeepSeek(beforeUrl, code, gid);
               outLine += tr.trim();
             }
-            // 插入網址
-            if (urlIdx < urls.length) {
-              outLine += urls[urlIdx++];
-            }
+          }
+          // 保留網址
+          outLine += match[0];
+          lastIdx = match.index + match[0].length;
+        }
+        // 翻譯最後一段純文字
+        const afterLastUrl = seg.text.slice(lastIdx);
+        if (afterLastUrl.trim()) {
+          if (isSymbolOrNum(afterLastUrl)) {
+            outLine += afterLastUrl;
+          } else {
+            const tr = await translateWithDeepSeek(afterLastUrl, code, gid);
+            outLine += tr.trim();
           }
         }
       }
-      langOutputs[code].push(restoreMentions(outLine, segments));
     }
-  } else {
-    // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
-    let zhLine = "";
-    for (const seg of segs) {
-      if (seg.type === "mention") {
-        zhLine += seg.text;
-      } else if (seg.type === "text" && seg.text.trim()) {
-        // 將網址與純文字分開處理
-        let textParts = seg.text.split(urlRegex);
-        let urls = seg.text.match(urlRegex) || [];
-        let urlIdx = 0;
-        for (let i = 0; i < textParts.length; i++) {
-          const part = textParts[i];
-          if (part.trim()) {
-            if (isSymbolOrNum(part)) {
-              zhLine += part;
-              continue;
-            }
-            let zh = part;
-            if (detectLang(part) === "th") {
+    langOutputs[code].push(restoreMentions(outLine, segments));
+  }
+} else {
+  // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
+  let zhLine = "";
+  for (const seg of segs) {
+    if (seg.type === "mention") {
+      zhLine += seg.text;
+    } else if (seg.type === "text" && seg.text.trim()) {
+      // 處理純文字與網址分段
+      let lastIdx = 0;
+      let match;
+      while ((match = urlRegex.exec(seg.text)) !== null) {
+        // 翻譯網址前的純文字
+        const beforeUrl = seg.text.slice(lastIdx, match.index);
+        if (beforeUrl.trim()) {
+          if (isSymbolOrNum(beforeUrl)) {
+            zhLine += beforeUrl;
+          } else {
+            let zh = beforeUrl;
+            if (detectLang(zh) === "th") {
               zh = preprocessThaiWorkPhrase(zh);
             }
-            if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
-              const smartZh = await smartPreprocess(part, "th");
+            if (detectLang(zh) === "th" && /ทำโอ/.test(zh)) {
+              const smartZh = await smartPreprocess(zh, "th");
               if (/[\u4e00-\u9fff]/.test(smartZh)) {
                 zh = smartZh.trim();
               }
             }
             if (/[\u4e00-\u9fff]/.test(zh)) {
               zhLine += zh.trim();
-              continue;
+            } else {
+              const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
+              zhLine += finalZh ? finalZh.trim() : zh.trim();
             }
+          }
+        }
+        // 保留網址
+        zhLine += match[0];
+        lastIdx = match.index + match[0].length;
+      }
+      // 翻譯最後一段純文字
+      const afterLastUrl = seg.text.slice(lastIdx);
+      if (afterLastUrl.trim()) {
+        if (isSymbolOrNum(afterLastUrl)) {
+          zhLine += afterLastUrl;
+        } else {
+          let zh = afterLastUrl;
+          if (detectLang(zh) === "th") {
+            zh = preprocessThaiWorkPhrase(zh);
+          }
+          if (detectLang(zh) === "th" && /ทำโอ/.test(zh)) {
+            const smartZh = await smartPreprocess(zh, "th");
+            if (/[\u4e00-\u9fff]/.test(smartZh)) {
+              zh = smartZh.trim();
+            }
+          }
+          if (/[\u4e00-\u9fff]/.test(zh)) {
+            zhLine += zh.trim();
+          } else {
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
             zhLine += finalZh ? finalZh.trim() : zh.trim();
-          }
-          // 插入網址
-          if (urlIdx < urls.length) {
-            zhLine += urls[urlIdx++];
           }
         }
       }
     }
-    langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
-    langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
   }
+  langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
+  langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
+ }
 }
 
 // 組裝回覆文字
