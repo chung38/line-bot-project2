@@ -656,8 +656,7 @@ for (let idx = 0; idx < lines.length; idx++) {
   if (lastIndex < line.length) {
     segs.push({ type: "text", text: line.slice(lastIndex) });
   }
-
-// === 翻譯流程（修正版） ===
+// === 翻譯流程（優化版） ===
 if (inputLang === "zh-TW") {
   // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
   for (let code of set) {
@@ -665,19 +664,21 @@ if (inputLang === "zh-TW") {
     let outLine = "";
     for (const seg of segs) {
       if (seg.type === "mention") {
+        // 直接保留 mention 不翻譯
         outLine += seg.text;
       } else if (seg.type === "text" && seg.text.trim()) {
         // 處理純文字與網址分段
         let lastIdx = 0;
         let match;
         while ((match = urlRegex.exec(seg.text)) !== null) {
-          // 翻譯網址前的純文字
           const beforeUrl = seg.text.slice(lastIdx, match.index);
           if (beforeUrl.trim()) {
             if (isSymbolOrNum(beforeUrl)) {
               outLine += beforeUrl;
             } else {
-              const tr = await translateWithDeepSeek(beforeUrl, code, gid);
+              // 送翻譯前，先去除多餘空白
+              const toTranslate = beforeUrl.trim();
+              const tr = await translateWithDeepSeek(toTranslate, code, gid);
               outLine += tr.trim();
             }
           }
@@ -691,7 +692,8 @@ if (inputLang === "zh-TW") {
           if (isSymbolOrNum(afterLastUrl)) {
             outLine += afterLastUrl;
           } else {
-            const tr = await translateWithDeepSeek(afterLastUrl, code, gid);
+            const toTranslate = afterLastUrl.trim();
+            const tr = await translateWithDeepSeek(toTranslate, code, gid);
             outLine += tr.trim();
           }
         }
@@ -706,17 +708,15 @@ if (inputLang === "zh-TW") {
     if (seg.type === "mention") {
       zhLine += seg.text;
     } else if (seg.type === "text" && seg.text.trim()) {
-      // 處理純文字與網址分段
       let lastIdx = 0;
       let match;
       while ((match = urlRegex.exec(seg.text)) !== null) {
-        // 翻譯網址前的純文字
         const beforeUrl = seg.text.slice(lastIdx, match.index);
         if (beforeUrl.trim()) {
           if (isSymbolOrNum(beforeUrl)) {
             zhLine += beforeUrl;
           } else {
-            let zh = beforeUrl;
+            let zh = beforeUrl.trim();
             if (detectLang(zh) === "th") {
               zh = preprocessThaiWorkPhrase(zh);
             }
@@ -734,17 +734,15 @@ if (inputLang === "zh-TW") {
             }
           }
         }
-        // 保留網址
         zhLine += match[0];
         lastIdx = match.index + match[0].length;
       }
-      // 翻譯最後一段純文字
       const afterLastUrl = seg.text.slice(lastIdx);
       if (afterLastUrl.trim()) {
         if (isSymbolOrNum(afterLastUrl)) {
           zhLine += afterLastUrl;
         } else {
-          let zh = afterLastUrl;
+          let zh = afterLastUrl.trim();
           if (detectLang(zh) === "th") {
             zh = preprocessThaiWorkPhrase(zh);
           }
@@ -766,7 +764,8 @@ if (inputLang === "zh-TW") {
   }
   langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
   langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
- }
+}
+
 }
 
 // 組裝回覆文字
