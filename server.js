@@ -656,18 +656,17 @@ for (let idx = 0; idx < lines.length; idx++) {
   if (lastIndex < line.length) {
     segs.push({ type: "text", text: line.slice(lastIndex) });
   }
-// === 翻譯流程（優化版） ===
+// === 翻譯流程（修正版） ===
 if (inputLang === "zh-TW") {
-  // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
+  // 輸入中文，翻譯成其他語言（不翻譯 mention 與網址）
   for (let code of set) {
     if (code === "zh-TW") continue;
     let outLine = "";
     for (const seg of segs) {
       if (seg.type === "mention") {
-        // 直接保留 mention 不翻譯
-        outLine += seg.text;
-      } else if (seg.type === "text" && seg.text.trim()) {
-        // 處理純文字與網址分段
+        outLine += seg.text; // 保留 mention 不翻譯
+      } else if (seg.type === "text") {
+        // 分段處理網址與純文字
         let lastIdx = 0;
         let match;
         while ((match = urlRegex.exec(seg.text)) !== null) {
@@ -676,9 +675,10 @@ if (inputLang === "zh-TW") {
             if (isSymbolOrNum(beforeUrl)) {
               outLine += beforeUrl;
             } else {
-              // 送翻譯前，先去除多餘空白
               const toTranslate = beforeUrl.trim();
+              console.log(`[翻譯] 送翻譯文字: "${toTranslate}" 目標語言: ${code}`);
               const tr = await translateWithDeepSeek(toTranslate, code, gid);
+              console.log(`[翻譯] 結果: "${tr}"`);
               outLine += tr.trim();
             }
           }
@@ -686,14 +686,16 @@ if (inputLang === "zh-TW") {
           outLine += match[0];
           lastIdx = match.index + match[0].length;
         }
-        // 翻譯最後一段純文字
+        // 處理最後一段純文字
         const afterLastUrl = seg.text.slice(lastIdx);
         if (afterLastUrl.trim()) {
           if (isSymbolOrNum(afterLastUrl)) {
             outLine += afterLastUrl;
           } else {
             const toTranslate = afterLastUrl.trim();
+            console.log(`[翻譯] 送翻譯文字: "${toTranslate}" 目標語言: ${code}`);
             const tr = await translateWithDeepSeek(toTranslate, code, gid);
+            console.log(`[翻譯] 結果: "${tr}"`);
             outLine += tr.trim();
           }
         }
@@ -702,12 +704,12 @@ if (inputLang === "zh-TW") {
     langOutputs[code].push(restoreMentions(outLine, segments));
   }
 } else {
-  // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
+  // 輸入非中文，翻譯成繁體中文（不翻譯 mention 與網址）
   let zhLine = "";
   for (const seg of segs) {
     if (seg.type === "mention") {
       zhLine += seg.text;
-    } else if (seg.type === "text" && seg.text.trim()) {
+    } else if (seg.type === "text") {
       let lastIdx = 0;
       let match;
       while ((match = urlRegex.exec(seg.text)) !== null) {
@@ -729,7 +731,9 @@ if (inputLang === "zh-TW") {
             if (/[\u4e00-\u9fff]/.test(zh)) {
               zhLine += zh.trim();
             } else {
+              console.log(`[翻譯] 送翻譯文字: "${zh}" 目標語言: zh-TW`);
               const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
+              console.log(`[翻譯] 結果: "${finalZh}"`);
               zhLine += finalZh ? finalZh.trim() : zh.trim();
             }
           }
@@ -755,7 +759,9 @@ if (inputLang === "zh-TW") {
           if (/[\u4e00-\u9fff]/.test(zh)) {
             zhLine += zh.trim();
           } else {
+            console.log(`[翻譯] 送翻譯文字: "${zh}" 目標語言: zh-TW`);
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
+            console.log(`[翻譯] 結果: "${finalZh}"`);
             zhLine += finalZh ? finalZh.trim() : zh.trim();
           }
         }
@@ -765,6 +771,7 @@ if (inputLang === "zh-TW") {
   langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
   langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
 }
+
 
 }
 
