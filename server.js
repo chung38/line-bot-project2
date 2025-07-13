@@ -771,8 +771,6 @@ if (inputLang === "zh-TW") {
   langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
   langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
 }
-
-
 }
 
 // 組裝回覆文字
