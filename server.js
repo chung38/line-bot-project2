@@ -129,12 +129,13 @@ function extractMentionsFromLineMessage(message) {
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      segments.push({ key, text: message.text.substring(m.index, m.index + m.length) });
+      segments.unshift({ key, text: message.text.substring(m.index, m.index + m.length) });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   }
   return { masked, segments };
 }
+
 
 function restoreMentions(text, segments) {
   let restored = text;
