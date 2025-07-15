@@ -203,7 +203,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
     let out = res.data.choices[0].message.content.trim();
-    out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
+    //out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
     out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
     if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
       if (retry < 2) {
