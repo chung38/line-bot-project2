@@ -204,7 +204,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     });
     let out = res.data.choices[0].message.content.trim();
     out = out.replace(/^[(（][^)\u4e00-\u9fff]*[)）]\s*/, "");
-    out = out.split('\n')[0];
+    out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
     if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
       if (retry < 2) {
         const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
