@@ -121,25 +121,23 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// === LINE 訊息處理 ===
-
+// === 強化版 extractMentionsFromLineMessage ===
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
+  // LINE 官方 <mentioned> 結構為主
   if (message.mentioned && message.mentioned.mentionees && message.mentioned.mentionees.length > 0) {
-    // 官方TAG，有 index
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      segments.unshift({ key, text: message.text.substring(m.index, m.index + m.length) });
+      segments.push({ key, text: message.text.substring(m.index, m.index + m.length) });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   } else {
-    // 手動@人名, 只抓字串開頭的 @xxx（可根據需求微調）
-    // 多個@人名時用這個正則 
-    const mentionRegexp = /(@[^\s@，,、]+)/g;
+    // 手動打的@人名：@開頭，遇到分隔符（標點、空白、括號、全型標點）就截止
+    // 支援多個@連續且不吃掉後方中文、數字、標點
     let idx = 0;
-    masked = masked.replace(mentionRegexp, function(match){
+    masked = masked.replace(/@([^\s@，,。、:：;；!?！\(\)\[\]{}【】（）\d]+)(?=[\s，,。、:：;；!?！\(\)\[\]{}【】（）]|$)/g, (match, p1) => {
       const key = `__MENTION_${idx}__`;
       segments.push({ key, text: match });
       idx += 1;
@@ -148,6 +146,7 @@ function extractMentionsFromLineMessage(message) {
   }
   return { masked, segments };
 }
+
 
 function restoreMentions(text, segments) {
   let restored = text;
