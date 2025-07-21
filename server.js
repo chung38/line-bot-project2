@@ -122,21 +122,32 @@ const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === LINE 訊息處理 ===
+
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
-  if (message.mentioned && message.mentioned.mentionees) {
+  if (message.mentioned && message.mentioned.mentionees && message.mentioned.mentionees.length > 0) {
+    // 官方TAG，有 index
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substring(m.index, m.index + m.length) });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
+  } else {
+    // 手動@人名, 只抓字串開頭的 @xxx（可根據需求微調）
+    // 多個@人名時用這個正則 
+    const mentionRegexp = /(@[^\s@，,、]+)/g;
+    let idx = 0;
+    masked = masked.replace(mentionRegexp, function(match){
+      const key = `__MENTION_${idx}__`;
+      segments.push({ key, text: match });
+      idx += 1;
+      return key;
+    });
   }
   return { masked, segments };
 }
-
-
 
 function restoreMentions(text, segments) {
   let restored = text;
