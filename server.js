@@ -647,7 +647,7 @@ for (let idx = 0; idx < lines.length; idx++) {
   const line = lines[idx];
   if (!line.trim()) continue;
 
-  // ——— 分段 mention 與純文字 ———
+  // 分段 mention 與純文字
   const segs = [];
   let lastIndex = 0;
   const mentionRegex = /__MENTION_\d+__/g;
@@ -663,9 +663,9 @@ for (let idx = 0; idx < lines.length; idx++) {
     segs.push({ type: "text", text: line.slice(lastIndex) });
   }
 
-  // ——— 翻譯流程 ———
+  // 翻譯流程
   if (inputLang === "zh-TW") {
-    // 輸入中文，翻譯成其他語言（不翻譯mention與網址)
+    // 輸入中文，翻譯成其他語言（不翻譯 mention與網址）
     for (let code of set) {
       if (code === "zh-TW") continue;
       let outLine = "";
@@ -677,7 +677,6 @@ for (let idx = 0; idx < lines.length; idx++) {
           while ((match = urlRegex.exec(seg.text)) !== null) {
             const beforeUrl = seg.text.slice(lastIdx, match.index);
             if (beforeUrl.trim()) {
-              // 僅跳過沒有中文字且純符號數字段落
               if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
                 outLine += beforeUrl;
               } else {
@@ -686,10 +685,9 @@ for (let idx = 0; idx < lines.length; idx++) {
                 outLine += tr.trim();
               }
             }
-            outLine += match[0]; // 保留網址
+            outLine += match[0];
             lastIdx = match.index + match[0].length;
           }
-          // 最後一段
           const afterLastUrl = seg.text.slice(lastIdx);
           if (afterLastUrl.trim()) {
             if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
@@ -769,10 +767,9 @@ for (let idx = 0; idx < lines.length; idx++) {
   }
 }
 
-// ——— 組裝回覆文字 ———
+// 組裝回覆文字
 let replyText = "";
 if (inputLang === "zh-TW") {
-  // 輸入中文：只顯示翻譯成其它語言的結果
   for (let code of set) {
     if (code === "zh-TW") continue;
     if (langOutputs[code] && langOutputs[code].length) {
@@ -781,15 +778,17 @@ if (inputLang === "zh-TW") {
   }
   if (!replyText) replyText = "(尚無翻譯結果)";
 } else {
-  // 輸入外語：只顯示繁體中文翻譯結果
   if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-    replyText = `${langOutputs["zh-TW"].join('\n')}`;
+    replyText = langOutputs["zh-TW"].join('\n');
   } else {
     replyText = "(尚無翻譯結果)";
   }
 }
 
-const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+const userName = await client.getGroupMemberProfile(gid, uid)
+  .then(p => p.displayName)
+  .catch(() => uid);
+
 await client.replyMessage(event.replyToken, {
   type: "text",
   text: `【${userName}】說：\n${replyText.trim()}`
