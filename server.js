@@ -124,48 +124,44 @@ const isSymbolOrNum = txt =>
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
-  // 優先處理 LINE 官方 <mentioned> 結構
+
   if (message.mentioned && message.mentioned.mentionees && message.mentioned.mentionees.length > 0) {
-    // 從後面開始處理，避免 index 錯位
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
-      const key = `__MENTION_${i}__`; // 確保 key 唯一
-      // 將真實 mention 文字存入 segments
+      const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substring(m.index, m.index + m.length) });
-      // 在原始訊息中替換為佔位符
+
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   } else {
-    // 如果沒有官方 mention 結構，嘗試用正則匹配手動 @ 的模式
-    // 這個正則更寬鬆，捕捉 @ 後面的任何非空字符，直到遇到空格、標點或字串結束
-    // 目標是將 @人名 + 可能跟隨的數字/括號/點號等都視為一個 mention 單位
-    // 但要小心不要把後面緊跟的純文字吃進去
-    // 考慮到 @All 的情況，以及可能會有 @名字. (數字) 這種複雜模式
-    // 我們需要匹配 @符號，後面跟著至少一個非空白、非 @ 的字符，直到遇到空白或字串結尾
-    // 為了處理 `@. Sang. (802)` 這種情況，我們需要考慮 @ 後面可以是 `. ` 接著名字、數字、括號等
-    // 最終正則：@ 符號後跟著至少一個非空格字符（包括各種語言文字、數字、點、括號等），直到遇到真正的空格或字串結尾
-    const manualMentionRegex = /@([^@\s]+?)(?=(\s|$|\.|,|\(|\)|\[|\]|{|}|\uFF08|\uFF09|\u3000))/g; // 更具通用性，非 @ 或空格的字符
+    const manualMentionRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)(?=[\s，,。、:：;；!?！()\[\]{}【】（）]|$)/g;
     let idx = 0;
     let newMasked = '';
     let lastIndex = 0;
-
-    // 迭代匹配，並確保替換時不影響後面的內容
     let match;
     while ((match = manualMentionRegex.exec(masked)) !== null) {
-      const mentionText = match[0]; // 完整的 @mention 部分，例如 "@. Sang." 或 "@Nattakitt817"
+      const mentionText = match[0];
       const key = `__MENTION_${idx}__`;
-      segments.push({ key, text: mentionText }); // 存儲完整的 mention 文本
+      segments.push({ key, text: mentionText });
       
       newMasked += masked.substring(lastIndex, match.index) + key;
-      lastIndex = match.index + mentionText.length;
+      
+      // 保留 @mention 之後的空白（如果 match.index + mentionText.length < masked.length）
+      const afterMentionIdx = match.index + mentionText.length;
+      if (masked[afterMentionIdx] === ' ') {
+        newMasked += ' ';
+        lastIndex = afterMentionIdx + 1;
+      } else {
+        lastIndex = afterMentionIdx;
+      }
       idx++;
     }
-    newMasked += masked.substring(lastIndex); // 添加剩餘的文本
+    newMasked += masked.substring(lastIndex);
     masked = newMasked;
   }
+
   return { masked, segments };
 }
-
 
 function restoreMentions(text, segments) {
   let restored = text;
