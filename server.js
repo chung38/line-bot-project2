@@ -126,40 +126,39 @@ function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
-  if (message.mentioned && message.mentioned.mentionees && message.mentioned.mentionees.length > 0) {
-    const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
-    mentionees.forEach((m, i) => {
+  // 1. LINE 官方 mention
+  if (message.mentioned?.mentionees?.length) {
+    // 由後往前處理，避免索引偏移
+    const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index-a.index);
+    mentionees.forEach((m,i)=>{
       const key = `__MENTION_${i}__`;
-      segments.unshift({ key, text: message.text.substring(m.index, m.index + m.length) });
-
-      masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
+      segments.unshift({ key, text: message.text.substr(m.index, m.length) });
+      masked = masked.slice(0,m.index) + key + masked.slice(m.index+m.length);
     });
-  } else {
-    const manualMentionRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)(?=[\s，,。、:：;；!?！()\[\]{}【】（）]|$)/g;
-    let idx = 0;
-    let newMasked = '';
-    let lastIndex = 0;
-    let match;
-    while ((match = manualMentionRegex.exec(masked)) !== null) {
-      const mentionText = match[0];
-      const key = `__MENTION_${idx}__`;
-      segments.push({ key, text: mentionText });
-      
-      newMasked += masked.substring(lastIndex, match.index) + key;
-      
-      // 保留 @mention 之後的空白（如果 match.index + mentionText.length < masked.length）
-      const afterMentionIdx = match.index + mentionText.length;
-      if (masked[afterMentionIdx] === ' ') {
-        newMasked += ' ';
-        lastIndex = afterMentionIdx + 1;
-      } else {
-        lastIndex = afterMentionIdx;
-      }
-      idx++;
-    }
-    newMasked += masked.substring(lastIndex);
-    masked = newMasked;
   }
+  // 2. 手動 @提及
+  // 更寬鬆地匹配到「@」開頭，一直到空白或標點
+  const manualRegex = /@([^\s@，,。、:：;；!?！\(\)\[\]{}【】（）]+)/g;
+  let idx = segments.length;
+  let newMasked = '';
+  let last = 0;
+  let m;
+  while ((m = manualRegex.exec(masked)) !== null) {
+    const mentionText = m[0];
+    const key = `__MENTION_${idx}__`;
+    segments.push({ key, text: mentionText });
+    // 保留前段文字 + 佔位符
+    newMasked += masked.slice(last, m.index) + key;
+    last = m.index + mentionText.length;
+    // 如果 mention 後有空格，就保留
+    if (masked[last] === ' ') {
+      newMasked += ' ';
+      last++;
+    }
+    idx++;
+  }
+  newMasked += masked.slice(last);
+  masked = newMasked;
 
   return { masked, segments };
 }
@@ -643,31 +642,23 @@ function hasChinese(txt) {
 }
 
 const urlRegex = /(https?:\/\/[^\s]+)/gi;
+
 const set = groupLang.get(gid) || new Set();
 const { masked, segments } = extractMentionsFromLineMessage(event.message);
 const rawLines = masked.split(/\r?\n/);
-const lines = [];
-for (let line of rawLines) {
-  if (!line.trim()) continue;
-  lines.push(line.trim());
-}
+const lines = rawLines.filter(line => line.trim());
 
-// 建立語言暫存
 const langOutputs = {};
 for (let code of set) langOutputs[code] = [];
 
-// 偵測輸入語言
 const inputLang = detectLang(text);
 
-for (let idx = 0; idx < lines.length; idx++) {
-  const line = lines[idx];
-  if (!line.trim()) continue;
-
+for (const line of lines) {
   // 分段 mention 與純文字
   const segs = [];
   let lastIndex = 0;
-  const mentionRegex = /__MENTION_\d+__/g;
   let match;
+  const mentionRegex = /__MENTION_\d+__/g;
   while ((match = mentionRegex.exec(line)) !== null) {
     if (match.index > lastIndex) {
       segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
@@ -681,7 +672,7 @@ for (let idx = 0; idx < lines.length; idx++) {
 
   // 翻譯流程
   if (inputLang === "zh-TW") {
-    // 輸入中文，翻譯成其他語言（不翻譯 mention與網址）
+    // 中文輸入翻譯成其他語言，mention與網址不翻譯
     for (let code of set) {
       if (code === "zh-TW") continue;
       let outLine = "";
@@ -689,7 +680,7 @@ for (let idx = 0; idx < lines.length; idx++) {
         if (seg.type === "mention") {
           outLine += seg.text;
         } else if (seg.type === "text") {
-          let lastIdx = 0, match;
+          let lastIdx = 0;
           while ((match = urlRegex.exec(seg.text)) !== null) {
             const beforeUrl = seg.text.slice(lastIdx, match.index);
             if (beforeUrl.trim()) {
@@ -719,13 +710,13 @@ for (let idx = 0; idx < lines.length; idx++) {
       langOutputs[code].push(restoreMentions(outLine, segments));
     }
   } else {
-    // 非中文翻譯成繁體中文
+    // 非中文輸入翻繁中
     let zhLine = "";
     for (const seg of segs) {
       if (seg.type === "mention") {
         zhLine += seg.text;
       } else if (seg.type === "text") {
-        let lastIdx = 0, match;
+        let lastIdx = 0;
         while ((match = urlRegex.exec(seg.text)) !== null) {
           const beforeUrl = seg.text.slice(lastIdx, match.index);
           if (beforeUrl.trim()) {
@@ -733,14 +724,10 @@ for (let idx = 0; idx < lines.length; idx++) {
               zhLine += beforeUrl;
             } else {
               let zh = beforeUrl.trim();
-              if (detectLang(zh) === "th") {
-                zh = preprocessThaiWorkPhrase(zh);
-              }
+              if (detectLang(zh) === "th") zh = preprocessThaiWorkPhrase(zh);
               if (detectLang(zh) === "th" && /ทำโอ/.test(zh)) {
                 const smartZh = await smartPreprocess(zh, "th");
-                if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                  zh = smartZh.trim();
-                }
+                if (/[\u4e00-\u9fff]/.test(smartZh)) zh = smartZh.trim();
               }
               if (/[\u4e00-\u9fff]/.test(zh)) {
                 zhLine += zh.trim();
@@ -759,14 +746,10 @@ for (let idx = 0; idx < lines.length; idx++) {
             zhLine += afterLastUrl;
           } else {
             let zh = afterLastUrl.trim();
-            if (detectLang(zh) === "th") {
-              zh = preprocessThaiWorkPhrase(zh);
-            }
+            if (detectLang(zh) === "th") zh = preprocessThaiWorkPhrase(zh);
             if (detectLang(zh) === "th" && /ทำโอ/.test(zh)) {
               const smartZh = await smartPreprocess(zh, "th");
-              if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                zh = smartZh.trim();
-              }
+              if (/[\u4e00-\u9fff]/.test(smartZh)) zh = smartZh.trim();
             }
             if (/[\u4e00-\u9fff]/.test(zh)) {
               zhLine += zh.trim();
@@ -783,22 +766,18 @@ for (let idx = 0; idx < lines.length; idx++) {
   }
 }
 
-// 組裝回覆文字
+// 組合回覆
 let replyText = "";
 if (inputLang === "zh-TW") {
   for (let code of set) {
     if (code === "zh-TW") continue;
-    if (langOutputs[code] && langOutputs[code].length) {
+    if (langOutputs[code].length) {
       replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
     }
   }
   if (!replyText) replyText = "(尚無翻譯結果)";
 } else {
-  if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-    replyText = langOutputs["zh-TW"].join('\n');
-  } else {
-    replyText = "(尚無翻譯結果)";
-  }
+  replyText = (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) ? langOutputs["zh-TW"].join('\n') : "(尚無翻譯結果)";
 }
 
 const userName = await client.getGroupMemberProfile(gid, uid)
