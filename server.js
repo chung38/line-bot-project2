@@ -125,17 +125,17 @@ function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
-  // 處理官方 mention
+  // 1. 官方 mention 處理
   if (message.mentioned?.mentionees?.length) {
-    const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index-a.index);
+    const mentionees = [...message.mentioned.mentionees].sort((a,b) => b.index - a.index);
     mentionees.forEach((m,i) => {
       const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substr(m.index, m.length) });
-      masked = masked.slice(0,m.index) + key + masked.slice(m.index+m.length);
+      masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
   }
 
-  // 處理手動 @mention
+  // 2. 手動 @mention 處理，用寬鬆 regex 並確保佔位符間有空格
   const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
   let idx = segments.length;
   let newMasked = '';
@@ -147,7 +147,6 @@ function extractMentionsFromLineMessage(message) {
     segments.push({ key, text: mentionText });
     newMasked += masked.slice(last, m.index) + key;
     last = m.index + mentionText.length;
-    // 一定保留一個空格，避免佔位符黏連
     if (masked[last] === ' ') {
       newMasked += ' ';
       last++;
@@ -654,14 +653,17 @@ const rawLines = masked.split(/\r?\n/);
 const lines = rawLines.filter(line => line.trim());
 
 const set = groupLang.get(gid) || new Set();
+console.log("【debug】設定翻譯語言:", [...set]);
+
 const langOutputs = {};
 for (let code of set) langOutputs[code] = [];
 
 const inputLang = detectLang(text);
+console.log("【debug】偵測輸入語言:", inputLang);
+
 const urlRegex = /(https?:\/\/[^\s]+)/gi;
 
 for (const line of lines) {
-  // 分段 mention 與純文字
   const segs = [];
   let lastIndex = 0;
   let match;
@@ -669,10 +671,10 @@ for (const line of lines) {
   while ((match = mentionRegex.exec(line)) !== null) {
     if (match.index > lastIndex) {
       const textPart = line.slice(lastIndex, match.index);
-      // debug 輸出純文字段落
       console.log("【debug】純文字段:", JSON.stringify(textPart));
       segs.push({ type: "text", text: textPart });
     }
+    console.log("【debug】mention段:", match[0]);
     segs.push({ type: "mention", text: match[0] });
     lastIndex = match.index + match[0].length;
   }
@@ -683,6 +685,7 @@ for (const line of lines) {
   }
 
   if (inputLang === "zh-TW") {
+    // 中文輸入，翻成設定語言中除 zh-TW 的語言
     for (let code of set) {
       if (code === "zh-TW") continue;
       let outLine = "";
@@ -696,7 +699,7 @@ for (const line of lines) {
           const beforeUrl = seg.text.slice(lastIdx, match.index);
           if (beforeUrl.trim()) {
             if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
-              console.log("【debug】跳過純符號數字，不翻譯:", JSON.stringify(beforeUrl));
+              console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
               outLine += beforeUrl;
             } else {
               console.log(`[debug] 送翻譯文字: "${beforeUrl.trim()}" 目標語言: ${code}`);
@@ -711,7 +714,7 @@ for (const line of lines) {
         const afterLastUrl = seg.text.slice(lastIdx);
         if (afterLastUrl.trim()) {
           if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-            console.log("【debug】跳過純符號數字，不翻譯:", JSON.stringify(afterLastUrl));
+            console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
             outLine += afterLastUrl;
           } else {
             console.log(`[debug] 送翻譯文字: "${afterLastUrl.trim()}" 目標語言: ${code}`);
@@ -724,7 +727,7 @@ for (const line of lines) {
       langOutputs[code].push(restoreMentions(outLine, segments));
     }
   } else {
-    // 非中文輸入翻譯成繁體中文
+    // 非中文輸入，翻成繁體中文
     let zhLine = "";
     for (const seg of segs) {
       if (seg.type === "mention") {
@@ -736,7 +739,7 @@ for (const line of lines) {
         const beforeUrl = seg.text.slice(lastIdx, match.index);
         if (beforeUrl.trim()) {
           if (isSymbolOrNum(beforeUrl)) {
-            console.log("【debug】跳過純符號數字，不翻譯:", JSON.stringify(beforeUrl));
+            console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
             zhLine += beforeUrl;
           } else {
             let zh = beforeUrl.trim();
@@ -763,7 +766,7 @@ for (const line of lines) {
       const afterLastUrl = seg.text.slice(lastIdx);
       if (afterLastUrl.trim()) {
         if (isSymbolOrNum(afterLastUrl)) {
-          console.log("【debug】跳過純符號數字，不翻譯:", JSON.stringify(afterLastUrl));
+          console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
           zhLine += afterLastUrl;
         } else {
           let zh = afterLastUrl.trim();
@@ -790,7 +793,7 @@ for (const line of lines) {
   }
 }
 
-// 組合回覆文字
+// 組合回覆
 let replyText = "";
 if (inputLang === "zh-TW") {
   for (let code of set) {
@@ -799,9 +802,7 @@ if (inputLang === "zh-TW") {
       replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
     }
   }
-  if (!replyText) {
-    replyText = "(尚無翻譯結果)";
-  }
+  if (!replyText) replyText = "(尚無翻譯結果)";
 } else {
   replyText = (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) ? langOutputs["zh-TW"].join("\n") : "(尚無翻譯結果)";
 }
