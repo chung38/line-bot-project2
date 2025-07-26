@@ -121,11 +121,12 @@ const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 // === 強化版 extractMentionsFromLineMessage (最終版) ===
+
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
-  // 處理官方 mention 結構（存在時）
+  // 1. 官方 mention
   if (message.mentioned?.mentionees?.length) {
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
@@ -135,7 +136,7 @@ function extractMentionsFromLineMessage(message) {
     });
   }
 
-  // 處理手動輸入的 @mention（無官方 mention 結構）
+  // 2. 手動輸入 @mention（無官方 mention 結構）
   const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
   let idx = segments.length;
   let newMasked = '';
@@ -147,7 +148,7 @@ function extractMentionsFromLineMessage(message) {
     segments.push({ key, text: mentionText });
     newMasked += masked.slice(last, m.index) + key;
     last = m.index + mentionText.length;
-    // 強制保留一個空格做分段依據
+    // **一定加入一個空格分隔，確保mention間及與後文有空白分開**
     if (masked[last] === ' ') {
       newMasked += ' ';
       last++;
