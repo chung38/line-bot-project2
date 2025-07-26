@@ -642,12 +642,12 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 // === 多語言分組翻譯（最終整合版） ===
 
 // 判斷是否有中文字
-function hasChinese(txt) {
-  return /[\u4e00-\u9fff]/.test(txt);
-}
+//function hasChinese(txt) {
+  //return /[\u4e00-\u9fff]/.test(txt);
+//}
 // 判斷純符號/數字
-const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+//const isSymbolOrNum = txt =>
+//  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // 1. 提取 mention
 const { masked, segments } = extractMentionsFromLineMessage(event.message);
