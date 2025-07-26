@@ -678,14 +678,17 @@ for (const line of lines) {
       for (let s of segs) {
         if (s.type==='mention') { out+=s.text; continue; }
         // 處理網址與純文字
+        console.log("[分段檢查] 純文字段內容:", JSON.stringify(seg.text));
         let idx2=0, m2;
         while ((m2=urlRegex.exec(s.text))!==null) {
           const part=s.text.slice(idx2,m2.index);
           if (part.trim() && (!isSymbolOrNum(part) || hasChinese(part))) {
             out+= (await translateWithDeepSeek(part.trim(),code,gid)).trim();
+            console.log("[分段檢查] 純文字段內容:", JSON.stringify(seg.text));
           } else out+=part;
           out+=m2[0];
           idx2=m2.index+m2[0].length;
+          console.log("[分段檢查] 純文字段內容:", JSON.stringify(seg.text));
         }
         const tail=s.text.slice(idx2);
         if (tail.trim() && (!isSymbolOrNum(tail) || hasChinese(tail))) {
