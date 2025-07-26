@@ -126,7 +126,7 @@ function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
-  // 1. 處理官方 mention 結構
+  // 1. 官方 mention
   if (message.mentioned?.mentionees?.length) {
     const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index-a.index);
     mentionees.forEach((m,i) => {
@@ -136,9 +136,9 @@ function extractMentionsFromLineMessage(message) {
     });
   }
 
-  // 2. 處理手動輸入的 @mention
-  // 寬鬆匹配：@ 後至少一個非空白且非 @，直到遇到空白、行尾或常見標點
-  const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
+  // 2. 手動 @
+  // 寬鬆匹配：@人名 後面保留一個空格
+  const manualRegex = /@([^\s@，,。！？；…]+)/g;
   let idx = segments.length;
   let newMasked = '';
   let last = 0;
@@ -149,10 +149,12 @@ function extractMentionsFromLineMessage(message) {
     segments.push({ key, text: mentionText });
     newMasked += masked.slice(last, m.index) + key;
     last = m.index + mentionText.length;
-    // 保留 mention 後原有的空白
+    // **確保保留一個空格** 作為段落分隔
     if (masked[last] === ' ') {
       newMasked += ' ';
       last++;
+    } else {
+      newMasked += ' ';
     }
     idx++;
   }
@@ -649,103 +651,81 @@ const isSymbolOrNum = txt =>
 
 // 1. 提取 mention
 const { masked, segments } = extractMentionsFromLineMessage(event.message);
-// 2. 拆行
 const lines = masked.split(/\r?\n/).filter(l => l.trim());
-
-// 3. 取群組設定語言
 const set = groupLang.get(gid) || new Set();
 const langOutputs = {};
-set.forEach(code => langOutputs[code] = []);
-
-// 4. 偵測輸入語言
+set.forEach(c=>langOutputs[c]=[]);
 const inputLang = detectLang(text);
 const urlRegex = /(https?:\/\/[^\s]+)/gi;
+const hasChinese = txt=>/[\u4e00-\u9fff]/.test(txt);
+const isSymbolOrNum = txt=>/^[\d\s.,!?…]+$/.test(txt);
 
-// 5. 逐行分段與翻譯
 for (const line of lines) {
-  // 5.1 分段 mention 與純文字
-  const segs = [];
-  let last = 0, match;
-  const mentionRegex = /__MENTION_\d+__/g;
-  while ((match = mentionRegex.exec(line)) !== null) {
-    if (match.index > last) segs.push({ type:'text', text: line.slice(last, match.index) });
-    segs.push({ type:'mention', text: match[0] });
-    last = match.index + match[0].length;
+  // 分段 mention/text
+  const segs = [], mentionRe=/__MENTION_\d+__/g;
+  let last=0, mt;
+  while ((mt=mentionRe.exec(line))!==null) {
+    if (mt.index>last) segs.push({type:'text',text:line.slice(last,mt.index)});
+    segs.push({type:'mention',text:mt[0]});
+    last = mt.index+mt[0].length;
   }
-  if (last < line.length) segs.push({ type:'text', text: line.slice(last) });
+  if (last<line.length) segs.push({type:'text',text:line.slice(last)});
 
-  // 5.2 依輸入語言進行翻譯
-  if (inputLang === 'zh-TW') {
-    // 漢語輸入 → 翻成其他語言
+  // 翻譯
+  if (inputLang==='zh-TW') {
     for (let code of set) {
-      if (code === 'zh-TW') continue;
-      let out = '';
-      for (const seg of segs) {
-        if (seg.type === 'mention') {
-          out += seg.text;
-        } else {
-          // 純文字或網址處理
-          let idx2 = 0, m2;
-          while ((m2 = urlRegex.exec(seg.text)) !== null) {
-            const part = seg.text.slice(idx2, m2.index);
-            if (part.trim() && (!isSymbolOrNum(part) || hasChinese(part))) {
-              const tr = await translateWithDeepSeek(part.trim(), code, gid);
-              out += tr.trim();
-            } else out += part;
-            out += m2[0];
-            idx2 = m2.index + m2[0].length;
-          }
-          const tail = seg.text.slice(idx2);
-          if (tail.trim() && (!isSymbolOrNum(tail) || hasChinese(tail))) {
-            const tr = await translateWithDeepSeek(tail.trim(), code, gid);
-            out += tr.trim();
-          } else out += tail;
+      if (code==='zh-TW') continue;
+      let out='';
+      for (let s of segs) {
+        if (s.type==='mention') { out+=s.text; continue; }
+        // 處理網址與純文字
+        let idx2=0, m2;
+        while ((m2=urlRegex.exec(s.text))!==null) {
+          const part=s.text.slice(idx2,m2.index);
+          if (part.trim() && (!isSymbolOrNum(part) || hasChinese(part))) {
+            out+= (await translateWithDeepSeek(part.trim(),code,gid)).trim();
+          } else out+=part;
+          out+=m2[0];
+          idx2=m2.index+m2[0].length;
         }
+        const tail=s.text.slice(idx2);
+        if (tail.trim() && (!isSymbolOrNum(tail) || hasChinese(tail))) {
+          out+= (await translateWithDeepSeek(tail.trim(),code,gid)).trim();
+        } else out+=tail;
       }
       langOutputs[code].push(restoreMentions(out, segments));
     }
   } else {
-    // 非中文輸入 → 翻成繁中
-    let out = '';
-    for (const seg of segs) {
-      if (seg.type === 'mention') {
-        out += seg.text;
-      } else {
-        let idx2 = 0, m2;
-        while ((m2 = urlRegex.exec(seg.text)) !== null) {
-          const part = seg.text.slice(idx2, m2.index);
-          if (part.trim() && (!isSymbolOrNum(part) || hasChinese(part))) {
-            let zh = part.trim();
-            if (detectLang(zh) === 'th') zh = preprocessThaiWorkPhrase(zh);
-            if (detectLang(zh) === 'th' && /ทำโอ/.test(zh)) {
-              const smartZh = await smartPreprocess(zh, 'th');
-              if (/[\u4e00-\u9fff]/.test(smartZh)) zh = smartZh.trim();
-            }
-            const tr = /[\u4e00-\u9fff]/.test(zh)
-              ? zh
-              : await translateWithDeepSeek(zh, 'zh-TW', gid);
-            out += tr.trim();
-          } else out += part;
-          out += m2[0];
-          idx2 = m2.index + m2[0].length;
-        }
-        const tail = seg.text.slice(idx2);
-        if (tail.trim() && (!isSymbolOrNum(tail) || hasChinese(tail))) {
-          let zh = tail.trim();
-          if (detectLang(zh) === 'th') zh = preprocessThaiWorkPhrase(zh);
-          if (detectLang(zh) === 'th' && /ทำโอ/.test(zh)) {
-            const smartZh = await smartPreprocess(zh, 'th');
-            if (/[\u4e00-\u9fff]/.test(smartZh)) zh = smartZh.trim();
+    let out='';
+    for (let s of segs) {
+      if (s.type==='mention') { out+=s.text; continue; }
+      let idx2=0, m2;
+      while ((m2=urlRegex.exec(s.text))!==null) {
+        const part=s.text.slice(idx2,m2.index);
+        if (part.trim() && (!isSymbolOrNum(part) || hasChinese(part))) {
+          let zh=part.trim();
+          if (detectLang(zh)==='th') zh=preprocessThaiWorkPhrase(zh);
+          if (detectLang(zh)==='th'&&/ทำโอ/.test(zh)) {
+            const tmp=await smartPreprocess(zh,'th');
+            if (/[\u4e00-\u9fff]/.test(tmp)) zh=tmp;
           }
-          const tr = /[\u4e00-\u9fff]/.test(zh)
-            ? zh
-            : await translateWithDeepSeek(zh, 'zh-TW', gid);
-          out += tr.trim();
-        } else out += tail;
+          out+= /[\u4e00-\u9fff]/.test(zh)?zh:(await translateWithDeepSeek(zh,'zh-TW',gid)).trim();
+        } else out+=part;
+        out+=m2[0];
+        idx2=m2.index+m2[0].length;
       }
+      const tail=s.text.slice(idx2);
+      if (tail.trim() && (!isSymbolOrNum(tail) || hasChinese(tail))) {
+        let zh=tail.trim();
+        if (detectLang(zh)==='th') zh=preprocessThaiWorkPhrase(zh);
+        if (detectLang(zh)==='th'&&/ทำโอ/.test(zh)) {
+          const tmp=await smartPreprocess(zh,'th');
+          if (/[\u4e00-\u9fff]/.test(tmp)) zh=tmp;
+        }
+        out+= /[\u4e00-\u9fff]/.test(zh)?zh:(await translateWithDeepSeek(zh,'zh-TW',gid)).trim();
+      } else out+=tail;
     }
-    langOutputs['zh-TW'] = langOutputs['zh-TW'] || [];
-    langOutputs['zh-TW'].push(restoreMentions(out, segments));
+    langOutputs['zh-TW']=[restoreMentions(out, segments)];
   }
 }
 
