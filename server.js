@@ -117,9 +117,9 @@ const detectLang = (text) => {
 };
 
 const isChinese = txt => /[\u4e00-\u9fff]/.test(txt);
-
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+
 // === 強化版 extractMentionsFromLineMessage (最終版) ===
 
 function extractMentionsFromLineMessage(message) {
