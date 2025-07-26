@@ -770,6 +770,7 @@ async function multiLangTranslate(event, client, gid, uid, text, groupLang, dete
     type: "text",
     text: `【${userName}】說：\n${replyText.trim()}`
   });
+  }
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
