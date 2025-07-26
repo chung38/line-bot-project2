@@ -159,7 +159,7 @@ function extractMentionsFromLineMessage(message) {
   }
   newMasked += masked.slice(last);
   masked = newMasked;
-
+  console.log("masked:", JSON.stringify(masked)); 
   return { masked, segments };
 }
 
