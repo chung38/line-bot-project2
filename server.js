@@ -817,7 +817,6 @@ console.log("[debug] 最終回覆文字：", replyText);
   await client.replyMessage(event.replyToken, {
     type: "text",
     text: `【${userName}】說：\n${replyText.trim()}`
-    console.log("[debug] 最終回覆文字：", replyText);
   });
 }
     } catch (e) {
