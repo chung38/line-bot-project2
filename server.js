@@ -117,9 +117,14 @@ const detectLang = (text) => {
   return 'en';
 };
 
-const hasChinese = txt => /[\u4e00-\u9fff]/.test(txt);
+// 判斷是否有中文字
+function hasChinese(txt) {
+  return /[\u4e00-\u9fff]/.test(txt);
+}
+
+// 判斷純符號/數字（跳過不翻譯）
 const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === 泰文預處理函式 ===
 function preprocessThaiWorkPhrase(text) {
@@ -158,13 +163,14 @@ function preprocessThaiWorkPhrase(text) {
   return text;
 }
 
-// === 強化版 extractMentionsFromLineMessage (最終版) ===
+// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
+  // 官方 Mention 先處理
   if (message.mentioned?.mentionees?.length) {
-    const mentionees = [...message.mentioned.mentionees].sort((a,b) => b.index - a.index);
+    const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index - a.index);
     mentionees.forEach((m,i) => {
       const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substr(m.index, m.length) });
@@ -172,6 +178,7 @@ function extractMentionsFromLineMessage(message) {
     });
   }
 
+  // 手動 @mention 處理
   const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
   let idx = segments.length;
   let newMasked = '';
@@ -183,13 +190,14 @@ function extractMentionsFromLineMessage(message) {
     segments.push({ key, text: mentionText });
     newMasked += masked.slice(last, m.index) + key;
     last = m.index + mentionText.length;
-    // 保留一個空格避免佔位符黏處
+
     if (masked[last] === ' ') {
       newMasked += ' ';
       last++;
     } else {
       newMasked += ' ';
     }
+
     idx++;
   }
   newMasked += masked.slice(last);
@@ -200,6 +208,7 @@ function extractMentionsFromLineMessage(message) {
   return { masked, segments };
 }
 
+// 還原 mention 佔位符為原文
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -673,8 +682,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // === 多語言翻譯主邏輯 ===
-        const { masked, segments } = extractMentionsFromLineMessage(event.message);
+  // 先 extract mentions
+  const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
   // 剔除所有 mention 佔位符，取得純文字用於語言偵測
   const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
