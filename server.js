@@ -743,13 +743,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         continue;
       }
     } else {
-  if (isChineseInput) {
-    targetLangs = [...set].filter(l => l !== "zh-TW");
-    if (targetLangs.length === 0) {
-      console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
-      continue;
-    }
-  } else {
     targetLangs = ["zh-TW"];
   }
 
