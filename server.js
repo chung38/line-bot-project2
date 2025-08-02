@@ -805,10 +805,11 @@ let replyText = "";
 for (const code of allNeededLangs) {
   if (langOutputs[code] && langOutputs[code].length) {
     replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
+    console.log("[debug] 最終回覆文字：", replyText);
   }
 }
 if (!replyText) replyText = "(尚無翻譯結果)";
-
+console.log("[debug] 最終回覆文字：", replyText);
   // 取得使用者名稱
   const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
@@ -816,6 +817,7 @@ if (!replyText) replyText = "(尚無翻譯結果)";
   await client.replyMessage(event.replyToken, {
     type: "text",
     text: `【${userName}】說：\n${replyText.trim()}`
+    console.log("[debug] 最終回覆文字：", replyText);
   });
 }
     } catch (e) {
