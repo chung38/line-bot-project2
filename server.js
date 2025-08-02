@@ -707,6 +707,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 
 const langOutputs = {};
 const allNeededLangs = new Set(set);
+
 if (!isChineseInput) {
   allNeededLangs.add("zh-TW");
 }
@@ -800,13 +801,13 @@ allNeededLangs.forEach(code => {
   }
 
   // 組合回覆文字
-  let replyText = "";
-  for (const code of [...set]) {
-    if (langOutputs[code] && langOutputs[code].length) {
-      replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
-    }
+let replyText = "";
+for (const code of allNeededLangs) {
+  if (langOutputs[code] && langOutputs[code].length) {
+    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
   }
-  if (!replyText) replyText = "(尚無翻譯結果)";
+}
+if (!replyText) replyText = "(尚無翻譯結果)";
 
   // 取得使用者名稱
   const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
