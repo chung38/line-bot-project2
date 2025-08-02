@@ -735,19 +735,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
 
     // 根據是否輸入中文，選擇翻譯語言清單
     let targetLangs;
-    if (isChineseInput) {
-      // 中文輸入，翻譯成設定語言中非繁體中文語言
-      targetLangs = [...set].filter(l => l !== "zh-TW");
-      if (targetLangs.length === 0) {
-        console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
-        continue;
-      }
-    } else {
+  if (isChineseInput) {
+    targetLangs = [...set].filter(l => l !== "zh-TW");
+    if (targetLangs.length === 0) {
+      console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
+      continue;
+    }
+  } else {
     targetLangs = ["zh-TW"];
   }
-
-    }
-
     // 執行翻譯
     for (const code of targetLangs) {
       let outLine = "";
