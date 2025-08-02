@@ -705,8 +705,14 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     return;
   }
 
-  const langOutputs = {};
-  for (const code of set) langOutputs[code] = [];
+const langOutputs = {};
+const allNeededLangs = new Set(set);
+if (!isChineseInput) {
+  allNeededLangs.add("zh-TW");
+}
+allNeededLangs.forEach(code => {
+  langOutputs[code] = [];
+});
 
   // URL 偵測正則
   const urlRegex = /(https?:\/\/[^\s]+)/gi;
