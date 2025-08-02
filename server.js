@@ -676,129 +676,140 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // === 多語言翻譯主邏輯 ===
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
 
-        // 剔除 __MENTION_x__ 佔位符，取純文字做語言偵測
-        const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
-        const inputLang = detectLang(textForLangDetect);
-        console.log("【debug】偵測輸入語言 (排除 mention):", inputLang);
+  // 剔除所有 mention 佔位符，取得純文字用於語言偵測
+  const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
+  const isChineseInput = hasChinese(textForLangDetect);
+  console.log("【debug】純文字做語言判斷:", JSON.stringify(textForLangDetect));
+  console.log("【debug】是否包含中文:", isChineseInput);
 
-        // 分行及取得群組翻譯語言
-        const rawLines = masked.split(/\r?\n/);
-        const lines = rawLines.filter(l => l.trim());
-        const set = groupLang.get(gid) || new Set();
-        console.log("【debug】設定翻譯語言:", [...set]);
+  // 分行並過濾空行
+  const rawLines = masked.split(/\r?\n/);
+  const lines = rawLines.filter(l => l.trim());
+  
+  // 取得群組設定語言
+  const set = groupLang.get(gid) || new Set();
+  console.log("【debug】群組設定翻譯語言:", [...set]);
 
-        // 如果沒有設定翻譯語言，跳過翻譯
-        if (set.size === 0) return;
+  // 如果沒設定語言，就不翻譯
+  if (set.size === 0) {
+    console.log("[info] 此群組尚未設定翻譯語言，跳過翻譯");
+    return;
+  }
 
-        const langOutputs = {};
-        for (let code of set) langOutputs[code] = [];
+  const langOutputs = {};
+  for (const code of set) langOutputs[code] = [];
 
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
+  // URL 偵測正則
+  const urlRegex = /(https?:\/\/[^\s]+)/gi;
 
-        for (const line of lines) {
-          // 分段 mention 與純文字
-          const segs = [];
-          let lastIndex = 0;
-          let match;
-          const mentionRegex = /__MENTION_\d+__/g;
-          while ((match = mentionRegex.exec(line)) !== null) {
-            if (match.index > lastIndex) {
-              const textPart = line.slice(lastIndex, match.index);
-              console.log("【debug】純文字段:", JSON.stringify(textPart));
-              segs.push({ type: "text", text: textPart });
-            }
-            console.log("【debug】mention段:", match[0]);
-            segs.push({ type: "mention", text: match[0] });
-            lastIndex = match.index + match[0].length;
-          }
-          if (lastIndex < line.length) {
-            const tailText = line.slice(lastIndex);
-            console.log("【debug】純文字段:", JSON.stringify(tailText));
-            segs.push({ type: "text", text: tailText });
-          }
-
-          // 不管輸入語言，對所有設定語言進行翻譯（跳過母語語言）
-          for (let code of set) {
-            if (code === inputLang) continue; // 跳過譯回自己語言
-
-            let outLine = "";
-            for (const seg of segs) {
-              if (seg.type === "mention") {
-                outLine += seg.text;
-                continue;
-              }
-
-              let lastIdx = 0;
-              while ((match = urlRegex.exec(seg.text)) !== null) {
-                const beforeUrl = seg.text.slice(lastIdx, match.index);
-                if (beforeUrl.trim()) {
-                  if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
-                    console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
-                    outLine += beforeUrl;
-                  } else {
-                    console.log(`[debug] 送翻譯文字: "${beforeUrl.trim()}" 目標語言: ${code}`);
-                    let toTranslate = beforeUrl.trim();
-                    // 針對泰文預處理
-                    if (code === 'zh-TW' && detectLang(toTranslate) === 'th') {
-                      toTranslate = preprocessThaiWorkPhrase(toTranslate);
-                      if (/ทำโอ/.test(toTranslate)) {
-                        const smartZh = await smartPreprocess(toTranslate, "th");
-                        if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                          toTranslate = smartZh.trim();
-                        }
-                      }
-                    }
-                    const tr = await translateWithDeepSeek(toTranslate, code, gid);
-                    console.log("[debug] 翻譯結果:", JSON.stringify(tr));
-                    outLine += tr.trim();
-                  }
-                }
-                outLine += match[0];
-                lastIdx = match.index + match[0].length;
-              }
-              const afterLastUrl = seg.text.slice(lastIdx);
-              if (afterLastUrl.trim()) {
-                if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-                  console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
-                  outLine += afterLastUrl;
-                } else {
-                  console.log(`[debug] 送翻譯文字: "${afterLastUrl.trim()}" 目標語言: ${code}`);
-                  let toTranslate = afterLastUrl.trim();
-                  if (code === 'zh-TW' && detectLang(toTranslate) === 'th') {
-                    toTranslate = preprocessThaiWorkPhrase(toTranslate);
-                    if (/ทำโอ/.test(toTranslate)) {
-                      const smartZh = await smartPreprocess(toTranslate, "th");
-                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        toTranslate = smartZh.trim();
-                      }
-                    }
-                  }
-                  const tr = await translateWithDeepSeek(toTranslate, code, gid);
-                  console.log("[debug] 翻譯結果:", JSON.stringify(tr));
-                  outLine += tr.trim();
-                }
-              }
-            }
-            langOutputs[code].push(restoreMentions(outLine, segments));
-          }
-        }
-
-        // 組合回覆
-        let replyText = "";
-        for (let code of set) {
-          if (langOutputs[code].length) {
-            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
-          }
-        }
-        if (!replyText) replyText = "(尚無翻譯結果)";
-
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${replyText.trim()}`
-        });
+  for (const line of lines) {
+    // 分段為 mention 與純文字段
+    const segs = [];
+    let lastIndex = 0;
+    let match;
+    const mentionRegex = /__MENTION_\d+__/g;
+    while ((match = mentionRegex.exec(line)) !== null) {
+      if (match.index > lastIndex) {
+        const textPart = line.slice(lastIndex, match.index);
+        console.log("【debug】純文字段:", JSON.stringify(textPart));
+        segs.push({ type: "text", text: textPart });
       }
+      console.log("【debug】mention段:", match[0]);
+      segs.push({ type: "mention", text: match[0] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < line.length) {
+      const tailText = line.slice(lastIndex);
+      console.log("【debug】純文字段:", JSON.stringify(tailText));
+      segs.push({ type: "text", text: tailText });
+    }
+
+    // 根據是否輸入中文，選擇翻譯語言清單
+    let targetLangs;
+    if (isChineseInput) {
+      // 中文輸入，翻譯成設定語言中非繁體中文語言
+      targetLangs = [...set].filter(l => l !== "zh-TW");
+      if (targetLangs.length === 0) {
+        console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
+        continue;
+      }
+    } else {
+      // 非中文輸入，若設定有繁體中文，翻成繁體中文
+      if (set.has("zh-TW")) {
+        targetLangs = ["zh-TW"];
+      } else {
+        console.log("[info] 非中文輸入且無繁體中文設定，跳過");
+        continue;
+      }
+    }
+
+    // 執行翻譯
+    for (const code of targetLangs) {
+      let outLine = "";
+      for (const seg of segs) {
+        if (seg.type === "mention") {
+          // mention段不翻譯，直接輸出佔位
+          outLine += seg.text;
+          continue;
+        }
+
+        // 對純文字段分開處理 URL 與純文字翻譯
+        let lastIdx = 0;
+        while ((match = urlRegex.exec(seg.text)) !== null) {
+          const beforeUrl = seg.text.slice(lastIdx, match.index);
+          if (beforeUrl.trim()) {
+            if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
+              // 純符號數字不翻譯
+              console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
+              outLine += beforeUrl;
+            } else {
+              console.log(`[debug] 送翻譯文字: "${beforeUrl.trim()}" 目標語言: ${code}`);
+              const tr = await translateWithDeepSeek(beforeUrl.trim(), code, gid);
+              console.log("[debug] 翻譯結果:", JSON.stringify(tr));
+              outLine += tr.trim();
+            }
+          }
+          // URL 原文保留
+          outLine += match[0];
+          lastIdx = match.index + match[0].length;
+        }
+
+        const afterLastUrl = seg.text.slice(lastIdx);
+        if (afterLastUrl.trim()) {
+          if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
+            console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
+            outLine += afterLastUrl;
+          } else {
+            console.log(`[debug] 送翻譯文字: "${afterLastUrl.trim()}" 目標語言: ${code}`);
+            const tr = await translateWithDeepSeek(afterLastUrl.trim(), code, gid);
+            console.log("[debug] 翻譯結果:", JSON.stringify(tr));
+            outLine += tr.trim();
+          }
+        }
+      }
+      // 還原 mention
+      langOutputs[code].push(restoreMentions(outLine, segments));
+    }
+  }
+
+  // 組合回覆文字
+  let replyText = "";
+  for (const code of [...set]) {
+    if (langOutputs[code] && langOutputs[code].length) {
+      replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
+    }
+  }
+  if (!replyText) replyText = "(尚無翻譯結果)";
+
+  // 取得使用者名稱
+  const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
+
+  // 回覆訊息
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: `【${userName}】說：\n${replyText.trim()}`
+  });
+}
     } catch (e) {
       console.error("處理事件錯誤:", e);
       if (e.response?.data) {
