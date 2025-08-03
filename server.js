@@ -688,8 +688,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   // 剔除所有 mention 佔位符，取得純文字用於語言偵測
   const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
   const isChineseInput = hasChinese(textForLangDetect);
-  console.log("【debug】純文字做語言判斷:", JSON.stringify(textForLangDetect));
-  console.log("【debug】是否包含中文:", isChineseInput);
+  //console.log("【debug】純文字做語言判斷:", JSON.stringify(textForLangDetect));
+  //console.log("【debug】是否包含中文:", isChineseInput);
 
   // 分行並過濾空行
   const rawLines = masked.split(/\r?\n/);
@@ -697,11 +697,11 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   
   // 取得群組設定語言
   const set = groupLang.get(gid) || new Set();
-  console.log("【debug】群組設定翻譯語言:", [...set]);
+  //console.log("【debug】群組設定翻譯語言:", [...set]);
 
   // 如果沒設定語言，就不翻譯
   if (set.size === 0) {
-    console.log("[info] 此群組尚未設定翻譯語言，跳過翻譯");
+    //console.log("[info] 此群組尚未設定翻譯語言，跳過翻譯");
     return;
   }
 
@@ -727,16 +727,16 @@ allNeededLangs.forEach(code => {
     while ((match = mentionRegex.exec(line)) !== null) {
       if (match.index > lastIndex) {
         const textPart = line.slice(lastIndex, match.index);
-        console.log("【debug】純文字段:", JSON.stringify(textPart));
+        //console.log("【debug】純文字段:", JSON.stringify(textPart));
         segs.push({ type: "text", text: textPart });
       }
-      console.log("【debug】mention段:", match[0]);
+      //console.log("【debug】mention段:", match[0]);
       segs.push({ type: "mention", text: match[0] });
       lastIndex = match.index + match[0].length;
     }
     if (lastIndex < line.length) {
       const tailText = line.slice(lastIndex);
-      console.log("【debug】純文字段:", JSON.stringify(tailText));
+      //console.log("【debug】純文字段:", JSON.stringify(tailText));
       segs.push({ type: "text", text: tailText });
     }
 
@@ -745,7 +745,7 @@ allNeededLangs.forEach(code => {
   if (isChineseInput) {
     targetLangs = [...set].filter(l => l !== "zh-TW");
     if (targetLangs.length === 0) {
-      console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
+      //console.log("[info] 中文輸入但無設定非繁中文翻譯語言，跳過");
       continue;
     }
   } else {
@@ -768,12 +768,12 @@ allNeededLangs.forEach(code => {
           if (beforeUrl.trim()) {
             if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
               // 純符號數字不翻譯
-              console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
+              //console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(beforeUrl));
               outLine += beforeUrl;
             } else {
-              console.log(`[debug] 送翻譯文字: "${beforeUrl.trim()}" 目標語言: ${code}`);
+              //console.log(`[debug] 送翻譯文字: "${beforeUrl.trim()}" 目標語言: ${code}`);
               const tr = await translateWithDeepSeek(beforeUrl.trim(), code, gid);
-              console.log("[debug] 翻譯結果:", JSON.stringify(tr));
+              //console.log("[debug] 翻譯結果:", JSON.stringify(tr));
               outLine += tr.trim();
             }
           }
@@ -785,12 +785,12 @@ allNeededLangs.forEach(code => {
         const afterLastUrl = seg.text.slice(lastIdx);
         if (afterLastUrl.trim()) {
           if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-            console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
+            //console.log("【debug】跳過純符號數字 不翻譯:", JSON.stringify(afterLastUrl));
             outLine += afterLastUrl;
           } else {
-            console.log(`[debug] 送翻譯文字: "${afterLastUrl.trim()}" 目標語言: ${code}`);
+            //console.log(`[debug] 送翻譯文字: "${afterLastUrl.trim()}" 目標語言: ${code}`);
             const tr = await translateWithDeepSeek(afterLastUrl.trim(), code, gid);
-            console.log("[debug] 翻譯結果:", JSON.stringify(tr));
+            //console.log("[debug] 翻譯結果:", JSON.stringify(tr));
             outLine += tr.trim();
           }
         }
@@ -804,12 +804,12 @@ allNeededLangs.forEach(code => {
 let replyText = "";
 for (const code of allNeededLangs) {
   if (langOutputs[code] && langOutputs[code].length) {
-    replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join("\n")}\n\n`;
-    console.log("[debug] 最終回覆文字：", replyText);
+    replyText += `${langOutputs[code].join("\n")}\n\n`;
+    //console.log("[debug] 最終回覆文字：", replyText);
   }
 }
 if (!replyText) replyText = "(尚無翻譯結果)";
-console.log("[debug] 最終回覆文字：", replyText);
+//console.log("[debug] 最終回覆文字：", replyText);
   // 取得使用者名稱
   const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
 
