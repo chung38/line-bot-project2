@@ -711,7 +711,11 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const isChineseInput = hasChinese(textForLangDetect);
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
-
+        const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
+        if (skipTranslatePattern.test(textForLangDetect)) {
+           console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
+           return;  // 直接跳過或另外回覆原文
+        }
         if (set.size === 0) return;
 
         const langOutputs = {};
