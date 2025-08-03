@@ -127,14 +127,22 @@ const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === 泰文預處理函式 ===
-function preprocessThaiWorkPhrase(text) {
+
+// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
+function extractMentionsFromLineMessage(message) {
+  let masked = message.text;
+  const segments = [];
+
+  // 官方 Mention 先處理
+  if (message.mentioned?.mentionees?.length) {
+    const mentionfunction preprocessThaiWorkPhrase(text) {
   const input = text;
-  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
+  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");  // 時間格式統一成 12:34
   console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  // 例外排除關鍵字
   const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
 
+  // 判斷上班
   if (
     /ลง/.test(text) &&
     /(\d{1,2}:\d{2})/.test(text) &&
@@ -149,6 +157,8 @@ function preprocessThaiWorkPhrase(text) {
     console.log(`[預處理結果] → "今天我開始上班"`);
     return "今天我開始上班";
   }
+
+  // 判斷下班，注意先判斷避免「เลิกงาน」等詞判成上班
   if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
@@ -159,18 +169,11 @@ function preprocessThaiWorkPhrase(text) {
     console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
+
   console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
-
-// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
-function extractMentionsFromLineMessage(message) {
-  let masked = message.text;
-  const segments = [];
-
-  // 官方 Mention 先處理
-  if (message.mentioned?.mentionees?.length) {
-    const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index - a.index);
+ees = [...message.mentioned.mentionees].sort((a,b)=>b.index - a.index);
     mentionees.forEach((m,i) => {
       const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substr(m.index, m.length) });
