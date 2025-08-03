@@ -256,15 +256,18 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
   let systemPrompt = customPrompt;
+
   if (!systemPrompt) {
-  if (targetLang === "zh-TW") {
-    systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
-  } else {
-    systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+    if (targetLang === "zh-TW") {
+      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+    } else {
+      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+    }
   }
-}
+
   const cacheKey = `group_${gid}:${targetLang}:${text}:${industryPrompt}:${systemPrompt}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
+
   try {
     const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
       model: "deepseek-chat",
@@ -276,16 +279,33 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
     }, {
       headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
+
     let out = res.data.choices[0].message.content.trim();
     out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
-    if (targetLang === "zh-TW" && (out === text.trim() || !/[\u4e00-\u9fff]/.test(out))) {
-      if (retry < 2) {
-        const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-        return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
-      } else {
-        out = "（翻譯異常，請稍後再試）";
+
+    // 優化的翻譯結果判斷邏輯
+    if (targetLang === "zh-TW") {
+      // 如果回傳結果和輸入一模一樣，表示翻譯服務認為不需翻譯
+      // 但我們容許最多重試3次，用更強提示詞強制翻譯
+      if (out === text.trim()) {
+        if (retry < 3) {
+          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+        } else {
+          out = "（翻譯異常，請稍後再試）";
+        }
+      }
+      // 如果沒有中文字，也視為失敗，因為翻成繁中應該要有中文
+      else if (!/[\u4e00-\u9fff]/.test(out)) {
+        if (retry < 3) {
+          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+        } else {
+          out = "（翻譯異常，請稍後再試）";
+        }
       }
     }
+
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
