@@ -127,15 +127,7 @@ const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 // === 泰文預處理函式 ===
-
-// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
-function extractMentionsFromLineMessage(message) {
-  let masked = message.text;
-  const segments = [];
-
-  // 官方 Mention 先處理
-  if (message.mentioned?.mentionees?.length) {
-    const mentionfunction preprocessThaiWorkPhrase(text) {
+function preprocessThaiWorkPhrase(text) {
   const input = text;
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");  // 時間格式統一成 12:34
   console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
@@ -173,7 +165,16 @@ function extractMentionsFromLineMessage(message) {
   console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
-ees = [...message.mentioned.mentionees].sort((a,b)=>b.index - a.index);
+
+
+// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
+function extractMentionsFromLineMessage(message) {
+  let masked = message.text;
+  const segments = [];
+
+  // 官方 Mention 先處理
+  if (message.mentioned?.mentionees?.length) {
+    const mentionees = [...message.mentioned.mentionees].sort((a,b)=>b.index - a.index);
     mentionees.forEach((m,i) => {
       const key = `__MENTION_${i}__`;
       segments.unshift({ key, text: message.text.substr(m.index, m.length) });
