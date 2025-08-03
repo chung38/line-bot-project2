@@ -131,7 +131,7 @@ const isSymbolOrNum = txt =>
 function preprocessThaiWorkPhrase(text) {
   const input = text;
   text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
-  console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
+  //console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
   const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
 
@@ -144,10 +144,10 @@ function preprocessThaiWorkPhrase(text) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
       const result = `今天我${timeMatch[1]}開始上班`;
-      console.log(`[預處理結果] → "${result}"`);
+      //console.log(`[預處理結果] → "${result}"`);
       return result;
     }
-    console.log(`[預處理結果] → "今天我開始上班"`);
+    //console.log(`[預處理結果] → "今天我開始上班"`);
     return "今天我開始上班";
   }
 
@@ -156,14 +156,14 @@ function preprocessThaiWorkPhrase(text) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
       const result = `今天我${timeMatch[1]}下班`;
-      console.log(`[預處理結果] → "${result}"`);
+      //console.log(`[預處理結果] → "${result}"`);
       return result;
     }
-    console.log(`[預處理結果] → "今天我下班"`);
+    //console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
 
-  console.log(`[預處理結果] (無匹配) → "${text}"`);
+  //console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
 
@@ -206,8 +206,8 @@ function extractMentionsFromLineMessage(message) {
   newMasked += masked.slice(last);
   masked = newMasked;
 
-  console.log("【debug】masked:", JSON.stringify(masked));
-  console.log("【debug】segments:", JSON.stringify(segments));
+ // console.log("【debug】masked:", JSON.stringify(masked));
+ // console.log("【debug】segments:", JSON.stringify(segments));
   return { masked, segments };
 }
 
@@ -313,7 +313,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return translateWithDeepSeek(text, targetLang, gid, retry + 1, customPrompt);
     }
-    console.error("翻譯失敗:", e.message, e.response?.data || "");
+    //console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
   }
 };
@@ -336,13 +336,13 @@ async function commitBatchInChunks(batchOps, db, chunkSize = 400) {
         await batch.commit();
         break;
       } catch (e) {
-        console.error(`批次寫入失敗 (重試 ${retryCount + 1}/3):`, e);
+        //console.error(`批次寫入失敗 (重試 ${retryCount + 1}/3):`, e);
         retryCount++;
         await new Promise(r => setTimeout(r, (retryCount + 1) * 1000));
       }
     }
     if (retryCount === 3) {
-      console.error("批次寫入最終失敗，放棄", chunk);
+      //console.error("批次寫入最終失敗，放棄", chunk);
       throw new Error(i18n['zh-TW'].databaseSyncError);
     }
     await new Promise(r => setTimeout(r, 500));
@@ -713,7 +713,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
         if (skipTranslatePattern.test(textForLangDetect)) {
-           console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
+           //console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;  // 直接跳過或另外回覆原文
         }
         if (set.size === 0) return;
