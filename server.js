@@ -206,8 +206,8 @@ function extractMentionsFromLineMessage(message) {
   newMasked += masked.slice(last);
   masked = newMasked;
 
- // console.log("【debug】masked:", JSON.stringify(masked));
- // console.log("【debug】segments:", JSON.stringify(segments));
+  console.log("【debug】masked:", JSON.stringify(masked));
+  console.log("【debug】segments:", JSON.stringify(segments));
   return { masked, segments };
 }
 
@@ -713,7 +713,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
         if (skipTranslatePattern.test(textForLangDetect)) {
-           //console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
+           console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;  // 直接跳過或另外回覆原文
         }
         if (set.size === 0) return;
