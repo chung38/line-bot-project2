@@ -806,7 +806,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                       }
                     }
                   }
-                  const tr = await translateWithDeepSeek(toTranslate, code, gid);
+                  const tr = await translateWithChatGPT(toTranslate, code, gid);
                   outLine += tr.trim();
                 }
               }
