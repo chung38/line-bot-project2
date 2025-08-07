@@ -9,6 +9,10 @@ import admin from "firebase-admin";
 import cron from "node-cron";
 import rateLimit from "express-rate-limit";
 import { Configuration, OpenAIApi } from "openai";
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+const openai = new OpenAIApi(configuration);
 // === Firebase 初始化 ===
 try {
   const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
