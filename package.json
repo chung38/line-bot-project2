@@ -11,7 +11,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "A LINE Bot with translation capabilities using DeepSeek API and labor promotion poster delivery",
+  "description": "A LINE Bot with translation capabilities using ChatGPT API and labor promotion poster delivery",
   "dependencies": {
     "@line/bot-sdk": "^9.7.1",
     "axios": "^1.8.2",
@@ -24,6 +24,7 @@
     "node-cron": "^3.0.3",
     "express-rate-limit": "^6.7.0",
     "puppeteer": "^21.3.8"
+    "openai": "^5.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
