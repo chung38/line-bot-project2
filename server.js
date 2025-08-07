@@ -8,7 +8,7 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import cron from "node-cron";
 import rateLimit from "express-rate-limit";
-
+import { Configuration, OpenAIApi } from "openai";
 // === Firebase 初始化 ===
 try {
   const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -27,7 +27,7 @@ app.set('trust proxy', 1);
 const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
-  "DEEPSEEK_API_KEY",
+  "OPENAI_API_KEY",
   "PING_URL"
 ];
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
@@ -234,14 +234,14 @@ async function smartPreprocess(text, langCode) {
 原文：${text}
 `.trim();
   try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
+    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+      model: "gpt-4",
       messages: [
         { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
         { role: "user", content: prompt }
       ]
     }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
     const result = res.data.choices[0].message.content.trim();
     smartPreprocessCache.set(cacheKey, result);
@@ -252,7 +252,7 @@ async function smartPreprocess(text, langCode) {
   }
 }
 
-const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
+const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
   let systemPrompt = customPrompt;
@@ -269,15 +269,15 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
+    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+      model: "gpt-4",
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
     }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
 
     let out = res.data.choices[0].message.content.trim();
@@ -290,7 +290,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       if (out === text.trim()) {
         if (retry < 3) {
           const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
@@ -299,7 +299,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       else if (!/[\u4e00-\u9fff]/.test(out)) {
         if (retry < 3) {
           const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
@@ -311,7 +311,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
   } catch (e) {
     if (e.response?.status === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return translateWithDeepSeek(text, targetLang, gid, retry + 1, customPrompt);
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
     //console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
