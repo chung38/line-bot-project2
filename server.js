@@ -797,15 +797,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
                   outLine += afterLastUrl;
                 } else {
-                  if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                    toTranslate = preprocessThaiWorkPhrase(toTranslate);
-                    if (/ทำโอ/.test(toTranslate)) {
-                      const smartZh = await smartPreprocess(toTranslate, "th");
+                //  if (code === "zh-TW" && detectLang(toTranslate) === "th") {
+                 //   toTranslate = preprocessThaiWorkPhrase(toTranslate);
+                 //   if (/ทำโอ/.test(toTranslate)) {
+                 //     const smartZh = await smartPreprocess(toTranslate, "th");
                       if (/[\u4e00-\u9fff]/.test(smartZh)) {
                         toTranslate = smartZh.trim();
                       }
-                    }
-                  }
+                 //   }
+                 // }
                   const tr = await translateWithChatGPT(toTranslate, code, gid);
                   outLine += tr.trim();
                 }
