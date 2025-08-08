@@ -772,17 +772,17 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                     outLine += beforeUrl;
                   } else {
                     let toTranslate = beforeUrl.trim();
-                    if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                      toTranslate = preprocessThaiWorkPhrase(toTranslate);
+               //     if (code === "zh-TW" && detectLang(toTranslate) === "th") {
+                 //     toTranslate = preprocessThaiWorkPhrase(toTranslate);
 
                       // 可以加進階判斷 smartPreprocess
-                      if (/ทำโอ/.test(toTranslate)) {
-                        const smartZh = await smartPreprocess(toTranslate, "th");
+               //       if (/ทำโอ/.test(toTranslate)) {
+               //         const smartZh = await smartPreprocess(toTranslate, "th");
                         if (/[\u4e00-\u9fff]/.test(smartZh)) {
                           toTranslate = smartZh.trim();
                         }
-                      }
-                    }
+                      
+                    
                     const tr = await translateWithChatGPT(toTranslate, code, gid);
                     outLine += tr.trim();
                   }
