@@ -132,44 +132,44 @@ const isSymbolOrNum = txt =>
 
 // === 泰文預處理函式 ===
 // 泰文預處理函式
-function preprocessThaiWorkPhrase(text) {
-  const input = text;
-  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
+//function preprocessThaiWorkPhrase(text) {
+ // const input = text;
+ // text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
   //console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
+//  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
 
   // 判斷上班類型
-  if (
-    /ลง/.test(text) &&
-    /(\d{1,2}:\d{2})/.test(text) &&
-    !exceptionKeywords.test(text)
-  ) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}開始上班`;
+//  if (
+//    /ลง/.test(text) &&
+//    /(\d{1,2}:\d{2})/.test(text) &&
+//    !exceptionKeywords.test(text)
+//  ) {
+//    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+//    if (timeMatch) {
+//      const result = `今天我${timeMatch[1]}開始上班`;
       //console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
+//      return result;
+//    }
     //console.log(`[預處理結果] → "今天我開始上班"`);
-    return "今天我開始上班";
-  }
+//    return "今天我開始上班";
+//  }
 
   // 判斷下班類型
-  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}下班`;
+//  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
+ //   const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+  //  if (timeMatch) {
+//      const result = `今天我${timeMatch[1]}下班`;
       //console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
+  //    return result;
+  //  }
     //console.log(`[預處理結果] → "今天我下班"`);
-    return "今天我下班";
-  }
+ //   return "今天我下班";
+//  }
 
   //console.log(`[預處理結果] (無匹配) → "${text}"`);
-  return text;
-}
+//  return text;
+// }
 
 // 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
 // 提取 Mention，替換為 __MENTION_x__ ，並保留原文
@@ -226,35 +226,35 @@ function restoreMentions(text, segments) {
 }
 
 // === AI 翻譯 ===
-async function smartPreprocess(text, langCode) {
-  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
-  const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
-  if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
-  const prompt = `
-你是專門判斷泰文工廠輪班加班語意的 AI。
-請判斷下列句子是否表示「工廠整廠加班」：
-- 如果是，請直接回覆「全廠加班」。
-- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
-原文：${text}
-`.trim();
-  try {
-    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4",
-      messages: [
-        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
-        { role: "user", content: prompt }
-      ]
-    }, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-    });
-    const result = res.data.choices[0].message.content.trim();
-    smartPreprocessCache.set(cacheKey, result);
-    return result;
-  } catch (e) {
-    console.error("smartPreprocess API 錯誤:", e.message);
-    return text;
-  }
-}
+// async function smartPreprocess(text, langCode) {
+//  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
+//  const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
+//  if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
+//  const prompt = `
+//你是專門判斷泰文工廠輪班加班語意的 AI。
+//請判斷下列句子是否表示「工廠整廠加班」：
+//- 如果是，請直接回覆「全廠加班」。
+//- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
+//原文：${text}
+//`.trim();
+//  try {
+ //   const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+ //     model: "gpt-4",
+//      messages: [
+//        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
+//        { role: "user", content: prompt }
+//      ]
+//    }, {
+//      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+//    });
+//    const result = res.data.choices[0].message.content.trim();
+//    smartPreprocessCache.set(cacheKey, result);
+//    return result;
+//  } catch (e) {
+//    console.error("smartPreprocess API 錯誤:", e.message);
+//    return text;
+//  }
+// }
 
 const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
