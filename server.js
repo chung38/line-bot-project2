@@ -801,9 +801,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                  //   toTranslate = preprocessThaiWorkPhrase(toTranslate);
                  //   if (/ทำโอ/.test(toTranslate)) {
                  //     const smartZh = await smartPreprocess(toTranslate, "th");
-                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        toTranslate = smartZh.trim();
-                      }
+                 //     if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                 //       toTranslate = smartZh.trim();
+                 //     }
                  //   }
                  // }
                   const tr = await translateWithChatGPT(toTranslate, code, gid);
