@@ -781,8 +781,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                         if (/[\u4e00-\u9fff]/.test(smartZh)) {
                           toTranslate = smartZh.trim();
                         }
-                      
-                    
+                      // }
+                 //   }
                     const tr = await translateWithChatGPT(toTranslate, code, gid);
                     outLine += tr.trim();
                   }
