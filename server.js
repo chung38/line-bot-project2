@@ -260,8 +260,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry
   ? `你是一位熟悉「${industry}」行業專用語的專業翻譯員。` +
-    `請翻譯時嚴格採用該行業的術語和表達方式，` +
-    `如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙。` +
+    `如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙、判斷。` +
     `所有翻譯結果請保留專業性，不添加解釋。`
   : "";
   let systemPrompt = customPrompt;
