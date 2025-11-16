@@ -267,9 +267,9 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   if (!systemPrompt) {
     if (targetLang === "zh-TW") {
-      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
     } else {
-      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+      systemPrompt = `你是一位台灣專業人工翻譯員，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
     }
   }
 
@@ -297,7 +297,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
       // 但我們容許最多重試3次，用更強提示詞強制翻譯
       if (out === text.trim()) {
         if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
           return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
@@ -306,7 +306,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
       // 如果沒有中文字，也視為失敗，因為翻成繁中應該要有中文
       else if (!/[\u4e00-\u9fff]/.test(out)) {
         if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
           return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
