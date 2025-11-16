@@ -292,28 +292,30 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
 
     // 優化的翻譯結果判斷邏輯
-    if (targetLang === "zh-TW") {
-      // 如果回傳結果和輸入一模一樣，表示翻譯服務認為不需翻譯
-      // 但我們容許最多重試3次，用更強提示詞強制翻譯
-      if (out === text.trim()) {
-        if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
-        } else {
-          out = "（翻譯異常，請稍後再試）";
-        }
-      }
-      // 如果沒有中文字，也視為失敗，因為翻成繁中應該要有中文
-      else if (!/[\u4e00-\u9fff]/.test(out)) {
-        if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部要翻譯，不准照抄/混用任何中文字或原文。請以目標語言最常用法或音譯表示。不要加入解釋、標點或其他註記。，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
-        } else {
-          out = "（翻譯異常，請稍後再試）";
-        }
-      }
+if (targetLang === "zh-TW") {
+  if (out === text.trim()) {
+    if (retry < 3) {
+      const strongPrompt = `
+你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
+      `.replace(/\s+/g, ' ');
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
+    } else {
+      out = "（翻譯異常，請稍後再試）";
     }
-
+  }
+  // 沒有任何中文也自動 retry
+  else if (!/[\u4e00-\u9fff]/.test(out)) {
+    if (retry < 3) {
+      const strongPrompt = `
+你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
+      `.replace(/\s+/g, ' ');
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
+    } else {
+      out = "（翻譯異常，請稍後再試）";
+    }
+  }
+  // 內容和原文「高度相似」也要retry（進階可加 Levenshtein distance判斷，這邊簡化略過）
+}
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
