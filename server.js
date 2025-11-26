@@ -358,7 +358,6 @@ const sendMenu = async (gid, retry = 0) => {
       height: "sm",
       flex: 1,
       margin: "sm"
-      // removed gravity: "center" (not supported on button)
     });
 
     if (i + 1 < langItems.length) {
@@ -375,11 +374,10 @@ const sendMenu = async (gid, retry = 0) => {
         height: "sm",
         flex: 1,
         margin: "sm"
-        // removed gravity: "center"
       });
     } else {
-       // 補一個空的 box 佔位，保持排版 (spacer 在 horizontal box 中不支援)
-       rowContents.push({ type: "box", layout: "vertical", contents: [], flex: 1 });
+       // 補一個空的 box 會導致 400 error，改用 filler
+       rowContents.push({ type: "filler", flex: 1 });
     }
 
     langRows.push({
@@ -512,8 +510,8 @@ function buildIndustryMenu() {
         margin: "xs"
       });
     } else {
-      // 填補空位保持排版 (replace spacer with empty box)
-      rowContents.push({ type: "box", layout: "vertical", contents: [], flex: 1 });
+      // 填補空位保持排版 (replace empty box with filler)
+      rowContents.push({ type: "filler", flex: 1 });
     }
 
     rows.push({
