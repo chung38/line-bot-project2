@@ -428,8 +428,8 @@ const sendMenu = async (gid, retry = 0) => {
              size: "xxs",
              color: "#38BDF8", // 螢光藍
              margin: "xs",
-             align: "center",
-             letterSpacing: "1px"
+             align: "center"
+             // Removed invalid letterSpacing
           },
           // 語言按鈕區域
           {
@@ -540,8 +540,8 @@ function buildIndustryMenu() {
              text: "INDUSTRY MODE", 
              color: "#38BDF8", 
              weight: "bold", 
-             size: "xs",
-             letterSpacing: "1px"
+             size: "xs"
+             // Removed invalid letterSpacing
           },
           {
             type: "text",
