@@ -71,8 +71,7 @@ const SUPPORTED_LANGS = {
   id: "印尼文",
   "zh-TW": "繁體中文"
 };
-// 為了版面整潔，拿掉國旗emoji，改用英文代號顯示在按鈕上，或者保留看個人喜好
-// 這裡保留圖示但調整排版
+
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 const LANGS = {
   en: "英文",
@@ -93,7 +92,7 @@ const INDUSTRY_LIST = [
 // === i18n 國際化設定 ===
 const i18n = {
   'zh-TW': {
-    menuTitle: '翻譯語言設定', // 簡化標題以適應 Flex
+    menuTitle: '翻譯語言設定',
     industrySet: '🏭 行業別已設為：{industry}',
     industryCleared: '❌ 已清除行業別',
     langSelected: '✅ 已選擇語言：{langs}',
@@ -200,7 +199,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   try {
     const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4o-mini", // 修正：OpenAI 目前沒有 gpt-5-mini，暫用 gpt-4o-mini 或 gpt-3.5-turbo
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
@@ -358,8 +357,8 @@ const sendMenu = async (gid, retry = 0) => {
       color: "#1E293B", // 深灰藍背景
       height: "sm",
       flex: 1,
-      margin: "sm",
-      gravity: "center"
+      margin: "sm"
+      // removed gravity: "center" (not supported on button)
     });
 
     if (i + 1 < langItems.length) {
@@ -375,12 +374,12 @@ const sendMenu = async (gid, retry = 0) => {
         color: "#1E293B", // 深灰藍背景
         height: "sm",
         flex: 1,
-        margin: "sm",
-        gravity: "center"
+        margin: "sm"
+        // removed gravity: "center"
       });
     } else {
-       // 補一個空的 box 佔位，保持排版
-       rowContents.push({ type: "spacer", size: "sm" });
+       // 補一個空的 box 佔位，保持排版 (spacer 在 horizontal box 中不支援)
+       rowContents.push({ type: "box", layout: "vertical", contents: [], flex: 1 });
     }
 
     langRows.push({
@@ -513,8 +512,8 @@ function buildIndustryMenu() {
         margin: "xs"
       });
     } else {
-      // 填補空位保持排版
-      rowContents.push({ type: "spacer", size: "sm", flex: 1 });
+      // 填補空位保持排版 (replace spacer with empty box)
+      rowContents.push({ type: "box", layout: "vertical", contents: [], flex: 1 });
     }
 
     rows.push({
