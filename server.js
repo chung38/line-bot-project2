@@ -376,7 +376,7 @@ const sendMenu = async (gid, retry = 0) => {
         margin: "sm"
       });
     } else {
-       // 補一個 filler 佔位
+       // 補一個 filler 佔位，避免 400 錯誤
        rowContents.push({ type: "filler", flex: 1 });
     }
 
@@ -738,7 +738,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
         if (skipTranslatePattern.test(textForLangDetect)) {
            console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
-           return;
+           return;  // 直接跳過或另外回覆原文
         }
         if (set.size === 0) return;
 
@@ -771,9 +771,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           let targetLangs;
           if (isChineseInput) {
             targetLangs = [...set].filter(l => l !== "zh-TW");
-            if (targetLangs.length === 0) continue;
+            if (targetLangs.length === 0) continue;  // 中文輸入但沒有非繁中語言設定跳過
           } else {
-            targetLangs = ["zh-TW"];
+            targetLangs = ["zh-TW"];  // 非中文輸入強制繁中
           }
 
           for (const code of targetLangs) {
