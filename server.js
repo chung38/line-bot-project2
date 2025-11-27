@@ -86,7 +86,7 @@ Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v] = k;
 });
 const INDUSTRY_LIST = [
-  "家具業","畜牧業","建築營造業","印染整理業", "織布業","禽畜糞加工業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食品加工業", "食用菌菇類栽培業", "蛋製品製造、加工、調配業"
+  "家具業","畜牧業","建築營造業","印染整理業", "紡紗及織布業","禽畜糞加工業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食品加工及農畜產品批發業"
 ];
 
 // === i18n 國際化設定 ===
@@ -353,7 +353,7 @@ const sendMenu = async (gid, retry = 0) => {
         label: `${item1.icon} ${item1.label}`,
         data: `action=set_lang&code=${item1.code}`
       },
-      style: "secondary",
+      style: "primary", // 改為 primary 讓字變白
       color: "#1E293B", // 深灰藍背景
       height: "sm",
       flex: 1,
@@ -369,14 +369,14 @@ const sendMenu = async (gid, retry = 0) => {
           label: `${item2.icon} ${item2.label}`,
           data: `action=set_lang&code=${item2.code}`
         },
-        style: "secondary",
+        style: "primary", // 改為 primary 讓字變白
         color: "#1E293B", // 深灰藍背景
         height: "sm",
         flex: 1,
         margin: "sm"
       });
     } else {
-       // 補一個空的 box 會導致 400 error，改用 filler
+       // 補一個 filler 佔位
        rowContents.push({ type: "filler", flex: 1 });
     }
 
@@ -429,7 +429,6 @@ const sendMenu = async (gid, retry = 0) => {
              color: "#38BDF8", // 螢光藍
              margin: "xs",
              align: "center"
-             // Removed invalid letterSpacing
           },
           // 語言按鈕區域
           {
@@ -482,45 +481,15 @@ const sendMenu = async (gid, retry = 0) => {
 
 // === 科技風格：建立行業別選單 ===
 function buildIndustryMenu() {
-  // 將行業列表分組，每行2個，製作 Grid
-  const rows = [];
-  for (let i = 0; i < INDUSTRY_LIST.length; i += 2) {
-    const rowContents = [];
-    
-    // 第一個按鈕
-    rowContents.push({
-      type: "button",
-      action: { type: "postback", label: INDUSTRY_LIST[i], data: `action=set_industry&industry=${encodeURIComponent(INDUSTRY_LIST[i])}` },
-      style: "secondary",
-      color: "#334155", // Slate 700
-      height: "sm",
-      flex: 1,
-      margin: "xs"
-    });
-
-    // 第二個按鈕 (如果有)
-    if (i + 1 < INDUSTRY_LIST.length) {
-      rowContents.push({
-        type: "button",
-        action: { type: "postback", label: INDUSTRY_LIST[i+1], data: `action=set_industry&industry=${encodeURIComponent(INDUSTRY_LIST[i+1])}` },
-        style: "secondary",
-        color: "#334155",
-        height: "sm",
-        flex: 1,
-        margin: "xs"
-      });
-    } else {
-      // 填補空位保持排版 (replace empty box with filler)
-      rowContents.push({ type: "filler", flex: 1 });
-    }
-
-    rows.push({
-      type: "box",
-      layout: "horizontal",
-      contents: rowContents,
-      margin: "sm"
-    });
-  }
+  // 將行業列表改為垂直列表 (Vertical List)，不分組
+  const industryButtons = INDUSTRY_LIST.map(ind => ({
+    type: "button",
+    action: { type: "postback", label: ind, data: `action=set_industry&industry=${encodeURIComponent(ind)}` },
+    style: "primary", // 改為 primary 讓字變白
+    color: "#334155", // Slate 700
+    height: "sm",
+    margin: "xs"
+  }));
 
   return {
     type: "flex",
@@ -541,7 +510,6 @@ function buildIndustryMenu() {
              color: "#38BDF8", 
              weight: "bold", 
              size: "xs"
-             // Removed invalid letterSpacing
           },
           {
             type: "text",
@@ -553,12 +521,12 @@ function buildIndustryMenu() {
           },
           { type: "separator", color: "#334155", margin: "md" },
           
-          // 列表區域
+          // 列表區域 (直接放入所有按鈕，垂直排列)
           {
             type: "box",
             layout: "vertical",
             margin: "lg",
-            contents: rows
+            contents: industryButtons
           },
 
           // Footer
