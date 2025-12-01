@@ -176,7 +176,6 @@ function restoreMentions(text, segments) {
   });
   return restored;
 }
-
 const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry
@@ -198,15 +197,17 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
+    // 【修改 1】設定 15 秒 timeout，並修正模型名稱為 gpt-4o-mini (gpt-5-mini 目前不存在)
     const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4o-mini",
+      model: "gpt-5-mini", 
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
     }, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      timeout: 15000 // 設定 15 秒逾時，避免卡死
     });
 
     let out = res.data.choices[0].message.content.trim();
@@ -237,8 +238,17 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
-    if (e.response?.status === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
+    // 【修改 2】增加詳細錯誤 Log
+    console.error(`❌ [${SUPPORTED_LANGS[targetLang]||targetLang}] 翻譯失敗 (Retry: ${retry}):`, e.response?.data?.error?.message || e.message);
+
+    // 【修改 3】擴大重試範圍：包含 429(太頻繁), 5xx(伺服器錯誤), ECONNABORTED(逾時)
+    const isRetryable = e.response?.status === 429 || 
+                        (e.response?.status >= 500 && e.response?.status < 600) || 
+                        e.code === 'ECONNABORTED';
+
+    if (isRetryable && retry < 3) {
+      console.log(`⚠️ 準備重試... (第 ${retry + 1} 次)`);
+      await new Promise(r => setTimeout(r, (retry + 1) * 3000)); // 稍微縮短等待時間
       return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
     return "（翻譯暫時不可用）";
