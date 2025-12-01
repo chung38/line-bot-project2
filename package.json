@@ -19,7 +19,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.19.2",
     "firebase-admin": "^12.1.0",
-    "limiter": "^4.1.0",
+    "limiter": "^3.0.0",
     "lru-cache": "^10.2.1",
     "node-cron": "^3.0.3",
     "express-rate-limit": "^7.3.0",
