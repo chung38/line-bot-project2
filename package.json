@@ -1,5 +1,5 @@
 {
-  "name": "line-bot-project",
+  "name": "line-bot-project2",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -14,16 +14,16 @@
   "description": "A LINE Bot with translation capabilities using DeepSeek API",
   "dependencies": {
     "@line/bot-sdk": "^9.7.1",
-    "axios": "^1.8.2",
-    "cheerio": "^1.0.0-rc.12",
+    "axios": "^1.10.0",
+    "cheerio": "^1.0.0",
     "dotenv": "^16.4.7",
-    "express": "^4.18.3",
-    "firebase-admin": "^11.10.1",
-    "limiter": "^3.0.0",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0",
+    "limiter": "^4.1.0",
     "lru-cache": "^10.2.1",
     "node-cron": "^3.0.3",
-    "express-rate-limit": "^6.7.0",
-    "puppeteer": "^21.3.8",
+    "express-rate-limit": "^7.3.0",
+    "puppeteer": "^22.6.0",
     "openai": "^5.2.0"
   },
   "devDependencies": {
@@ -31,10 +31,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chung38/line-bot-project.git"
+    "url": "git+https://github.com/chung38/line-bot-project2.git"
   },
   "bugs": {
-    "url": "https://github.com/chung38/line-bot-project/issues"
+    "url": "https://github.com/chung38/line-bot-project2/issues"
   },
-  "homepage": "https://github.com/chung38/line-bot-project#readme"
+  "homepage": "https://github.com/chung38/line-bot-project2#readme"
 }
