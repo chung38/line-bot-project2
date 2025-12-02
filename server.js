@@ -207,7 +207,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
       ]
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeout: 15000 // 設定 15 秒逾時，避免卡死
+      timeout: 20000 // 設定20秒逾時，避免卡死
     });
 
     let out = res.data.choices[0].message.content.trim();
