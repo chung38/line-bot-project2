@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -197,7 +198,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
-    // 【修改 1】設定 20秒 timeout，gpt-5-mini
+    // 【修改 1】設定40秒 timeout，gpt-5-mini
     const res = await axios.post("https://api.openai.com/v1/chat/completions", {
       model: "gpt-5-mini", 
       messages: [
@@ -207,7 +208,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
       ]
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeout: 20000 // 設定20秒逾時，避免卡死
+      timeout: 40000 // 設定40秒逾時，避免卡死
     });
 
     let out = res.data.choices[0].message.content.trim();
