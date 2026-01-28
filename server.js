@@ -200,20 +200,18 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
-    // 🔥 改用 gpt-4o-mini，設定30秒 timeout
-    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4o-mini", 
-      messages: [
-        { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
-        { role: "system", content: systemPrompt },
-        { role: "user", content: text }
-      ],
-      temperature: 0.3 // 🔥 降低隨機性，提高穩定性
-    }, {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeout: 30000 // 🔥 30秒逾時
-    });
-
+   const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
+  model: "deepseek-chat", // 🔥 改這裡
+  messages: [
+    { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
+    { role: "system", content: systemPrompt },
+    { role: "user", content: text }
+  ],
+  temperature: 0.3
+}, {
+  headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }, // 🔥 換 API Key
+  timeout: 30000
+});
     let out = res.data.choices[0].message.content.trim();
     out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
 
