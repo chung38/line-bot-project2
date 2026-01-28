@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
@@ -14,6 +13,7 @@ import OpenAI from "openai";
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
 // === Firebase 初始化 ===
 try {
   const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -128,7 +128,7 @@ function hasChinese(txt) {
 }
 
 const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+  /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
@@ -177,6 +177,8 @@ function restoreMentions(text, segments) {
   });
   return restored;
 }
+
+// 🔥 優化後的翻譯函式
 const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
   const industryPrompt = industry
@@ -198,17 +200,18 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
-    // 【修改 1】設定40秒 timeout，gpt-5-mini
+    // 🔥 改用 gpt-4o-mini，設定30秒 timeout
     const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-5-mini", 
+      model: "gpt-4o-mini", 
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
-      ]
+      ],
+      temperature: 0.3 // 🔥 降低隨機性，提高穩定性
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeout: 40000 // 設定40秒逾時，避免卡死
+      timeout: 30000 // 🔥 30秒逾時
     });
 
     let out = res.data.choices[0].message.content.trim();
@@ -216,7 +219,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
     if (targetLang === "zh-TW") {
       if (out === text.trim()) {
-        if (retry < 3) {
+        if (retry < 2) { // 🔥 減少重試次數
           const strongPrompt = `
 你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
           `.replace(/\s+/g, ' ');
@@ -226,7 +229,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
         }
       }
       else if (!/[\u4e00-\u9fff]/.test(out)) {
-        if (retry < 3) {
+        if (retry < 2) { // 🔥 減少重試次數
           const strongPrompt = `
 你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
           `.replace(/\s+/g, ' ');
@@ -239,22 +242,158 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
-    // 【修改 2】增加詳細錯誤 Log
     console.error(`❌ [${SUPPORTED_LANGS[targetLang]||targetLang}] 翻譯失敗 (Retry: ${retry}):`, e.response?.data?.error?.message || e.message);
 
-    // 【修改 3】擴大重試範圍：包含 429(太頻繁), 5xx(伺服器錯誤), ECONNABORTED(逾時)
-    const isRetryable = e.response?.status === 429 || 
-                        (e.response?.status >= 500 && e.response?.status < 600) || 
-                        e.code === 'ECONNABORTED';
+    // 🔥 優化重試條件
+    const isRetryable = 
+      e.code === 'ECONNABORTED' || 
+      e.code === 'ETIMEDOUT' ||
+      e.response?.status === 429 || 
+      e.response?.status === 500 || 
+      e.response?.status === 502 ||
+      e.response?.status === 503;
 
-    if (isRetryable && retry < 3) {
-      console.log(`⚠️ 準備重試... (第 ${retry + 1} 次)`);
-      await new Promise(r => setTimeout(r, (retry + 1) * 3000)); // 稍微縮短等待時間
+    if (isRetryable && retry < 2) { // 🔥 最多重試2次
+      const delay = Math.min(1000 * Math.pow(2, retry), 5000); // 🔥 指數退避，最多5秒
+      console.log(`⚠️ 準備重試... (第 ${retry + 1} 次，延遲 ${delay}ms)`);
+      await new Promise(r => setTimeout(r, delay));
       return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
-    return "（翻譯暫時不可用）";
+    
+    // 🔥 失敗時返回部分文字提示
+    return `[${text.substring(0, 20)}...翻譯失敗]`;
   }
 };
+
+// 🔥 新增：翻譯單行的所有片段（並發處理）
+async function translateLineSegments(line, targetLang, gid, segments) {
+  const segs = [];
+  let lastIndex = 0;
+  const mentionRegex = /__MENTION_\d+__/g;
+  let match;
+  
+  while ((match = mentionRegex.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
+    }
+    segs.push({ type: "mention", text: match[0] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < line.length) {
+    segs.push({ type: "text", text: line.slice(lastIndex) });
+  }
+
+  let outLine = "";
+  const urlRegex = /(https?:\/\/[^\s]+)/gi;
+
+  for (const seg of segs) {
+    if (seg.type === "mention") {
+      outLine += seg.text;
+      continue;
+    }
+
+    let lastIdx = 0;
+    let urlMatch;
+    while ((urlMatch = urlRegex.exec(seg.text)) !== null) {
+      const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
+      if (beforeUrl.trim()) {
+        if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
+          outLine += beforeUrl;
+        } else {
+          const tr = await translateWithChatGPT(beforeUrl.trim(), targetLang, gid);
+          outLine += tr.trim();
+        }
+      }
+      outLine += urlMatch[0];
+      lastIdx = urlMatch.index + urlMatch[0].length;
+    }
+
+    const afterLastUrl = seg.text.slice(lastIdx);
+    if (afterLastUrl.trim()) {
+      if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
+        outLine += afterLastUrl;
+      } else {
+        const tr = await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid);
+        outLine += tr.trim();
+      }
+    }
+  }
+
+  return restoreMentions(outLine, segments);
+}
+
+// 🔥 新增：背景處理翻譯（並發執行）
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, set, isChineseInput) {
+  const langOutputs = {};
+  const allNeededLangs = new Set(set);
+
+  if (!isChineseInput) {
+    allNeededLangs.add("zh-TW");
+  }
+
+  allNeededLangs.forEach(code => {
+    langOutputs[code] = [];
+  });
+
+  // 🔥 使用 Promise.all 並發處理所有翻譯任務
+  const translationTasks = [];
+  
+  for (const line of rawLines) {
+    let targetLangs;
+    if (isChineseInput) {
+      targetLangs = [...set].filter(l => l !== "zh-TW");
+      if (targetLangs.length === 0) continue;
+    } else {
+      targetLangs = ["zh-TW"];
+    }
+
+    for (const code of targetLangs) {
+      translationTasks.push(
+        translateLineSegments(line, code, gid, segments).then(translated => {
+          if (!langOutputs[code]) langOutputs[code] = [];
+          langOutputs[code].push(translated);
+        })
+      );
+    }
+  }
+
+  // 🔥 並發執行所有翻譯，設定25秒超時
+  await Promise.race([
+    Promise.allSettled(translationTasks),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Translation timeout')), 25000)
+    )
+  ]).catch(e => {
+    console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
+  });
+
+  let replyText = "";
+  for (const code of allNeededLangs) {
+    if (langOutputs[code] && langOutputs[code].length) {
+      replyText += `${langOutputs[code].join("\n")}\n\n`;
+    }
+  }
+  if (!replyText) replyText = "(尚無翻譯結果)";
+
+  const userName = await client.getGroupMemberProfile(gid, uid)
+    .then(p => p.displayName)
+    .catch(() => uid);
+
+  // 🔥 優先使用 replyMessage（免費），失敗才用 pushMessage
+  try {
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text: `【${userName}】說：\n${replyText.trim()}`
+    });
+    console.log(`✅ 翻譯完成並使用 replyMessage 回覆`);
+  } catch (e) {
+    console.warn("⚠️ replyToken 過期，改用 pushMessage:", e.message);
+    await client.pushMessage(gid, {
+      type: "text",
+      text: `【${userName}】說：\n${replyText.trim()}`
+    });
+  }
+}
 
 async function commitBatchInChunks(batchOps, db, chunkSize = 400) {
   const chunks = [];
@@ -343,7 +482,6 @@ const saveIndustry = async () => {
 
 // === 科技風格：發送語言設定選單 ===
 const sendMenu = async (gid, retry = 0) => {
-  // 準備語言按鈕資料
   const langItems = Object.entries(SUPPORTED_LANGS)
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
@@ -352,7 +490,6 @@ const sendMenu = async (gid, retry = 0) => {
       icon: LANG_ICONS[code] || ""
     }));
 
-  // 將按鈕分組，每組2個，製作成 Flex Grid 樣式
   const langRows = [];
   for (let i = 0; i < langItems.length; i += 2) {
     const rowContents = [];
@@ -364,8 +501,8 @@ const sendMenu = async (gid, retry = 0) => {
         label: `${item1.icon} ${item1.label}`,
         data: `action=set_lang&code=${item1.code}`
       },
-      style: "primary", // 改為 primary 讓字變白
-      color: "#1E293B", // 深灰藍背景
+      style: "primary",
+      color: "#1E293B",
       height: "sm",
       flex: 1,
       margin: "sm"
@@ -380,14 +517,13 @@ const sendMenu = async (gid, retry = 0) => {
           label: `${item2.icon} ${item2.label}`,
           data: `action=set_lang&code=${item2.code}`
         },
-        style: "primary", // 改為 primary 讓字變白
-        color: "#1E293B", // 深灰藍背景
+        style: "primary",
+        color: "#1E293B",
         height: "sm",
         flex: 1,
         margin: "sm"
       });
     } else {
-       // 補一個 filler 佔位，避免 400 錯誤
        rowContents.push({ type: "filler", flex: 1 });
     }
 
@@ -408,10 +544,9 @@ const sendMenu = async (gid, retry = 0) => {
       body: {
         type: "box",
         layout: "vertical",
-        backgroundColor: "#0F172A", // 深色科技背景 (Slate 900)
+        backgroundColor: "#0F172A",
         paddingAll: "20px",
         contents: [
-          // Header 裝飾
           {
             type: "box",
             layout: "horizontal",
@@ -422,13 +557,12 @@ const sendMenu = async (gid, retry = 0) => {
             paddingBottom: "md"
           },
           { type: "separator", color: "#334155" },
-          // 主標題
           {
             type: "text",
             text: i18n['zh-TW'].menuTitle,
             weight: "bold",
             size: "xl",
-            color: "#F8FAFC", // 亮白
+            color: "#F8FAFC",
             margin: "md",
             align: "center"
           },
@@ -437,18 +571,16 @@ const sendMenu = async (gid, retry = 0) => {
              text: "TARGET LANGUAGE SELECTOR",
              weight: "bold",
              size: "xxs",
-             color: "#38BDF8", // 螢光藍
+             color: "#38BDF8",
              margin: "xs",
              align: "center"
           },
-          // 語言按鈕區域
           {
             type: "box",
             layout: "vertical",
             margin: "lg",
             contents: langRows
           },
-          // 下方功能區
           { type: "separator", color: "#334155", margin: "xl" },
           {
             type: "text",
@@ -461,7 +593,7 @@ const sendMenu = async (gid, retry = 0) => {
             type: "button",
             action: { type: "postback", label: "🏭 設定行業別 (INDUSTRY)", data: "action=show_industry_menu" },
             style: "primary",
-            color: "#10B981", // 科技綠
+            color: "#10B981",
             margin: "md",
             height: "sm"
           },
@@ -469,7 +601,7 @@ const sendMenu = async (gid, retry = 0) => {
             type: "button",
             action: { type: "postback", label: "❌ 清除設定 (RESET)", data: "action=set_lang&code=cancel" },
             style: "secondary",
-            color: "#EF4444", // 警告紅
+            color: "#EF4444",
             margin: "sm",
             height: "sm"
           }
@@ -492,12 +624,11 @@ const sendMenu = async (gid, retry = 0) => {
 
 // === 科技風格：建立行業別選單 ===
 function buildIndustryMenu() {
-  // 將行業列表改為垂直列表 (Vertical List)，不分組
   const industryButtons = INDUSTRY_LIST.map(ind => ({
     type: "button",
     action: { type: "postback", label: ind, data: `action=set_industry&industry=${encodeURIComponent(ind)}` },
-    style: "primary", // 改為 primary 讓字變白
-    color: "#334155", // Slate 700
+    style: "primary",
+    color: "#334155",
     height: "sm",
     margin: "xs"
   }));
@@ -511,10 +642,9 @@ function buildIndustryMenu() {
       body: {
         type: "box",
         layout: "vertical",
-        backgroundColor: "#0F172A", // 深色科技背景
+        backgroundColor: "#0F172A",
         paddingAll: "20px",
         contents: [
-          // Header
           {
              type: "text", 
              text: "INDUSTRY MODE", 
@@ -532,7 +662,6 @@ function buildIndustryMenu() {
           },
           { type: "separator", color: "#334155", margin: "md" },
           
-          // 列表區域 (直接放入所有按鈕，垂直排列)
           {
             type: "box",
             layout: "vertical",
@@ -540,7 +669,6 @@ function buildIndustryMenu() {
             contents: industryButtons
           },
 
-          // Footer
           { type: "separator", color: "#334155", margin: "xl" },
           {
             type: "button",
@@ -665,7 +793,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         return;
       }
 
-      // === 文字訊息翻譯處理 ===
+      // === 🔥 優化後的文字訊息翻譯處理 ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
 
@@ -740,107 +868,35 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           return;
         }
 
-  // 先 extract mentions
- const { masked, segments } = extractMentionsFromLineMessage(event.message);
+        // 🔥 翻譯處理：改為背景執行
+        const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
         const isChineseInput = hasChinese(textForLangDetect);
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
+        
         if (skipTranslatePattern.test(textForLangDetect)) {
            console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
-           return;  // 直接跳過或另外回覆原文
+           return;
         }
+        
         if (set.size === 0) return;
 
-        const langOutputs = {};
-        const allNeededLangs = new Set(set);
-
-        // 非中文強制翻成繁體中文
-        if (!isChineseInput) {
-          allNeededLangs.add("zh-TW");
-        }
-
-        allNeededLangs.forEach(code => {
-          langOutputs[code] = [];
-        });
-
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
-
-        for (const line of rawLines) {
-          const segs = [];
-          let lastIndex = 0;
-          let match;
-          const mentionRegex = /__MENTION_\d+__/g;
-          while ((match = mentionRegex.exec(line)) !== null) {
-            if (match.index > lastIndex) segs.push({ type: "text", text: line.slice(lastIndex, match.index) });
-            segs.push({ type: "mention", text: match[0] });
-            lastIndex = match.index + match[0].length;
-          }
-          if (lastIndex < line.length) segs.push({ type: "text", text: line.slice(lastIndex) });
-
-          let targetLangs;
-          if (isChineseInput) {
-            targetLangs = [...set].filter(l => l !== "zh-TW");
-            if (targetLangs.length === 0) continue;  // 中文輸入但沒有非繁中語言設定跳過
-          } else {
-            targetLangs = ["zh-TW"];  // 非中文輸入強制繁中
-          }
-
-          for (const code of targetLangs) {
-            let outLine = "";
-            for (const seg of segs) {
-              if (seg.type === "mention") {
-                outLine += seg.text;
-                continue;
-              }
-
-              let lastIdx = 0;
-              while ((match = urlRegex.exec(seg.text)) !== null) {
-                const beforeUrl = seg.text.slice(lastIdx, match.index);
-                if (beforeUrl.trim()) {
-                  if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
-                    outLine += beforeUrl;
-                  } else {
-                    let toTranslate = beforeUrl.trim();
-                    const tr = await translateWithChatGPT(toTranslate, code, gid);
-                    outLine += tr.trim();
-                  }
-                }
-                outLine += match[0];
-                lastIdx = match.index + match[0].length;
-              }
-
-              const afterLastUrl = seg.text.slice(lastIdx);
-              if (afterLastUrl.trim()) {
-                let toTranslate = afterLastUrl.trim();
-                if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-                  outLine += afterLastUrl;
-                } else {
-                  const tr = await translateWithChatGPT(toTranslate, code, gid);
-                  outLine += tr.trim();
-                }
-              }
-
-            }
-            langOutputs[code].push(restoreMentions(outLine, segments));
-          }
-        }
-
-        let replyText = "";
-        for (const code of allNeededLangs) {
-          if (langOutputs[code] && langOutputs[code].length) {
-            replyText += `${langOutputs[code].join("\n")}\n\n`;
-          }
-        }
-        if (!replyText) replyText = "(尚無翻譯結果)";
-
-        const userName = await client.getGroupMemberProfile(gid, uid).then(p => p.displayName).catch(() => uid);
-
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `【${userName}】說：\n${replyText.trim()}`
-        });
+        // 🔥 關鍵：背景處理翻譯，不阻塞 webhook 回應
+        processTranslationInBackground(
+          event.replyToken, 
+          gid, 
+          uid, 
+          masked, 
+          segments, 
+          rawLines, 
+          set, 
+          isChineseInput
+        ).catch(e => console.error("背景翻譯處理錯誤:", e));
+        
+        // 立即返回，讓 webhook 快速回應
+        return;
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
@@ -892,7 +948,6 @@ async function fetchImageUrlsByDate(gid, dateStr) {
   }
 }
 
-// 推送圖片到群組
 async function sendImagesToGroup(gid, dateStr) {
   const imgs = await fetchImageUrlsByDate(gid, dateStr);
   for (const url of imgs) {
