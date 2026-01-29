@@ -201,13 +201,13 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   try {
    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-5-mini", 
+      model: "gpt-4o-mini", 
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ],
-   //   temperature: 0.3 // 🔥 降低隨機性，提高穩定性
+      temperature: 0.3 // 🔥 降低隨機性，提高穩定性
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       timeout: 30000 // 🔥 30秒逾時
