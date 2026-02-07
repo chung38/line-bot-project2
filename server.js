@@ -319,8 +319,7 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 
   return restoreMentions(outLine, segments);
 }
-
-// 🔥 新增：背景處理翻譯（並發執行）
+// 🔥 方案二：完全並發但帶索引排序
 async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, set, isChineseInput) {
   const langOutputs = {};
   const allNeededLangs = new Set(set);
@@ -330,32 +329,31 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   }
 
   allNeededLangs.forEach(code => {
-    langOutputs[code] = [];
+    langOutputs[code] = new Array(rawLines.length);  // 🔥 預先分配陣列
   });
 
-  // 🔥 使用 Promise.all 並發處理所有翻譯任務
+  let targetLangs;
+  if (isChineseInput) {
+    targetLangs = [...set].filter(l => l !== "zh-TW");
+    if (targetLangs.length === 0) return;
+  } else {
+    targetLangs = ["zh-TW"];
+  }
+
+  // 🔥 並發處理所有行和語言，但記錄索引
   const translationTasks = [];
   
-  for (const line of rawLines) {
-    let targetLangs;
-    if (isChineseInput) {
-      targetLangs = [...set].filter(l => l !== "zh-TW");
-      if (targetLangs.length === 0) continue;
-    } else {
-      targetLangs = ["zh-TW"];
-    }
-
+  rawLines.forEach((line, lineIndex) => {  // 🔥 記錄行號
     for (const code of targetLangs) {
       translationTasks.push(
         translateLineSegments(line, code, gid, segments).then(translated => {
-          if (!langOutputs[code]) langOutputs[code] = [];
-          langOutputs[code].push(translated);
+          langOutputs[code][lineIndex] = translated;  // 🔥 按索引存放
         })
       );
     }
-  }
+  });
 
-  // 🔥 並發執行所有翻譯，設定25秒超時
+  // 並發執行所有翻譯，設定25秒超時
   await Promise.race([
     Promise.allSettled(translationTasks),
     new Promise((_, reject) => 
@@ -368,7 +366,11 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   let replyText = "";
   for (const code of allNeededLangs) {
     if (langOutputs[code] && langOutputs[code].length) {
-      replyText += `${langOutputs[code].join("\n")}\n\n`;
+      // 🔥 過濾掉 undefined（失敗的翻譯）
+      const validLines = langOutputs[code].filter(line => line);
+      if (validLines.length > 0) {
+        replyText += `${validLines.join("\n")}\n\n`;
+      }
     }
   }
   if (!replyText) replyText = "(尚無翻譯結果)";
@@ -377,7 +379,6 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
     .then(p => p.displayName)
     .catch(() => uid);
 
-  // 🔥 優先使用 replyMessage（免費），失敗才用 pushMessage
   try {
     await client.replyMessage(replyToken, {
       type: "text",
