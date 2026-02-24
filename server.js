@@ -118,8 +118,8 @@ const detectLang = (text) => {
   const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   if (totalLen > 0 && chineseLen / totalLen > 0.3) return 'zh-TW';
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
-  if (/[a-zA-Z]/.test(text)) return 'en';
-  if (/[\u0102-\u01B0\u1EA0-\u1EF9\u00C0-\u1EF9]/.test(text)) return 'vi';
+if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
+if (/[a-zA-Z]/.test(text)) return 'en';
   return 'en';
 };
 
@@ -201,7 +201,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   try {
    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-5-mini", 
+      model: "gpt-4o-mini", 
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
@@ -282,7 +282,6 @@ async function translateLineSegments(line, targetLang, gid, segments) {
   }
 
   let outLine = "";
-  const urlRegex = /(https?:\/\/[^\s]+)/gi;
 
   for (const seg of segs) {
     if (seg.type === "mention") {
@@ -292,6 +291,7 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 
     let lastIdx = 0;
     let urlMatch;
+      const urlRegex = /(https?:\/\/[^\s]+)/gi;
     while ((urlMatch = urlRegex.exec(seg.text)) !== null) {
       const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
       if (beforeUrl.trim()) {
