@@ -319,24 +319,35 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 
   return restoreMentions(outLine, segments);
 }
-// 🔥 方案二：完全並發但帶索引排序
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, set, isChineseInput) {
+// ✅ 函式宣告多一個 sourceLang 參數
+async function processTranslationInBackground(
+  replyToken, gid, uid, masked, segments, rawLines, set, isChineseInput, sourceLang
+) {
   const langOutputs = {};
-  const allNeededLangs = new Set(set);
-
-  if (!isChineseInput) {
+  
+  // ✅ 非中文輸入：只需要中文輸出
+  const allNeededLangs = new Set();
+  if (sourceLang === "zh-TW") {
+    // 中文輸入：照群組設定語言（排除中文）
+    [...set].forEach(code => {
+      if (code !== "zh-TW") allNeededLangs.add(code);
+    });
+  } else {
+    // 非中文輸入：一律翻成中文
     allNeededLangs.add("zh-TW");
   }
 
   allNeededLangs.forEach(code => {
-    langOutputs[code] = new Array(rawLines.length);  // 🔥 預先分配陣列
+    langOutputs[code] = new Array(rawLines.length);
   });
 
   let targetLangs;
-  if (isChineseInput) {
+  if (sourceLang === "zh-TW") {
+    // 中文輸入：翻成群組設定語言（排除中文）
     targetLangs = [...set].filter(l => l !== "zh-TW");
     if (targetLangs.length === 0) return;
   } else {
+    // 非中文輸入：只翻成中文
     targetLangs = ["zh-TW"];
   }
 
@@ -870,7 +881,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // 🔥 翻譯處理：改為背景執行
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
-        const isChineseInput = hasChinese(textForLangDetect);
+        //const isChineseInput = hasChinese(textForLangDetect);
+        const sourceLang = detectLang(textForLangDetect);
+        const isChineseInput = (sourceLang === "zh-TW");
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
@@ -891,7 +904,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
           segments, 
           rawLines, 
           set, 
-          isChineseInput
+          isChineseInput,
+          sourceLang
         ).catch(e => console.error("背景翻譯處理錯誤:", e));
         
         // 立即返回，讓 webhook 快速回應
