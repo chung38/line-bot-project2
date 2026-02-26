@@ -59,7 +59,7 @@ app.use(limiter);
 
 // === 快取與設定 ===
 const translationCache = new LRUCache({ max: 500, ttl: 24 * 60 * 60 * 1000 });
-const smartPreprocessCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
+//const smartPreprocessCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
 const groupLang = new Map();
 const groupInviter = new Map();
 const groupIndustry = new Map();
