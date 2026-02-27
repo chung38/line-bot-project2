@@ -323,34 +323,34 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 async function processTranslationInBackground(
   replyToken, gid, uid, masked, segments, rawLines, set, isChineseInput, sourceLang
 ) {
-  const langOutputs = {};
-  
+  const langOutputs = {};  
   // ✅ 非中文輸入：只需要中文輸出
   const allNeededLangs = new Set();
-  if (sourceLang === "zh-TW") {
-    // 中文輸入：照群組設定語言（排除中文）
-    [...set].forEach(code => {
-      if (code !== "zh-TW") allNeededLangs.add(code);
-    });
-  } else {
-    // 非中文輸入：一律翻成中文
-    allNeededLangs.add("zh-TW");
-  }
-
-  allNeededLangs.forEach(code => {
-    langOutputs[code] = new Array(rawLines.length);
+// ✅ 中文輸入：翻成群組設定語言（排除中文）
+if (sourceLang === "zh-TW") {
+  [...set].forEach(code => {
+    if (code !== "zh-TW") allNeededLangs.add(code);
   });
+} else {
+  // ✅ 非中文輸入：一定要有中文
+  allNeededLangs.add("zh-TW");
 
-  let targetLangs;
-  if (sourceLang === "zh-TW") {
-    // 中文輸入：翻成群組設定語言（排除中文）
-    targetLangs = [...set].filter(l => l !== "zh-TW");
-    if (targetLangs.length === 0) return;
-  } else {
-    // 非中文輸入：只翻成中文
-    targetLangs = ["zh-TW"];
-  }
+  // 同時翻成群組設定語言，但排除來源語言與中文
+  [...set].forEach(code => {
+    if (code !== "zh-TW" && code !== sourceLang) {
+      allNeededLangs.add(code);
+    }
+  });
+}
 
+// 為每個目標語言建立行陣列
+allNeededLangs.forEach(code => {
+  langOutputs[code] = new Array(rawLines.length);
+});
+
+// 實際要翻譯的語言清單（和 allNeededLangs 一樣即可）
+const targetLangs = [...allNeededLangs];
+if (targetLangs.length === 0) return;
   // 🔥 並發處理所有行和語言，但記錄索引
   const translationTasks = [];
   
