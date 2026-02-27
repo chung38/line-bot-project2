@@ -392,18 +392,24 @@ if (targetLangs.length === 0) return;
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
+const LANG_LABELS = {
+  zh-TW: "🇹🇼",
+  vi: "🇻🇳",
+  id: "🇮🇩",
+  th: "🇹🇭",
+  en: "🇬🇧"
+};
 
-  let replyText = "";
-  for (const code of allNeededLangs) {
-    if (langOutputs[code] && langOutputs[code].length) {
-      // 🔥 過濾掉 undefined（失敗的翻譯）
-      const validLines = langOutputs[code].filter(line => line);
-      if (validLines.length > 0) {
-        replyText += `${validLines.join("\n")}\n\n`;
-      }
+let replyText = "";
+for (const code of allNeededLangs) {
+  if (langOutputs[code] && langOutputs[code].length) {
+    const validLines = langOutputs[code].filter(line => line);
+    if (validLines.length > 0) {
+      const label = LANG_LABELS[code] || code;
+      replyText += `${label}：\n${validLines.join("\n")}\n\n`;
     }
   }
-  if (!replyText) replyText = "(尚無翻譯結果)";
+}  if (!replyText) replyText = "(尚無翻譯結果)";
 
   const userName = await client.getGroupMemberProfile(gid, uid)
     .then(p => p.displayName)
