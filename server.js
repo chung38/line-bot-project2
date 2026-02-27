@@ -393,7 +393,7 @@ if (targetLangs.length === 0) return;
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
 const LANG_LABELS = {
-  zh-TW: "🇹🇼",
+  "zh-TW": "🇹🇼",
   vi: "🇻🇳",
   id: "🇮🇩",
   th: "🇹🇭",
@@ -418,14 +418,14 @@ for (const code of allNeededLangs) {
   try {
     await client.replyMessage(replyToken, {
       type: "text",
-      text: `【${userName}】說：\n${replyText.trim()}`
+      text: `【${userName}】說：\n\n${replyText.trim()}`
     });
     console.log(`✅ 翻譯完成並使用 replyMessage 回覆`);
   } catch (e) {
     console.warn("⚠️ replyToken 過期，改用 pushMessage:", e.message);
     await client.pushMessage(gid, {
       type: "text",
-      text: `【${userName}】說：\n${replyText.trim()}`
+      text: `【${userName}】說：\n\n${replyText.trim()}`
     });
   }
 }
