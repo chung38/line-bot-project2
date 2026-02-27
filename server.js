@@ -128,13 +128,19 @@ function hasChinese(txt) {
 }
 function isOnlyEmojiOrWhitespace(txt) {
   if (!txt) return true;
-  // 去掉空白與常見標點
-  const cleaned = txt.replace(/[\s.,!?，。？！、:：;；"'（）【】《》\\[\\]()]/g, '');
-  // 若剩下的全部是 emoji，視為純圖示
-  const emojiRegex = /^\p{Extended_Pictographic}+$/u;
-  return cleaned !== '' && emojiRegex.test(cleaned);
-}
 
+  // 移除空白與常見標點
+  let s = txt.replace(/[\s.,!?，。？！、:：;；"'“”‘’（）【】《》\[\]()]/g, "");
+
+  // 移除 emoji 常見的組合控制字元：VS16、ZWJ
+  s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
+
+  // 若移除後為空，視為只有空白/標點
+  if (!s) return true;
+
+  // 剩下全部必須是 emoji
+  return /^\p{Extended_Pictographic}+$/u.test(s);
+}
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
@@ -895,15 +901,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // 🔥 翻譯處理：改為背景執行
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
+        if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
+           return;
+        }
         //const isChineseInput = hasChinese(textForLangDetect);
         const sourceLang = detectLang(textForLangDetect);
         const isChineseInput = (sourceLang === "zh-TW");
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
-        if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
-          return;
-}
         if (skipTranslatePattern.test(textForLangDetect)) {
            console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;
