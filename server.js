@@ -129,16 +129,12 @@ function hasChinese(txt) {
 function isOnlyEmojiOrWhitespace(txt) {
   if (!txt) return true;
 
-  // 移除空白與常見標點
-  let s = txt.replace(/[\s.,!?，。？！、:：;；"'“”‘’（）【】《》\[\]()]/g, "");
+  // 新增：括號包覆的 emoji 描述，例如 (雙手合十)
+  if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(txt.trim())) return true;
 
-  // 移除 emoji 常見的組合控制字元：VS16、ZWJ
+  let s = txt.replace(/[\s.,!?，。？！、:：;；"'""''（）【】《》\[\]()]/g, "");
   s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
-
-  // 若移除後為空，視為只有空白/標點
   if (!s) return true;
-
-  // 剩下全部必須是 emoji
   return /^\p{Extended_Pictographic}+$/u.test(s);
 }
 const isSymbolOrNum = txt =>
@@ -902,6 +898,10 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
         if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
+           return;
+        }
+        if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(textForLangDetect)) {
+           console.log("[info] 訊息為 emoji 描述括號格式，跳過翻譯");
            return;
         }
         //const isChineseInput = hasChinese(textForLangDetect);
