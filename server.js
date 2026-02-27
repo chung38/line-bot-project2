@@ -815,6 +815,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       }
 
       // === 🔥 優化後的文字訊息翻譯處理 ===
+      if (event.type === "message" && gid && event.message?.type !== "text") {
+         return;
+      }
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
 
