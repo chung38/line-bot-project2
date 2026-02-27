@@ -126,6 +126,14 @@ if (/[a-zA-Z]/.test(text)) return 'en';
 function hasChinese(txt) {
   return /[\u4e00-\u9fff]/.test(txt);
 }
+function isOnlyEmojiOrWhitespace(txt) {
+  if (!txt) return true;
+  // 去掉空白與常見標點
+  const cleaned = txt.replace(/[\s.,!?，。？！、:：;；"'（）【】《》\\[\\]()]/g, '');
+  // 若剩下的全部是 emoji，視為純圖示
+  const emojiRegex = /^\p{Extended_Pictographic}+$/u;
+  return cleaned !== '' && emojiRegex.test(cleaned);
+}
 
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
@@ -186,6 +194,9 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     `如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙、判斷。` +
     `所有翻譯結果請保留專業性，不添加解釋。`
   : "";
+  if (isOnlyEmojiOrWhitespace(text)) {
+    return text;
+  }
   let systemPrompt = customPrompt;
 
   if (!systemPrompt) {
@@ -887,7 +898,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
-        
+        if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
+          return;
+}
         if (skipTranslatePattern.test(textForLangDetect)) {
            console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;
