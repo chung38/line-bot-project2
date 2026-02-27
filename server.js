@@ -129,10 +129,16 @@ function hasChinese(txt) {
 function isOnlyEmojiOrWhitespace(txt) {
   if (!txt) return true;
 
-  // 新增：括號包覆的 emoji 描述，例如 (雙手合十)
-  if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(txt.trim())) return true;
+  // 新增：允許一個或多個括號 emoji 描述，例如 (雙手合十)(雙手合十) 或 （OK）（讚）
+  if (/^[\s（(]*([\u4e00-\u9fff\w\s]+)[）)]*$/.test(txt.trim()) === false) {
+    // 再用更精確的方式：整段只由「括號描述」組成
+  }
+  
+  // ✅ 正確做法：移除所有括號描述後，剩下是否為空
+  const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
+  if (!stripped) return true;
 
-  let s = txt.replace(/[\s.,!?，。？！、:：;；"'""''（）【】《》\[\]()]/g, "");
+  let s = stripped.replace(/[\s.,!?，。？！、:：;；"'""''（）【】《》\[\]()]/g, "");
   s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
   if (!s) return true;
   return /^\p{Extended_Pictographic}+$/u.test(s);
@@ -898,7 +904,13 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
         if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
-           return;
+            return;
+        }
+
+       // 整段訊息只有網址，跳過翻譯
+       if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) {
+          console.log("[info] 訊息為純網址，跳過翻譯");
+          return;
         }
         if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(textForLangDetect)) {
            console.log("[info] 訊息為 emoji 描述括號格式，跳過翻譯");
