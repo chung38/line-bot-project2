@@ -423,7 +423,7 @@ for (const code of allNeededLangs) {
     const validLines = langOutputs[code].filter(line => line);
     if (validLines.length > 0) {
       const label = LANG_LABELS[code] || code;
-      replyText += `${label}：\n${validLines.join("\n")}\n\n`;
+      replyText += `${label}：\n${validLines.join("\n")}\n`;
     }
   }
 }  if (!replyText) replyText = "(尚無翻譯結果)";
@@ -435,14 +435,14 @@ for (const code of allNeededLangs) {
   try {
     await client.replyMessage(replyToken, {
       type: "text",
-      text: `【${userName}】說：\n\n${replyText.trim()}`
+      text: `【${userName}】說：\n${replyText.trim()}`
     });
     console.log(`✅ 翻譯完成並使用 replyMessage 回覆`);
   } catch (e) {
     console.warn("⚠️ replyToken 過期，改用 pushMessage:", e.message);
     await client.pushMessage(gid, {
       type: "text",
-      text: `【${userName}】說：\n\n${replyText.trim()}`
+      text: `【${userName}】說：\n${replyText.trim()}`
     });
   }
 }
