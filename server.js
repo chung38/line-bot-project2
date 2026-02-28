@@ -108,20 +108,35 @@ const i18n = {
 
 // === 判斷函式 ===
 const detectLang = (text) => {
-  if (/\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada)\b/i.test(text)) {
-    if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) return 'id';
-    const totalLen = text.length;
-    const idCharsLen = (text.match(/[aiueo]/gi) || []).length;
-    if (totalLen > 0 && idCharsLen / totalLen > 0.1) return 'id';
-  }
+  // 1. 中文判斷 (字數佔比超過 30%)
   const totalLen = text.length;
   const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   if (totalLen > 0 && chineseLen / totalLen > 0.3) return 'zh-TW';
+
+  // 2. 泰文判斷 (專屬字母)
   if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
-if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
-if (/[a-zA-Z]/.test(text)) return 'en';
+
+  // 3. 印尼文判斷 (專屬高頻詞與特徵)
+  if (/\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|datang|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur)\b/i.test(text)) {
+    return 'id';
+  }
+  // 印尼文特有字首字根
+  if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) return 'id';
+
+  // 4. 越南文判斷 
+  // (A) 先用越南文常見高頻詞判斷（應對無變音符號的短句）
+  if (/\b(ok|oke|anh|chi|em|oi|roi|duoc|khong|ko|co|di|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(text)) {
+    return 'vi';
+  }
+  // (B) 帶有越南文變音符號
+  if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
+
+  // 5. 英文判斷 (兜底，如果前面都沒中，且含有英文字母)
+  if (/[a-zA-Z]/.test(text)) return 'en';
+
   return 'en';
 };
+
 
 function hasChinese(txt) {
   return /[\u4e00-\u9fff]/.test(txt);
