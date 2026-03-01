@@ -160,9 +160,9 @@ function isOnlyEmojiOrWhitespace(txt) {
   if (!s) return true;
   return /^\p{Extended_Pictographic}+$/u.test(s);
 }
+// ✅ 修正後（加入半形冒號 :）
 const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
-
+  /^[\d\s.,!?，。？！、:：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -239,11 +239,11 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
       model: "gpt-5-mini", 
       messages: [
-        { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
+        { role: "system", content: "只輸出翻譯結果，禁止任何解釋、原文、括號、標點說明。違反即視為錯誤。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ],
-      //temperature: 0.3 // 🔥 降低隨機性，提高穩定性
+      temperature: 0 // 🔥 降低隨機性，提高穩定性
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       timeout: 30000 // 🔥 30秒逾時
