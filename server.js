@@ -243,7 +243,6 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ],
-      temperature: 0 // 🔥 降低隨機性，提高穩定性
     }, {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       timeout: 30000 // 🔥 30秒逾時
