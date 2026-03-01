@@ -237,7 +237,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   try {
    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-5.1-mini", 
+      model: "gpt-5-mini", 
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
