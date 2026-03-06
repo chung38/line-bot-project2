@@ -929,7 +929,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
         // ✅ 新增：mention 後剩餘內容過短，跳過翻譯
         const hasMention = segments.length > 0;
-        if (hasMention && textForLangDetect.length < 4) {
+        if (hasMention && textForLangDetect.length < 2) {
             console.log("[info] mention 後剩餘內容過短，跳過翻譯");
             return;
         }
