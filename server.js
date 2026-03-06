@@ -927,15 +927,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // 🔥 翻譯處理：改為背景執行
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
-        // ✅ 新增：mention 後剩餘內容過短，跳過翻譯
-        const hasMention = segments.length > 0;
-        if (hasMention && textForLangDetect.length < 1) {
-            console.log("[info] mention 後剩餘內容過短，跳過翻譯");
-            return;
-        }
+      
         if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
             return;
         }
+        if (isSymbolOrNum(textForLangDetect.replace(/\n/g, ' '))) {
+            console.log("[info] mention 後只剩數字/符號，跳過翻譯");
+            return;
+        }
+        
 
        // 整段訊息只有網址，跳過翻譯
        if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) {
