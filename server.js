@@ -133,7 +133,6 @@ const detectLang = (text) => {
 
   // 5. 英文兜底
   if (/[a-zA-Z]/.test(text)) return 'en';
-
   return 'en';
 };
 function hasChinese(txt) {
@@ -145,8 +144,7 @@ function isOnlyEmojiOrWhitespace(txt) {
   // 新增：允許一個或多個括號 emoji 描述，例如 (雙手合十)(雙手合十) 或 （OK）（讚）
   if (/^[\s（(]*([\u4e00-\u9fff\w\s]+)[）)]*$/.test(txt.trim()) === false) {
     // 再用更精確的方式：整段只由「括號描述」組成
-  }
-  
+  } 
   // ✅ 正確做法：移除所有括號描述後，剩下是否為空
   const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
   if (!stripped) return true;
