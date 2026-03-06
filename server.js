@@ -928,11 +928,11 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
         // ✅ 新增：mention 後剩餘內容過短，跳過翻譯
-        if (textForLangDetect.length < 4) {
-        console.log("[info] mention 後剩餘內容過短，跳過翻譯");
+        const hasMention = segments.length > 0;
+        if (hasMention && textForLangDetect.length < 4) {
+            console.log("[info] mention 後剩餘內容過短，跳過翻譯");
             return;
         }
-
         if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
             return;
         }
