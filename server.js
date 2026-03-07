@@ -1072,3 +1072,117 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
+// === 後端管理 API ===
+import basicAuth from "express-basic-auth";
+
+// 簡單的管理員驗證（建議改用環境變數）
+const adminAuth = basicAuth({
+  users: { [process.env.ADMIN_USER || "admin"]: process.env.ADMIN_PASS || "changeme" },
+  challenge: true,
+  realm: "Admin Panel"
+});
+
+// 所有 /admin 路由都需要驗證
+app.use("/admin", adminAuth);
+
+// --- 群組列表 ---
+app.get("/admin/groups", (req, res) => {
+  const groups = [];
+  const allGids = new Set([
+    ...groupLang.keys(),
+    ...groupIndustry.keys(),
+    ...groupInviter.keys()
+  ]);
+  allGids.forEach(gid => {
+    groups.push({
+      gid,
+      langs: [...(groupLang.get(gid) || [])],
+      industry: groupIndustry.get(gid) || null,
+      inviter: groupInviter.get(gid) || null
+    });
+  });
+  res.json({ success: true, groups });
+});
+
+// --- 修改群組語言 ---
+// PATCH /admin/groups/:gid/langs
+// body: { langs: ["vi", "th"] }
+app.patch("/admin/groups/:gid/langs", express.json(), async (req, res) => {
+  const { gid } = req.params;
+  const { langs } = req.body;
+  if (!Array.isArray(langs)) return res.status(400).json({ error: "langs 必須是陣列" });
+
+  const validLangs = langs.filter(l => SUPPORTED_LANGS[l]);
+  groupLang.set(gid, new Set(validLangs));
+  try {
+    await saveLang();
+    res.json({ success: true, gid, langs: validLangs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- 修改群組行業別 ---
+// PATCH /admin/groups/:gid/industry
+// body: { industry: "紡紗及織布業" } 或 { industry: "" } 清除
+app.patch("/admin/groups/:gid/industry", express.json(), async (req, res) => {
+  const { gid } = req.params;
+  const { industry } = req.body;
+
+  if (industry) {
+    if (!INDUSTRY_LIST.includes(industry)) {
+      return res.status(400).json({ error: "無效的行業別", valid: INDUSTRY_LIST });
+    }
+    groupIndustry.set(gid, industry);
+  } else {
+    groupIndustry.delete(gid);
+  }
+  try {
+    await saveIndustry();
+    res.json({ success: true, gid, industry: industry || null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- 查詢/設定/刪除邀請人（控制誰有權限操作機器人）---
+// GET /admin/groups/:gid/inviter
+app.get("/admin/groups/:gid/inviter", (req, res) => {
+  const { gid } = req.params;
+  res.json({ gid, inviter: groupInviter.get(gid) || null });
+});
+
+// PUT /admin/groups/:gid/inviter
+// body: { userId: "Uxxxxxxx" }
+app.put("/admin/groups/:gid/inviter", express.json(), async (req, res) => {
+  const { gid } = req.params;
+  const { userId } = req.body;
+  if (!userId || typeof userId !== "string") {
+    return res.status(400).json({ error: "userId 必須為字串" });
+  }
+  groupInviter.set(gid, userId);
+  try {
+    await saveInviter();
+    res.json({ success: true, gid, inviter: userId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /admin/groups/:gid/inviter
+app.delete("/admin/groups/:gid/inviter", express.json(), async (req, res) => {
+  const { gid } = req.params;
+  groupInviter.delete(gid);
+  // 同步刪除 Firebase
+  try {
+    await db.collection("groupInviters").doc(gid).delete();
+    res.json({ success: true, gid, inviter: null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- 查看可用常數 ---
+app.get("/admin/constants", (req, res) => {
+  res.json({ SUPPORTED_LANGS, INDUSTRY_LIST });
+});
