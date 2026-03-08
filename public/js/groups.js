@@ -48,24 +48,71 @@ async function loadGroups() {
 
 function renderGroups() {
   const keyword = document.getElementById("keywordInput").value.trim().toLowerCase();
-  const filtered = groupItems.filter(item => [item.gid, item.inviter, item.industry, ...(item.langs || [])].join(" ").toLowerCase().includes(keyword));
+  const filtered = groupItems.filter(item =>
+    [
+      item.gid,
+      item.groupName,
+      item.inviter,
+      item.inviterName,
+      item.industry,
+      ...(item.langs || [])
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(keyword)
+  );
 
-  const html = filtered.length ? filtered.map(item => `
-    <div class="group-card">
-      <div class="group-card-head">
-        <div>
-          <div class="group-title">${escapeHtml(item.gid)}</div>
-          <div class="group-id">授權：${escapeHtml(item.inviter || "未設定")}</div>
+  const html = filtered.length
+    ? filtered.map(item => `
+      <div class="group-card">
+        <div class="group-card-head">
+          <div>
+            <div class="group-title">${escapeHtml(item.groupName || item.gid)}</div>
+            <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
+          </div>
+          <div class="group-actions">
+            <button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button>
+          </div>
         </div>
-        <div class="group-actions"><button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button></div>
+
+        <div class="group-row">
+          <span class="label">授權者</span>
+          <div>${item.inviterName ? escapeHtml(item.inviterName) : `<span class="muted">未設定</span>`}</div>
+        </div>
+
+        <div class="group-row">
+          <span class="label">授權ID</span>
+          <div>${item.inviter ? escapeHtml(item.inviter) : `<span class="muted">未設定</span>`}</div>
+        </div>
+
+        <div class="group-row">
+          <span class="label">語言</span>
+          <div class="tag-wrap">
+            ${(item.langs || []).length
+              ? item.langs.map(code => `<span class="tag">${escapeHtml(code)}</span>`).join("")
+              : `<span class="muted">未設定</span>`}
+          </div>
+        </div>
+
+        <div class="group-row">
+          <span class="label">行業別</span>
+          <div>${item.industry ? escapeHtml(item.industry) : `<span class="muted">未設定</span>`}</div>
+        </div>
+
+        <div class="group-row">
+          <span class="label">操作</span>
+          <div class="inline-actions">
+            <button onclick="sendMenuToGroup('${escapeHtml(item.gid)}')" class="btn-secondary">推送選單</button>
+            <button onclick="deleteGroupSettings('${escapeHtml(item.gid)}')" class="btn-danger">刪除設定</button>
+          </div>
+        </div>
       </div>
-      <div class="group-row"><span class="label">語言</span><div class="tag-wrap">${(item.langs || []).length ? item.langs.map(code => `<span class="tag">${escapeHtml(code)}</span>`).join("") : `<span class="muted">未設定</span>`}</div></div>
-      <div class="group-row"><span class="label">行業別</span><div>${item.industry ? escapeHtml(item.industry) : `<span class="muted">未設定</span>`}</div></div>
-      <div class="group-row"><span class="label">操作</span><div class="inline-actions"><button onclick="sendMenuToGroup('${escapeHtml(item.gid)}')" class="btn-secondary">推送選單</button><button onclick="deleteGroupSettings('${escapeHtml(item.gid)}')" class="btn-danger">刪除設定</button></div></div>
-    </div>`).join("") : `<div class="empty">沒有符合條件的群組</div>`;
+    `).join("")
+    : `<div class="empty">沒有符合條件的群組</div>`;
 
   document.getElementById("groupList").innerHTML = html;
 }
+
 
 function fillForm(item) {
   editingGid = item.gid;
