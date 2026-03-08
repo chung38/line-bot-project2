@@ -48,6 +48,7 @@ async function loadGroups() {
 
 function renderGroups() {
   const keyword = document.getElementById("keywordInput").value.trim().toLowerCase();
+
   const filtered = groupItems.filter(item =>
     [
       item.gid,
@@ -55,6 +56,7 @@ function renderGroups() {
       item.inviter,
       item.inviterName,
       item.industry,
+      item.memberCount != null ? String(item.memberCount) : "",
       ...(item.langs || [])
     ]
       .join(" ")
@@ -73,6 +75,11 @@ function renderGroups() {
           <div class="group-actions">
             <button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button>
           </div>
+        </div>
+
+        <div class="group-row">
+          <span class="label">群組人數</span>
+          <div>${item.memberCount != null ? escapeHtml(String(item.memberCount)) : `<span class="muted">未知</span>`}</div>
         </div>
 
         <div class="group-row">
@@ -113,14 +120,15 @@ function renderGroups() {
   document.getElementById("groupList").innerHTML = html;
 }
 
-
 function fillForm(item) {
   editingGid = item.gid;
   document.getElementById("gid").value = item.gid;
   document.getElementById("gid").disabled = true;
   document.getElementById("inviter").value = item.inviter || "";
   document.getElementById("industry").value = item.industry || "";
-  document.querySelectorAll('input[name="langs"]').forEach(el => { el.checked = (item.langs || []).includes(el.value); });
+  document.querySelectorAll('input[name="langs"]').forEach(el => {
+    el.checked = (item.langs || []).includes(el.value);
+  });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -130,6 +138,7 @@ async function saveGroupSettings(e) {
   const inviter = document.getElementById("inviter").value.trim();
   const industry = document.getElementById("industry").value;
   const langs = selectedLangs();
+
   if (!gid) return toast("群組 ID 不可空白", true);
 
   try {
@@ -147,8 +156,11 @@ async function saveGroupSettings(e) {
 
 async function deleteGroupSettings(gid) {
   if (!confirm(`確定刪除 ${gid} 的整組設定？`)) return;
+
   try {
-    await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, { method: "DELETE" });
+    await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
+      method: "DELETE"
+    });
     toast("已刪除群組設定");
     if (editingGid === gid) resetForm();
     await loadGroups();
@@ -173,21 +185,25 @@ window.editGroup = gid => {
   const item = groupItems.find(x => x.gid === gid);
   if (item) fillForm(item);
 };
+
 window.deleteGroupSettings = deleteGroupSettings;
 window.sendMenuToGroup = sendMenuToGroup;
 
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("groupForm").addEventListener("submit", saveGroupSettings);
+
   document.getElementById("deleteBtn").addEventListener("click", async () => {
     const gid = document.getElementById("gid").value.trim();
     if (!gid) return toast("請先輸入或選擇群組 ID", true);
     await deleteGroupSettings(gid);
   });
+
   document.getElementById("sendMenuBtn").addEventListener("click", async () => {
     const gid = document.getElementById("gid").value.trim();
     if (!gid) return toast("請先輸入或選擇群組 ID", true);
     await sendMenuToGroup(gid);
   });
+
   document.getElementById("resetBtn").addEventListener("click", resetForm);
   document.getElementById("keywordInput").addEventListener("input", renderGroups);
 
