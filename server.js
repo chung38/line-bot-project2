@@ -809,34 +809,39 @@ adminRouter.get("/groups", async (req, res) => {
 
         let groupName = null;
         let inviterName = null;
-        let groupNameError = null;
-        let inviterNameError = null;
+        let memberCount = null;
 
         try {
           const summary = await client.getGroupSummary(gid);
           groupName = summary?.groupName || null;
         } catch (e) {
-          groupNameError = e?.response?.data?.message || e.message;
+          console.warn(`取得群組名稱失敗 ${gid}:`, e.message);
+        }
+
+        try {
+          const countRes = await client.getGroupMembersCount(gid);
+          memberCount = countRes?.count ?? null;
+        } catch (e) {
+          console.warn(`取得群組人數失敗 ${gid}:`, e.message);
         }
 
         if (inviter) {
           try {
             const profile = await client.getGroupMemberProfile(gid, inviter);
-            inviterName = profile?.displayName || null;
+            inviterName = profile?.displayName || inviter;
           } catch (e) {
-            inviterNameError = e?.response?.data?.message || e.message;
+            console.warn(`取得授權者名稱失敗 ${gid}/${inviter}:`, e.message);
           }
         }
 
         return {
           gid,
           groupName,
-          groupNameError,
+          memberCount,
           langs: [...(groupLang.get(gid) || new Set())],
           industry: groupIndustry.get(gid) || null,
           inviter,
-          inviterName,
-          inviterNameError
+          inviterName
         };
       })
     );
