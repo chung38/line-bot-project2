@@ -801,14 +801,46 @@ adminRouter.get("/dashboard", async (req, res) => {
   }
 });
 
-adminRouter.get("/groups", (req, res) => {
-  const groups = getAllKnownGroupIds().map(gid => ({
-    gid,
-    langs: [...(groupLang.get(gid) || new Set())],
-    industry: groupIndustry.get(gid) || null,
-    inviter: groupInviter.get(gid) || null
-  }));
-  res.json({ success: true, groups });
+adminRouter.get("/groups", async (req, res) => {
+  try {
+    const groups = await Promise.all(
+      getAllKnownGroupIds().map(async (gid) => {
+        const inviter = groupInviter.get(gid) || null;
+
+        let groupName = gid;
+        let inviterName = inviter;
+
+        try {
+          const summary = await client.getGroupSummary(gid);
+          groupName = summary?.groupName || gid;
+        } catch (e) {
+          console.warn(`取得群組名稱失敗 ${gid}:`, e.message);
+        }
+
+        if (inviter) {
+          try {
+            const profile = await client.getGroupMemberProfile(gid, inviter);
+            inviterName = profile?.displayName || inviter;
+          } catch (e) {
+            console.warn(`取得授權者名稱失敗 ${gid}/${inviter}:`, e.message);
+          }
+        }
+
+        return {
+          gid,
+          groupName,
+          langs: [...(groupLang.get(gid) || new Set())],
+          industry: groupIndustry.get(gid) || null,
+          inviter,
+          inviterName
+        };
+      })
+    );
+
+    res.json({ success: true, groups });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 adminRouter.get("/groups/:gid", (req, res) => {
