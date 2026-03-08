@@ -1,54 +1,153 @@
+const { api, toast, escapeHtml } = window.AdminCommon;
 
-async function load(){
+let groupItems = [];
+let industries = [];
+let editingGid = null;
 
-const res = await fetch("/admin/groups")
-const data = await res.json()
-
-const keyword = document.getElementById("search").value
-
-const table = document.getElementById("table")
-table.innerHTML=""
-
-data.groups
-.filter(g=>g.groupId.includes(keyword))
-.forEach(g=>{
-
-const tr=document.createElement("tr")
-
-tr.innerHTML=`
-<td>${g.groupId}</td>
-<td><input id="l_${g.groupId}" value="${g.language||""}"></td>
-<td><input id="i_${g.groupId}" value="${g.industry||""}"></td>
-<td><input id="v_${g.groupId}" value="${g.inviter||""}"></td>
-<td><button onclick="save('${g.groupId}')">save</button></td>
-`
-
-table.appendChild(tr)
-
-})
-
+function selectedLangs() {
+  return [...document.querySelectorAll('input[name="langs"]:checked')].map(el => el.value);
 }
 
-async function save(groupId){
-
-const language=document.getElementById("l_"+groupId).value
-const industry=document.getElementById("i_"+groupId).value
-const inviter=document.getElementById("v_"+groupId).value
-
-const res=await fetch("/admin/group/update",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({groupId,language,industry,inviter})
-})
-
-const data=await res.json()
-
-if(data.success){
-alert("updated")
-}else{
-alert("error")
+function resetForm() {
+  editingGid = null;
+  document.getElementById("gid").value = "";
+  document.getElementById("gid").disabled = false;
+  document.getElementById("inviter").value = "";
+  document.getElementById("industry").value = "";
+  document.querySelectorAll('input[name="langs"]').forEach(el => el.checked = false);
 }
 
+function renderLanguageCheckboxes(supportedLangs) {
+  const html = Object.entries(supportedLangs)
+    .filter(([code]) => code !== "zh-TW")
+    .map(([code, label]) => `
+      <label class="checkbox-item">
+        <input type="checkbox" name="langs" value="${code}" />
+        <span>${escapeHtml(label)} (${code})</span>
+      </label>`).join("");
+  document.getElementById("langCheckboxes").innerHTML = html;
 }
 
-load()
+function renderIndustryOptions() {
+  document.getElementById("industry").innerHTML = `<option value="">不指定</option>` +
+    industries.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+}
+
+async function loadConstants() {
+  const data = await api("/admin/constants");
+  industries = data.industries || [];
+  renderLanguageCheckboxes(data.SUPPORTED_LANGS || {});
+  renderIndustryOptions();
+}
+
+async function loadGroups() {
+  const data = await api("/admin/groups");
+  groupItems = data.groups || [];
+  renderGroups();
+}
+
+function renderGroups() {
+  const keyword = document.getElementById("keywordInput").value.trim().toLowerCase();
+  const filtered = groupItems.filter(item => [item.gid, item.inviter, item.industry, ...(item.langs || [])].join(" ").toLowerCase().includes(keyword));
+
+  const html = filtered.length ? filtered.map(item => `
+    <div class="group-card">
+      <div class="group-card-head">
+        <div>
+          <div class="group-title">${escapeHtml(item.gid)}</div>
+          <div class="group-id">授權：${escapeHtml(item.inviter || "未設定")}</div>
+        </div>
+        <div class="group-actions"><button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button></div>
+      </div>
+      <div class="group-row"><span class="label">語言</span><div class="tag-wrap">${(item.langs || []).length ? item.langs.map(code => `<span class="tag">${escapeHtml(code)}</span>`).join("") : `<span class="muted">未設定</span>`}</div></div>
+      <div class="group-row"><span class="label">行業別</span><div>${item.industry ? escapeHtml(item.industry) : `<span class="muted">未設定</span>`}</div></div>
+      <div class="group-row"><span class="label">操作</span><div class="inline-actions"><button onclick="sendMenuToGroup('${escapeHtml(item.gid)}')" class="btn-secondary">推送選單</button><button onclick="deleteGroupSettings('${escapeHtml(item.gid)}')" class="btn-danger">刪除設定</button></div></div>
+    </div>`).join("") : `<div class="empty">沒有符合條件的群組</div>`;
+
+  document.getElementById("groupList").innerHTML = html;
+}
+
+function fillForm(item) {
+  editingGid = item.gid;
+  document.getElementById("gid").value = item.gid;
+  document.getElementById("gid").disabled = true;
+  document.getElementById("inviter").value = item.inviter || "";
+  document.getElementById("industry").value = item.industry || "";
+  document.querySelectorAll('input[name="langs"]').forEach(el => { el.checked = (item.langs || []).includes(el.value); });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function saveGroupSettings(e) {
+  e.preventDefault();
+  const gid = document.getElementById("gid").value.trim();
+  const inviter = document.getElementById("inviter").value.trim();
+  const industry = document.getElementById("industry").value;
+  const langs = selectedLangs();
+  if (!gid) return toast("群組 ID 不可空白", true);
+
+  try {
+    await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
+      method: "PUT",
+      body: JSON.stringify({ langs, industry, inviter })
+    });
+    toast("群組設定已儲存");
+    resetForm();
+    await loadGroups();
+  } catch (e) {
+    toast(`儲存失敗：${e.message}`, true);
+  }
+}
+
+async function deleteGroupSettings(gid) {
+  if (!confirm(`確定刪除 ${gid} 的整組設定？`)) return;
+  try {
+    await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, { method: "DELETE" });
+    toast("已刪除群組設定");
+    if (editingGid === gid) resetForm();
+    await loadGroups();
+  } catch (e) {
+    toast(`刪除失敗：${e.message}`, true);
+  }
+}
+
+async function sendMenuToGroup(gid) {
+  try {
+    await api(`/admin/groups/${encodeURIComponent(gid)}/send-menu`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    toast("已推送設定選單");
+  } catch (e) {
+    toast(`推送失敗：${e.message}`, true);
+  }
+}
+
+window.editGroup = gid => {
+  const item = groupItems.find(x => x.gid === gid);
+  if (item) fillForm(item);
+};
+window.deleteGroupSettings = deleteGroupSettings;
+window.sendMenuToGroup = sendMenuToGroup;
+
+document.addEventListener("DOMContentLoaded", async () => {
+  document.getElementById("groupForm").addEventListener("submit", saveGroupSettings);
+  document.getElementById("deleteBtn").addEventListener("click", async () => {
+    const gid = document.getElementById("gid").value.trim();
+    if (!gid) return toast("請先輸入或選擇群組 ID", true);
+    await deleteGroupSettings(gid);
+  });
+  document.getElementById("sendMenuBtn").addEventListener("click", async () => {
+    const gid = document.getElementById("gid").value.trim();
+    if (!gid) return toast("請先輸入或選擇群組 ID", true);
+    await sendMenuToGroup(gid);
+  });
+  document.getElementById("resetBtn").addEventListener("click", resetForm);
+  document.getElementById("keywordInput").addEventListener("input", renderGroups);
+
+  try {
+    await loadConstants();
+    await loadGroups();
+  } catch (e) {
+    toast(`初始化失敗：${e.message}`, true);
+  }
+});

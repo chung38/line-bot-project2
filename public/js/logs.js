@@ -1,26 +1,39 @@
+const { api, toast, escapeHtml, formatTime } = window.AdminCommon;
 
-async function load(){
+async function loadLogs() {
+  try {
+    const q = document.getElementById("logKeyword").value.trim();
+    const action = document.getElementById("logAction").value.trim();
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (action) params.set("action", action);
 
-const res = await fetch("/admin/logs")
-const data = await res.json()
+    const data = await api(`/admin/logs?${params.toString()}`);
+    const items = data.items || [];
 
-const tbody=document.getElementById("logs")
-tbody.innerHTML=""
-
-data.logs.forEach(l=>{
-
-const tr=document.createElement("tr")
-
-tr.innerHTML=`
-<td>${l.time}</td>
-<td>${l.event}</td>
-<td>${l.groupId||""}</td>
-`
-
-tbody.appendChild(tr)
-
-})
-
+    document.getElementById("logList").innerHTML = items.length ? `
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>時間</th><th>動作</th><th>內容</th><th>操作者</th></tr></thead>
+          <tbody>
+            ${items.map(item => `
+              <tr>
+                <td>${formatTime(item.createdAt)}</td>
+                <td><span class="tag">${escapeHtml(item.action || "-")}</span></td>
+                <td>${escapeHtml(item.detail || "-")}</td>
+                <td>${escapeHtml(item.actor || "-")}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>` : `<div class="empty">沒有符合條件的紀錄</div>`;
+  } catch (e) {
+    toast(`讀取失敗：${e.message}`, true);
+  }
 }
 
-load()
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("logSearchBtn").addEventListener("click", loadLogs);
+  document.getElementById("logKeyword").addEventListener("keydown", e => { if (e.key === "Enter") loadLogs(); });
+  document.getElementById("logAction").addEventListener("keydown", e => { if (e.key === "Enter") loadLogs(); });
+  loadLogs();
+});
