@@ -1,28 +1,50 @@
-
 <!DOCTYPE html>
-<html>
+<html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<title>Logs</title>
-<link rel="stylesheet" href="css/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>操作紀錄</title>
+  <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
-
-<h1>Webhook Logs</h1>
-
-<table>
-<thead>
-<tr>
-<th>Time</th>
-<th>Event</th>
-<th>Group</th>
-</tr>
-</thead>
-
-<tbody id="logs"></tbody>
-</table>
-
-<script src="js/logs.js"></script>
-
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">LINE BOT 管理台</div>
+      <nav class="nav">
+        <a class="nav-link" href="/index.html">Dashboard</a>
+        <a class="nav-link" href="/groups.html">群組設定</a>
+        <a class="nav-link" href="/industries.html">行業主檔</a>
+        <a class="nav-link active" href="/logs.html">操作紀錄</a>
+      </nav>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>操作紀錄</h1>
+          <p>查看管理頁對 Firestore 的異動紀錄</p>
+        </div>
+        <div class="auth-box">
+          <input id="authUser" type="text" placeholder="帳號" />
+          <input id="authPass" type="password" placeholder="密碼" />
+          <button id="saveAuthBtn">儲存登入</button>
+        </div>
+      </header>
+      <section class="panel">
+        <div class="panel-header"><h2>查詢條件</h2></div>
+        <div class="toolbar">
+          <input id="logKeyword" class="search-input" type="text" placeholder="搜尋關鍵字" />
+          <input id="logAction" class="search-input" type="text" placeholder="動作，例如 CREATE_INDUSTRY" />
+          <button id="logSearchBtn">查詢</button>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>紀錄列表</h2></div>
+        <div id="logList"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/js/common.js"></script>
+  <script src="/js/logs.js"></script>
 </body>
 </html>

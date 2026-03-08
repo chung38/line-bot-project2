@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>行業主檔</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">LINE BOT 管理台</div>
+      <nav class="nav">
+        <a class="nav-link" href="/index.html">Dashboard</a>
+        <a class="nav-link" href="/groups.html">群組設定</a>
+        <a class="nav-link active" href="/industries.html">行業主檔</a>
+        <a class="nav-link" href="/logs.html">操作紀錄</a>
+      </nav>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>行業主檔</h1>
+          <p>新增、修改、啟用/停用、刪除行業類別</p>
+        </div>
+        <div class="auth-box">
+          <input id="authUser" type="text" placeholder="帳號" />
+          <input id="authPass" type="password" placeholder="密碼" />
+          <button id="saveAuthBtn">儲存登入</button>
+        </div>
+      </header>
+      <section class="panel">
+        <div class="panel-header">
+          <h2 id="industryFormTitle">新增行業</h2>
+          <button id="industryResetBtn" class="btn-secondary">清空表單</button>
+        </div>
+        <form id="industryForm" class="form-grid">
+          <input type="hidden" id="industryId" />
+          <div class="form-group">
+            <label for="industryName">名稱</label>
+            <input id="industryName" type="text" placeholder="例如 建築營造業" required />
+          </div>
+          <div class="form-group">
+            <label for="sortOrder">排序</label>
+            <input id="sortOrder" type="number" value="9999" />
+          </div>
+          <div class="form-group">
+            <label class="checkbox-item">
+              <input id="industryEnabled" type="checkbox" checked />
+              <span>啟用</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>操作</label>
+            <div class="inline-actions"><button type="submit">儲存</button></div>
+          </div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>行業列表</h2>
+          <input id="industryKeyword" class="search-input" type="text" placeholder="搜尋行業名稱" />
+        </div>
+        <div id="industryList" class="list-grid"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/js/common.js"></script>
+  <script src="/js/industries.js"></script>
+</body>
+</html>

@@ -1,37 +1,47 @@
-
 <!DOCTYPE html>
-<html>
+<html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<title>LINE Bot Admin</title>
-<link rel="stylesheet" href="css/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LINE BOT 管理台</title>
+  <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
-
-<h1>Dashboard</h1>
-
-<div class="cards">
-<div class="card">
-<h2 id="total">0</h2>
-<p>Total Groups</p>
-</div>
-
-<div class="card">
-<h2 id="today">0</h2>
-<p>Today Added</p>
-</div>
-</div>
-
-<h2>Languages</h2>
-<pre id="langs"></pre>
-
-<h2>Industries</h2>
-<pre id="inds"></pre>
-
-<a href="groups.html">Manage Groups</a> |
-<a href="logs.html">Webhook Logs</a>
-
-<script src="js/dashboard.js"></script>
-
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">LINE BOT 管理台</div>
+      <nav class="nav">
+        <a class="nav-link active" href="/index.html">Dashboard</a>
+        <a class="nav-link" href="/groups.html">群組設定</a>
+        <a class="nav-link" href="/industries.html">行業主檔</a>
+        <a class="nav-link" href="/logs.html">操作紀錄</a>
+      </nav>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>Dashboard</h1>
+          <p>群組設定、行業主檔與操作紀錄總覽</p>
+        </div>
+        <div class="auth-box">
+          <input id="authUser" type="text" placeholder="帳號" />
+          <input id="authPass" type="password" placeholder="密碼" />
+          <button id="saveAuthBtn">儲存登入</button>
+        </div>
+      </header>
+      <section class="cards" id="statsCards"></section>
+      <section class="panel">
+        <div class="panel-header"><h2>語言使用統計</h2></div>
+        <div id="langUsage" class="tag-wrap"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>最近操作</h2></div>
+        <div id="recentLogs"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/js/common.js"></script>
+  <script src="/js/dashboard.js"></script>
 </body>
 </html>
