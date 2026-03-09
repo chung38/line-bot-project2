@@ -75,6 +75,10 @@ button:hover {
   margin-bottom: 20px;
 }
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
 .topbar > div:only-child {
   width: 100%;
 }
@@ -597,6 +601,20 @@ tr:last-child td {
     font-size: 13px;
   }
 
+  input[type="number"] {
+  width: 100%;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  outline: none;
+}
+
+input[type="number"]:focus {
+  border-color: rgba(59, 130, 246, 0.9);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
   .toast {
     left: 12px;
     right: 12px;
