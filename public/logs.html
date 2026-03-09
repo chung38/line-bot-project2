@@ -17,33 +17,23 @@
         <a class="nav-link active" href="/logs.html">操作紀錄</a>
       </nav>
     </aside>
+
     <main class="main">
       <header class="topbar">
         <div>
           <h1>操作紀錄</h1>
-          <p>查看管理頁對 Firestore 的異動紀錄</p>
-        </div>
-        <div class="auth-box">
-          <input id="authUser" type="text" placeholder="帳號" />
-          <input id="authPass" type="password" placeholder="密碼" />
-          <button id="saveAuthBtn">儲存登入</button>
+          <p>檢視管理者對群組與行業資料的操作紀錄</p>
         </div>
       </header>
+
       <section class="panel">
-        <div class="panel-header"><h2>查詢條件</h2></div>
-        <div class="toolbar">
-          <input id="logKeyword" class="search-input" type="text" placeholder="搜尋關鍵字" />
-          <input id="logAction" class="search-input" type="text" placeholder="動作，例如 CREATE_INDUSTRY" />
-          <button id="logSearchBtn">查詢</button>
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h2>紀錄列表</h2></div>
-        <div id="logList"></div>
+        <div id="logsApp"></div>
       </section>
     </main>
   </div>
+
   <div id="toast" class="toast"></div>
+
   <script src="/js/common.js"></script>
   <script src="/js/logs.js"></script>
 </body>
