@@ -24,16 +24,38 @@
           <h1>操作紀錄</h1>
           <p>檢視管理者對群組與行業資料的操作紀錄</p>
         </div>
-
-        <div class="auth-box auth-box-hidden" aria-hidden="true">
-          <input id="authUser" type="text" placeholder="帳號" tabindex="-1" />
-          <input id="authPass" type="password" placeholder="密碼" tabindex="-1" />
-          <button id="saveAuthBtn" type="button" tabindex="-1">儲存登入</button>
-        </div>
       </header>
 
       <section class="panel">
-        <div id="logsApp"></div>
+        <div class="panel-header">
+          <h2>查詢條件</h2>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="logKeyword">關鍵字</label>
+            <input id="logKeyword" type="text" placeholder="搜尋 動作 / 內容 / 操作者" />
+          </div>
+
+          <div class="form-group">
+            <label for="logAction">動作代碼</label>
+            <input id="logAction" type="text" placeholder="例如 CREATE_INDUSTRY" />
+          </div>
+
+          <div class="form-group full">
+            <div class="inline-actions">
+              <button id="logSearchBtn" type="button">查詢</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>操作紀錄列表</h2>
+        </div>
+
+        <div id="logList"></div>
       </section>
     </main>
   </div>
