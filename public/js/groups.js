@@ -3,6 +3,7 @@ const { api, toast, escapeHtml } = window.AdminCommon;
 let groupItems = [];
 let industries = [];
 let editingGid = null;
+let selectedGids = new Set();
 
 function selectedLangs() {
   return [...document.querySelectorAll('input[name="langs"]:checked')].map(el => el.value);
@@ -24,12 +25,14 @@ function renderLanguageCheckboxes(supportedLangs) {
       <label class="checkbox-item">
         <input type="checkbox" name="langs" value="${code}" />
         <span>${escapeHtml(label)} (${code})</span>
-      </label>`).join("");
+      </label>
+    `).join("");
   document.getElementById("langCheckboxes").innerHTML = html;
 }
 
 function renderIndustryOptions() {
-  document.getElementById("industry").innerHTML = `<option value="">不指定</option>` +
+  document.getElementById("industry").innerHTML =
+    `<option value="">不指定</option>` +
     industries.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
 }
 
@@ -43,13 +46,17 @@ async function loadConstants() {
 async function loadGroups() {
   const data = await api("/admin/groups");
   groupItems = data.groups || [];
+
+  const validGids = new Set(groupItems.map(x => x.gid));
+  selectedGids = new Set([...selectedGids].filter(gid => validGids.has(gid)));
+
   renderGroups();
 }
 
-function renderGroups() {
+function getFilteredGroups() {
   const keyword = document.getElementById("keywordInput").value.trim().toLowerCase();
 
-  const filtered = groupItems.filter(item =>
+  return groupItems.filter(item =>
     [
       item.gid,
       item.groupName,
@@ -63,12 +70,36 @@ function renderGroups() {
       .toLowerCase()
       .includes(keyword)
   );
+}
+
+function updateSelectedSummary(filtered) {
+  document.getElementById("selectedSummary").textContent =
+    `已選取 ${selectedGids.size} 筆，目前列表 ${filtered.length} 筆`;
+}
+
+function toggleGroupSelection(gid, checked) {
+  if (checked) selectedGids.add(gid);
+  else selectedGids.delete(gid);
+  updateSelectedSummary(getFilteredGroups());
+}
+
+function renderGroups() {
+  const filtered = getFilteredGroups();
 
   const html = filtered.length
     ? filtered.map(item => `
       <div class="group-card">
         <div class="group-card-head">
           <div>
+            <label class="checkbox-item" style="display:inline-flex; margin-bottom:10px;">
+              <input
+                type="checkbox"
+                ${selectedGids.has(item.gid) ? "checked" : ""}
+                onchange="toggleGroupSelection('${escapeHtml(item.gid)}', this.checked)"
+              />
+              <span>選取此群組</span>
+            </label>
+
             <div class="group-title">${escapeHtml(item.groupName || item.gid)}</div>
             <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
           </div>
@@ -118,6 +149,7 @@ function renderGroups() {
     : `<div class="empty">沒有符合條件的群組</div>`;
 
   document.getElementById("groupList").innerHTML = html;
+  updateSelectedSummary(filtered);
 }
 
 function fillForm(item) {
@@ -161,6 +193,7 @@ async function deleteGroupSettings(gid) {
     await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
       method: "DELETE"
     });
+    selectedGids.delete(gid);
     toast("已刪除群組設定");
     if (editingGid === gid) resetForm();
     await loadGroups();
@@ -181,6 +214,48 @@ async function sendMenuToGroup(gid) {
   }
 }
 
+function selectAllFilteredGroups() {
+  getFilteredGroups().forEach(item => selectedGids.add(item.gid));
+  renderGroups();
+}
+
+function clearSelectedGroups() {
+  selectedGids.clear();
+  renderGroups();
+}
+
+async function batchDeleteSelectedGroups() {
+  const gids = [...selectedGids];
+
+  if (!gids.length) return toast("請先勾選要刪除的群組", true);
+  if (!confirm(`確定批次刪除 ${gids.length} 個群組設定？`)) return;
+
+  let success = 0;
+  let failed = 0;
+
+  for (const gid of gids) {
+    try {
+      await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
+        method: "DELETE"
+      });
+      selectedGids.delete(gid);
+      if (editingGid === gid) resetForm();
+      success++;
+    } catch (e) {
+      console.error(`批次刪除失敗 ${gid}:`, e);
+      failed++;
+    }
+  }
+
+  await loadGroups();
+
+  if (failed === 0) {
+    toast(`批次刪除完成，共 ${success} 筆`);
+  } else {
+    toast(`批次刪除完成，成功 ${success} 筆，失敗 ${failed} 筆`, true);
+  }
+}
+
 window.editGroup = gid => {
   const item = groupItems.find(x => x.gid === gid);
   if (item) fillForm(item);
@@ -188,6 +263,7 @@ window.editGroup = gid => {
 
 window.deleteGroupSettings = deleteGroupSettings;
 window.sendMenuToGroup = sendMenuToGroup;
+window.toggleGroupSelection = toggleGroupSelection;
 
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("groupForm").addEventListener("submit", saveGroupSettings);
@@ -206,6 +282,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("resetBtn").addEventListener("click", resetForm);
   document.getElementById("keywordInput").addEventListener("input", renderGroups);
+  document.getElementById("selectAllBtn").addEventListener("click", selectAllFilteredGroups);
+  document.getElementById("clearSelectedBtn").addEventListener("click", clearSelectedGroups);
+  document.getElementById("batchDeleteBtn").addEventListener("click", batchDeleteSelectedGroups);
 
   try {
     await loadConstants();
