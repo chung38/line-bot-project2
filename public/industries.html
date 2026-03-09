@@ -24,16 +24,54 @@
           <h1>行業主檔</h1>
           <p>可新增、修改與停用行業別項目</p>
         </div>
-
-        <div class="auth-box auth-box-hidden" aria-hidden="true">
-          <input id="authUser" type="text" placeholder="帳號" tabindex="-1" />
-          <input id="authPass" type="password" placeholder="密碼" tabindex="-1" />
-          <button id="saveAuthBtn" type="button" tabindex="-1">儲存登入</button>
-        </div>
       </header>
 
       <section class="panel">
-        <div id="industryApp"></div>
+        <div class="panel-header">
+          <h2 id="industryFormTitle">新增行業</h2>
+          <button id="industryResetBtn" type="button" class="btn-secondary">清空表單</button>
+        </div>
+
+        <form id="industryForm" class="form-grid">
+          <input id="industryId" type="hidden" />
+
+          <div class="form-group">
+            <label for="industryName">行業名稱</label>
+            <input id="industryName" type="text" placeholder="請輸入行業名稱" required />
+          </div>
+
+          <div class="form-group">
+            <label for="sortOrder">排序</label>
+            <input id="sortOrder" type="number" value="9999" />
+          </div>
+
+          <div class="form-group full">
+            <label class="checkbox-item">
+              <input id="industryEnabled" type="checkbox" checked />
+              <span>啟用此行業</span>
+            </label>
+          </div>
+
+          <div class="form-group full">
+            <div class="inline-actions">
+              <button type="submit">儲存行業</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>行業列表</h2>
+          <input
+            id="industryKeyword"
+            class="search-input"
+            type="text"
+            placeholder="搜尋 行業名稱 / ID"
+          />
+        </div>
+
+        <div id="industryList" class="list-grid"></div>
       </section>
     </main>
   </div>
