@@ -71,6 +71,14 @@ button {
 button:hover {
   background: var(--primary-hover);
 }
+.topbar {
+  margin-bottom: 20px;
+}
+
+.topbar > div:only-child {
+  width: 100%;
+}
+
 
 .btn-secondary {
   background: var(--secondary);
