@@ -29,7 +29,7 @@
       <section class="panel">
         <div class="panel-header">
           <h2>編輯群組</h2>
-          <button id="resetBtn" class="btn-secondary">清空表單</button>
+          <button id="resetBtn" class="btn-secondary" type="button">清空表單</button>
         </div>
 
         <form id="groupForm" class="form-grid">
@@ -74,6 +74,15 @@
             placeholder="搜尋 群組名稱 / gid / 授權者 / 行業別 / 人數"
           />
         </div>
+
+        <div class="inline-actions" style="margin-bottom: 14px;">
+          <button id="selectAllBtn" type="button" class="btn-secondary">全選目前結果</button>
+          <button id="clearSelectedBtn" type="button" class="btn-secondary">清除選取</button>
+          <button id="batchDeleteBtn" type="button" class="btn-danger">批次刪除選取群組</button>
+        </div>
+
+        <div id="selectedSummary" class="muted" style="margin-bottom: 12px;">已選取 0 筆</div>
+
         <div id="groupList" class="list-grid"></div>
       </section>
     </main>
