@@ -416,11 +416,12 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
     );
 
     let out = res.data?.choices?.[0]?.message?.content?.trim() || "";
+
     out = out
       .split("\n")
-      .map(line => line.trim())
-      .filter(Boolean)
-      .join("\n");
+      .map(line => line.trimEnd())
+      .join("\n")
+      .trim();
 
     if (targetLang === "zh-TW") {
       const hasChinese = /[\u4e00-\u9fff]/.test(out);
@@ -455,6 +456,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
     return `[${text.substring(0, 20)}...翻譯失敗]`;
   }
 }
+
 async function translateLineSegments(line, targetLang, gid, segments) {
   const segs = [];
   let lastIndex = 0;
