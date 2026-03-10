@@ -6,10 +6,25 @@ window.AdminCommon = (() => {
     return btoa(binary);
   }
 
+  function getStoredUser() {
+    return localStorage.getItem("adminUser") || "admin";
+  }
+
+  function getStoredPass() {
+    return localStorage.getItem("adminPass") || "";
+  }
+
   function getAuth() {
-    const user = localStorage.getItem("adminUser") || "admin";
-    const pass = localStorage.getItem("adminPass") || "";
-    return "Basic " + utf8ToBase64(`${user}:${pass}`);
+    return "Basic " + utf8ToBase64(`${getStoredUser()}:${getStoredPass()}`);
+  }
+
+  function isHomePage() {
+    const p = location.pathname;
+    return p === "/" || p.endsWith("/index.html");
+  }
+
+  function goHome() {
+    location.href = "/index.html";
   }
 
   async function api(url, options = {}) {
@@ -24,8 +39,21 @@ window.AdminCommon = (() => {
 
     const text = await res.text();
     let data = null;
-    try { data = text ? JSON.parse(text) : null; }
-    catch { data = { message: text }; }
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { message: text };
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      localStorage.removeItem("adminPass");
+      if (!isHomePage()) {
+        alert("登入已失效或帳號密碼錯誤，請重新登入");
+        goHome();
+      }
+      throw new Error(data?.error || data?.message || "未授權");
+    }
 
     if (!res.ok) throw new Error(data?.error || data?.message || res.statusText);
     return data;
@@ -34,14 +62,28 @@ window.AdminCommon = (() => {
   function loadAuthInputs() {
     const u = document.getElementById("authUser");
     const p = document.getElementById("authPass");
-    if (u) u.value = localStorage.getItem("adminUser") || "admin";
-    if (p) p.value = localStorage.getItem("adminPass") || "";
+    if (u) u.value = getStoredUser();
+    if (p) p.value = getStoredPass();
   }
 
   function saveAuth() {
-    localStorage.setItem("adminUser", document.getElementById("authUser").value.trim());
-    localStorage.setItem("adminPass", document.getElementById("authPass").value);
+    const u = document.getElementById("authUser");
+    const p = document.getElementById("authPass");
+
+    if (!u || !p) return;
+
+    localStorage.setItem("adminUser", u.value.trim() || "admin");
+    localStorage.setItem("adminPass", p.value);
     toast("登入資訊已儲存");
+  }
+
+  function ensureLoginForInnerPages() {
+    if (isHomePage()) return;
+
+    const pass = getStoredPass();
+    if (!pass) {
+      goHome();
+    }
   }
 
   function toast(msg, isError = false) {
@@ -70,7 +112,9 @@ window.AdminCommon = (() => {
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    ensureLoginForInnerPages();
     loadAuthInputs();
+
     const btn = document.getElementById("saveAuthBtn");
     if (btn) btn.addEventListener("click", saveAuth);
   });
