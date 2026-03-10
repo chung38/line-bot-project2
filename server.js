@@ -751,8 +751,8 @@ const adminLimiter = rateLimit({
 
 const adminAuth = basicAuth({
   users: { [process.env.ADMIN_USER || "admin"]: process.env.ADMIN_PASS || "changeme" },
-  challenge: true,
-  realm: "Admin Panel"
+  challenge: false,
+  unauthorizedResponse: () => ({ success: false, error: "未登入或帳號密碼錯誤" })
 });
 
 app.use(express.static(path.join(__dirname, "public")));
