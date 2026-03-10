@@ -346,16 +346,35 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
   }
 }
 
-function buildTranslationPrompt(targetLang, industry) {
-  const industryPrompt = industry
-    ? `你是一位熟悉「${industry}」行業專用語的專業翻譯員。如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙、判斷。所有翻譯結果請保留專業性，不添加解釋。`
-    : "";
+function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
+  const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
-  if (targetLang === "zh-TW") {
-    return `你是一位台灣工廠專業人工翻譯，請完整且忠實地將下列內容每一行都翻譯成繁體中文（無論原文內容是人名、代號、簡稱、職稱、分工），每行都不可照抄原文、需以中文翻出，如無可翻譯則音譯之；換行、標點、數字須依原樣保留。不能加任何解釋、標註或括號。幣別符號（如「$」）請保留原樣。${industryPrompt}`;
-  }
+  const industryContext = industry
+    ? `此對話來自「${industry}」相關的工作群組。`
+    : "此對話來自工廠工作群組。";
 
-  return `你是一位專業人工翻譯員。請把下列每一行都強制且忠實地翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不可以混用任何原文字或華語。不論內容為人名、代號、職稱、分工、簡稱，都要翻譯或音譯，若無標準譯名請用當地通用寫法或音譯（不可留原文）。原有換行、標點、格式均須保留。不加說明、註記或括號。幣別符號（如「$」）要保留。${industryPrompt}`;
+  return `
+你是一位在台灣工廠工作的專業翻譯員，
+熟悉外籍移工在工作群組的溝通方式。
+
+${industryContext}
+
+翻譯規則：
+1. 先理解句子在工作現場的意思，再翻譯
+2. 工廠職位、設備、流程需依照工作語境翻譯
+3. 不使用日常生活語言直譯
+4. 產品編號、機台號、批號、型號必須保留原樣
+   例如：PS1486-8、156、468Y
+5. 保留原本的換行格式
+6. 不添加任何解釋或說明
+7. 若是人名、代號或無標準譯名，可依語境音譯或保留必要識別內容
+8. 幣別符號、數字、日期、時間與網址請保留原樣
+${forceStrict && targetLang === "zh-TW" ? "9. 必須輸出繁體中文；不可整句原樣照抄；但產品編號、機台號、批號、型號、網址仍須保留原樣" : ""}
+
+請翻譯成：${langLabel}
+
+只輸出翻譯結果。
+`.trim();
 }
 
 async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, customPrompt = "") {
@@ -376,9 +395,18 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       {
         model: "gpt-4.1-mini",
         messages: [
-          { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text }
+          {
+            role: "system",
+            content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。"
+          },
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: text
+          }
         ]
       },
       {
@@ -388,12 +416,19 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
     );
 
     let out = res.data?.choices?.[0]?.message?.content?.trim() || "";
-    out = out.split("\n").map(line => line.trim()).filter(Boolean).join("\n");
+    out = out
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean)
+      .join("\n");
 
     if (targetLang === "zh-TW") {
-      if (out === text.trim() || !/[\u4e00-\u9fff]/.test(out)) {
+      const hasChinese = /[\u4e00-\u9fff]/.test(out);
+      const unchanged = out === text.trim();
+
+      if (unchanged || !hasChinese) {
         if (retry < 2) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常用通行法或漢字音譯。${industry ? `你同時熟悉「${industry}」產業術語。` : ""}`;
+          const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
           return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         }
         out = "（翻譯異常，請稍後再試）";
@@ -420,7 +455,6 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
     return `[${text.substring(0, 20)}...翻譯失敗]`;
   }
 }
-
 async function translateLineSegments(line, targetLang, gid, segments) {
   const segs = [];
   let lastIndex = 0;
