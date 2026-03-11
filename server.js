@@ -394,7 +394,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4.1-mini",
-        temperature: 0.1,
+        temperature: 0.2,
         messages: [
           {
             role: "system",
