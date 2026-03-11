@@ -553,23 +553,21 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 }
 
 async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang) {
-const allNeededLangs = new Set();
-const langOutputs = {};
+  const allNeededLangs = new Set();
+  const langOutputs = {};
 
-const mergedText = rawLines.join("\n");
-const pureChineseInput = isPureChineseMessage(mergedText);
+  const mergedText = rawLines.join("\n");
+  const pureChineseInput = isPureChineseMessage(mergedText);
 
-if (!pureChineseInput) {
-  allNeededLangs.add("zh-TW");
-}
-
-[...langSet].forEach(code => {
-  if (code === "zh-TW") return;
-  if (code === sourceLang) return;
-  allNeededLangs.add(code);
-});
-
+  if (!pureChineseInput) {
+    allNeededLangs.add("zh-TW");
   }
+
+  [...langSet].forEach(code => {
+    if (code === "zh-TW") return;
+    if (code === sourceLang) return;
+    allNeededLangs.add(code);
+  });
 
   const targetLangs = [...allNeededLangs];
   if (!targetLangs.length) return;
@@ -591,22 +589,26 @@ if (!pureChineseInput) {
 
   await Promise.race([
     Promise.allSettled(tasks),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("Translation timeout")), 25000))
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Translation timeout")), 25000)
+    )
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
 
   let replyText = "";
   for (const code of targetLangs) {
-    const lines = (langOutputs[code] || []).filter(Boolean);
+    const lines = (langOutputs[code] || []).filter(line => line !== undefined && line !== null && line !== "");
     if (!lines.length) continue;
-    replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n`;
+    replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
   }
 
   if (!replyText.trim()) return;
+
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
 }
+
 
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
