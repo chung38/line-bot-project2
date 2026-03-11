@@ -557,9 +557,17 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   const langOutputs = {};
 
   const mergedText = rawLines.join("\n");
-  const pureChineseInput = isPureChineseMessage(mergedText);
+  const normalizedMergedText = normalizeTextForLangDetect(mergedText);
 
-  if (!pureChineseInput) {
+  const chineseLen = (normalizedMergedText.match(/[\u4e00-\u9fff]/g) || []).length;
+  const thaiLen = (normalizedMergedText.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const viCharLen = (normalizedMergedText.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
+
+  const foreignLen = thaiLen + viCharLen + latinLen;
+  const isChineseDominant = chineseLen >= 4 && chineseLen >= foreignLen;
+
+  if (!isChineseDominant) {
     allNeededLangs.add("zh-TW");
   }
 
@@ -598,7 +606,9 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
 
   let replyText = "";
   for (const code of targetLangs) {
-    const lines = (langOutputs[code] || []).filter(line => line !== undefined && line !== null && line !== "");
+    const lines = (langOutputs[code] || []).filter(
+      line => line !== undefined && line !== null && line !== ""
+    );
     if (!lines.length) continue;
     replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
   }
@@ -608,7 +618,6 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
 }
-
 
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
