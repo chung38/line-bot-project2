@@ -140,30 +140,69 @@ function isOnlyEmojiOrWhitespace(txt = "") {
 function isSymbolOrNum(txt = "") {
   return /^[\d\s.,!?，。？！、:：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
-
+function normalizeTextForLangDetect(text = "") {
+  return String(text)
+    .replace(/__MENTION_\d+__/g, " ")
+    .replace(/@[^\s@，,。、:：;；!?！()（）\[\]{}【】]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 function detectLang(text = "") {
-  const totalLen = text.length;
-  if (!totalLen) return "en";
+  const cleaned = normalizeTextForLangDetect(text);
+  if (!cleaned) return "en";
 
-  const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  if (chineseLen / totalLen > 0.3 || chineseLen >= 2) return "zh-TW";
+  const totalLen = cleaned.length || 1;
 
-  const thaiLen = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
-  if (thaiLen / totalLen > 0.3) return "th";
+  const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
+  const thaiLen = (cleaned.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const viCharLen = (cleaned.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  const latinLen = (cleaned.match(/[a-zA-Z]/g) || []).length;
 
-  if (/\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|datang|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(text)) {
-    return "id";
-  }
-  if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) return "id";
-  if (/\w+(nya|kan|lah|pun)\b/i.test(text)) return "id";
+  const chineseRatio = chineseLen / totalLen;
+  const thaiRatio = thaiLen / totalLen;
 
-  if (/\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(text)) {
+  if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
+
+  if (
+    /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
+    viCharLen >= 2
+  ) {
     return "vi";
   }
-  if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return "vi";
 
-  if (/[a-zA-Z]/.test(text)) return "en";
+  if (
+    /\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|datang|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(cleaned) ||
+    /\b(di|ke|me|ber|ter)\w+\b/i.test(cleaned) ||
+    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
+  ) {
+    return "id";
+  }
+
+  if (chineseRatio > 0.45 && chineseLen >= 4) return "zh-TW";
+
+  if (latinLen > 0) return "en";
+
+  if (chineseLen >= 4) return "zh-TW";
+
   return "en";
+}
+
+function isPureChineseMessage(text = "") {
+  const cleaned = normalizeTextForLangDetect(text);
+  if (!cleaned) return false;
+
+  const compact = cleaned.replace(/\s+/g, "");
+  if (!compact) return false;
+
+  const chineseLen = (compact.match(/[\u4e00-\u9fff]/g) || []).length;
+  const thaiLen = (compact.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const viCharLen = (compact.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  const latinLen = (compact.match(/[a-zA-Z]/g) || []).length;
+
+  const foreignLen = thaiLen + viCharLen + latinLen;
+  const chineseRatio = chineseLen / (compact.length || 1);
+
+  return chineseLen >= 4 && chineseRatio >= 0.6 && foreignLen === 0;
 }
 
 function extractMentionsFromLineMessage(message) {
@@ -514,20 +553,22 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 }
 
 async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang) {
-  const allNeededLangs = new Set();
-  const langOutputs = {};
+const allNeededLangs = new Set();
+const langOutputs = {};
 
-  if (sourceLang === "zh-TW") {
-    [...langSet].forEach(code => {
-      if (code !== "zh-TW") allNeededLangs.add(code);
-    });
-  } else {
-    allNeededLangs.add("zh-TW");
-    [...langSet].forEach(code => {
-      if (code !== "zh-TW" && code !== sourceLang) {
-        allNeededLangs.add(code);
-      }
-    });
+const mergedText = rawLines.join("\n");
+const pureChineseInput = isPureChineseMessage(mergedText);
+
+if (!pureChineseInput) {
+  allNeededLangs.add("zh-TW");
+}
+
+[...langSet].forEach(code => {
+  if (code === "zh-TW") return;
+  if (code === sourceLang) return;
+  allNeededLangs.add(code);
+});
+
   }
 
   const targetLangs = [...allNeededLangs];
@@ -1216,8 +1257,7 @@ async function handleEvent(event) {
       }
 
       const { masked, segments } = extractMentionsFromLineMessage(event.message);
-      const textForLangDetect = masked.replace(/__MENTION_\d+__/g, "").trim();
-
+      const textForLangDetect = normalizeTextForLangDetect(masked);
       if (isOnlyEmojiOrWhitespace(textForLangDetect)) return;
       if (isSymbolOrNum(textForLangDetect.replace(/\n/g, " "))) return;
       if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) return;
