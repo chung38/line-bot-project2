@@ -243,7 +243,7 @@ function extractMentionsFromLineMessage(message) {
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
-    restored = restored.replace(new RegExp(seg.key, "g"), seg.text);
+    restored = restored.replace(new RegExp(seg.key, "g"), `${seg.text} `);
   });
   return restored;
 }
