@@ -18,8 +18,8 @@ const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
   "OPENAI_API_KEY",
-  "ECPAY_HASH_KEY",
-  "ECPAY_HASH_IV",
+  //"ECPAY_HASH_KEY",
+ // "ECPAY_HASH_IV",
   "FIREBASE_CONFIG"
 ];
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
