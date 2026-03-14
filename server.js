@@ -121,38 +121,6 @@ const i18n = {
     invalidUserId: "❌ userId 格式不正確"
   }
 };
-function ecpayUrlEncodeDotNet(str = "") {
-  return encodeURIComponent(str)
-    .toLowerCase()
-    .replace(/%20/g, "+")
-    .replace(/%2d/g, "-")
-    .replace(/%5f/g, "_")
-    .replace(/%2e/g, ".")
-    .replace(/%21/g, "!")
-    .replace(/%2a/g, "*")
-    .replace(/%28/g, "(")
-    .replace(/%29/g, ")");
-}
-
-function generateEcpayCheckMacValue(params = {}, hashKey, hashIV) {
-  const data = { ...params };
-  delete data.CheckMacValue;
-
-  const sortedKeys = Object.keys(data).sort((a, b) => a.localeCompare(b));
-  const query = sortedKeys.map(key => `${key}=${data[key] ?? ""}`).join("&");
-  const raw = `HashKey=${hashKey}&${query}&HashIV=${hashIV}`;
-  const encoded = ecpayUrlEncodeDotNet(raw);
-  return crypto.createHash("sha256").update(encoded).digest("hex").toUpperCase();
-}
-
-function verifyEcpayMac(params = {}, mac = "") {
-  const hashKey = process.env.ECPAY_HASH_KEY || "";
-  const hashIV = process.env.ECPAY_HASH_IV || "";
-  if (!hashKey || !hashIV || !mac) return false;
-
-  const expected = generateEcpayCheckMacValue(params, hashKey, hashIV);
-  return expected === String(mac).toUpperCase();
-}
 
 function getEnabledIndustryNames() {
   return industryMasterDocs
@@ -534,7 +502,49 @@ async function markPaymentFailed(userId, tradeNo = "") {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 }
-async function getPaymentOrderByTradeNo(tradeNo) {
+function ecpayUrlEncodeDotNet(str = "") {
+  return encodeURIComponent(str)
+    .replace(/%20/g, "+")
+    .replace(/%2D/g, "-")
+    .replace(/%5F/g, "_")
+    .replace(/%2E/g, ".")
+    .replace(/%21/g, "!")
+    .replace(/%2A/g, "*")
+    .replace(/%28/g, "(")
+    .replace(/%29/g, ")")
+    .toLowerCase();
+}
+
+function generateEcpayCheckMacValue(params = {}, hashKey, hashIV) {
+  const data = { ...params };
+  delete data.CheckMacValue;
+
+  const sorted = Object.keys(data)
+    .sort((a, b) => a.localeCompare(b))
+    .map(key => `${key}=${data[key] ?? ""}`)
+    .join("&");
+
+  const raw = `HashKey=${hashKey}&${sorted}&HashIV=${hashIV}`;
+  const encoded = ecpayUrlEncodeDotNet(raw);
+
+  return crypto
+    .createHash("sha256")
+    .update(encoded)
+    .digest("hex")
+    .toUpperCase();
+}
+
+function verifyEcpayMac(params = {}, checkMacValue = "") {
+  const hashKey = process.env.ECPAY_HASH_KEY || "";
+  const hashIV = process.env.ECPAY_HASH_IV || "";
+
+  if (!hashKey || !hashIV || !checkMacValue) return false;
+
+  const expected = generateEcpayCheckMacValue(params, hashKey, hashIV);
+  return expected === String(checkMacValue).trim().toUpperCase();
+}
+
+  async function getPaymentOrderByTradeNo(tradeNo) {
   if (!tradeNo) return null;
   const doc = await db.collection("paymentOrders").doc(tradeNo).get();
   return doc.exists ? doc.data() : null;
