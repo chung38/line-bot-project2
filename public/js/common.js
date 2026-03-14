@@ -55,7 +55,10 @@ window.AdminCommon = (() => {
       throw new Error(data?.error || data?.message || "未授權");
     }
 
-    if (!res.ok) throw new Error(data?.error || data?.message || res.statusText);
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || res.statusText);
+    }
+
     return data;
   }
 
@@ -69,7 +72,6 @@ window.AdminCommon = (() => {
   function saveAuth() {
     const u = document.getElementById("authUser");
     const p = document.getElementById("authPass");
-
     if (!u || !p) return;
 
     localStorage.setItem("adminUser", u.value.trim() || "admin");
@@ -79,7 +81,6 @@ window.AdminCommon = (() => {
 
   function ensureLoginForInnerPages() {
     if (isHomePage()) return;
-
     const pass = getStoredPass();
     if (!pass) {
       goHome();
@@ -91,7 +92,9 @@ window.AdminCommon = (() => {
     if (!el) return;
     el.textContent = msg;
     el.className = "toast show" + (isError ? " error" : "");
-    setTimeout(() => { el.className = "toast"; }, 2500);
+    setTimeout(() => {
+      el.className = "toast";
+    }, 2500);
   }
 
   function formatTime(value) {
@@ -108,7 +111,7 @@ window.AdminCommon = (() => {
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+      .replaceAll("'", "&#39;");
   }
 
   document.addEventListener("DOMContentLoaded", () => {
