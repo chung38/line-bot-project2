@@ -453,29 +453,12 @@ async function activatePaidSubscription(userId, {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
- if (action === "activate") {
-  const snap = await ref.get();
-  const payload = {
-    userId,
-    status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
-    plan,
-    currentPeriodEnd: end,
-    maxGroups: Number(maxGroups || 0),
-    monthlyQuota: Number(monthlyQuota || 0),
-    manualOverride: MANUAL_OVERRIDE.NONE,
-    manualReason: reason || "admin manual activate",
-    lastPaymentStatus: "manual",
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
-
   if (!snap.exists) {
     payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
   }
 
   await ref.set(payload, { merge: true });
 }
-
-
 
 async function markPaymentFailed(userId, tradeNo = "") {
   const ref = db.collection("userSubscriptions").doc(userId);
