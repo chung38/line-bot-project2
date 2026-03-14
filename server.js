@@ -364,6 +364,10 @@ async function canUseGroup(gid) {
     return { ok: false, code: "FORCE_INACTIVE", inviterUserId, sub, message: "此授權已被後台手動停用。" };
   }
 
+  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
+    return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub };
+  }
+
   const groupsCount = await countGroupsByInviter(inviterUserId);
   const usage = await getMonthlyUsage(inviterUserId);
 
@@ -426,11 +430,18 @@ async function activatePaidSubscription(userId, {
   maxGroups = 5,
   monthlyQuota = 3000,
 } = {}) {
-  const now = new Date();
-  const end = new Date(now);
-  end.setMonth(end.getMonth() + months);
+  const ref = db.collection("userSubscriptions").doc(userId);
+  const snap = await ref.get();
+  const current = snap.exists ? snap.data() : null;
 
-  await db.collection("userSubscriptions").doc(userId).set({
+  const now = new Date();
+  const currentEnd = toDateSafe(current?.currentPeriodEnd);
+  const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
+
+  const end = new Date(baseDate);
+  end.setMonth(end.getMonth() + Number(months || 1));
+
+  const payload = {
     userId,
     status: SUBSCRIPTION_STATUS.ACTIVE,
     plan,
@@ -442,12 +453,36 @@ async function activatePaidSubscription(userId, {
     lastPaymentStatus: "paid",
     ecpayTradeNo: tradeNo,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+  };
+
+  if (!snap.exists) {
+    payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+
+  await ref.set(payload, { merge: true });
 }
 
+
 async function markPaymentFailed(userId, tradeNo = "") {
-  await db.collection("userSubscriptions").doc(userId).set({
+  const ref = db.collection("userSubscriptions").doc(userId);
+  const snap = await ref.get();
+  const current = snap.exists ? snap.data() : null;
+
+  const isManualProtected =
+    current?.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE ||
+    current?.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE;
+
+  if (isManualProtected) {
+    await ref.set({
+      userId,
+      lastPaymentStatus: "failed",
+      ecpayTradeNo: tradeNo,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return;
+  }
+
+  await ref.set({
     userId,
     status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
     lastPaymentStatus: "failed",
@@ -455,6 +490,12 @@ async function markPaymentFailed(userId, tradeNo = "") {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 }
+async function getPaymentOrderByTradeNo(tradeNo) {
+  if (!tradeNo) return null;
+  const doc = await db.collection("paymentOrders").doc(tradeNo).get();
+  return doc.exists ? doc.data() : null;
+}
+
 
 function getAllKnownGroupIds() {
   return [...new Set([
@@ -1482,19 +1523,40 @@ adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
 app.use("/admin", adminRouter);
 app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async (req, res) => {
   try {
-    const { userId, MerchantTradeNo, RtnCode } = req.body;
+    const { MerchantTradeNo, RtnCode, CheckMacValue } = req.body;
+
+    // TODO: 這裡補上你的 ECPay CheckMacValue 驗證
+    // const isValid = verifyEcpayMac(req.body, CheckMacValue);
+    const isValid = true;
+    if (!isValid) {
+      return res.status(400).send("0|INVALID");
+    }
+
+    const order = await getPaymentOrderByTradeNo(MerchantTradeNo);
+    if (!order?.userId) {
+      return res.status(400).send("0|ORDER_NOT_FOUND");
+    }
+
+    const userId = order.userId;
 
     if (RtnCode === "1") {
       await activatePaidSubscription(userId, {
         tradeNo: MerchantTradeNo,
-        plan: "monthly",
-        months: 1,
-        maxGroups: 5,
-        monthlyQuota: 3000,
+        plan: order.plan || "monthly",
+        months: Number(order.months || 1),
+        maxGroups: Number(order.maxGroups || 5),
+        monthlyQuota: Number(order.monthlyQuota || 3000),
       });
     } else {
       await markPaymentFailed(userId, MerchantTradeNo);
     }
+
+    await db.collection("paymentOrders").doc(MerchantTradeNo).set({
+      callbackBody: req.body,
+      callbackAt: admin.firestore.FieldValue.serverTimestamp(),
+      paymentResult: RtnCode === "1" ? "paid" : "failed",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
 
     res.send("1|OK");
   } catch (e) {
@@ -1502,6 +1564,7 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
     res.status(500).send("0|ERROR");
   }
 });
+
 
 app.post("/webhook", webhookLimiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
