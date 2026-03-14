@@ -1565,6 +1565,93 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const ref = db.collection("userSubscriptions").doc(userId);
+    const snap = await ref.get();
+    const current = snap.exists ? snap.data() : null;
+
+    const status = String(req.body?.status || current?.status || SUBSCRIPTION_STATUS.INACTIVE).trim();
+    const plan = String(req.body?.plan || current?.plan || "custom").trim() || "custom";
+    const manualOverride = String(req.body?.manualOverride || current?.manualOverride || MANUAL_OVERRIDE.NONE).trim();
+    const manualReason = String(req.body?.manualReason || "");
+    const lastPaymentStatus = String(req.body?.lastPaymentStatus || current?.lastPaymentStatus || "");
+
+    const maxGroups = Number(req.body?.maxGroups ?? current?.maxGroups ?? 0);
+    const monthlyQuota = Number(req.body?.monthlyQuota ?? current?.monthlyQuota ?? 0);
+
+    function parseDateInput(value) {
+      if (value === "" || value === null || value === undefined) return null;
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    const trialEndsAt = parseDateInput(req.body?.trialEndsAt);
+    const currentPeriodEnd = parseDateInput(req.body?.currentPeriodEnd);
+
+    if (!Object.values(SUBSCRIPTION_STATUS).includes(status)) {
+      return res.status(400).json({ success: false, error: "invalid status" });
+    }
+
+    if (!Object.values(MANUAL_OVERRIDE).includes(manualOverride)) {
+      return res.status(400).json({ success: false, error: "invalid manualOverride" });
+    }
+
+    if (Number.isNaN(maxGroups) || maxGroups < 0) {
+      return res.status(400).json({ success: false, error: "invalid maxGroups" });
+    }
+
+    if (Number.isNaN(monthlyQuota) || monthlyQuota < 0) {
+      return res.status(400).json({ success: false, error: "invalid monthlyQuota" });
+    }
+
+    const payload = {
+      userId,
+      status,
+      plan,
+      trialEndsAt,
+      currentPeriodEnd,
+      maxGroups,
+      monthlyQuota,
+      manualOverride,
+      manualReason,
+      lastPaymentStatus,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (!snap.exists) {
+      payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      payload.ecpayTradeNo = "";
+      payload.usedQuota = 0;
+    }
+
+    await ref.set(payload, { merge: true });
+
+    await addAdminLog(
+      "UPDATE_SUBSCRIPTION_CONFIG",
+      `更新訂閱 ${userId}`,
+      req.auth.user,
+      {
+        userId,
+        status,
+        plan,
+        trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : null,
+        currentPeriodEnd: currentPeriodEnd ? currentPeriodEnd.toISOString() : null,
+        maxGroups,
+        monthlyQuota,
+        manualOverride,
+        manualReason,
+        lastPaymentStatus
+      }
+    );
+
+    const latest = await ref.get();
+    res.json({ success: true, userId, subscription: latest.data() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
   try {
