@@ -1477,21 +1477,37 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     const end = new Date(now);
     end.setDate(end.getDate() + Number(days || 30));
 
-    if (action === "activate") {
-      await ref.set({
-        userId,
-        status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
-        plan,
-        currentPeriodEnd: end,
-        maxGroups: Number(maxGroups || 0),
-        monthlyQuota: Number(monthlyQuota || 0),
-        manualOverride: MANUAL_OVERRIDE.NONE,
-        manualReason: reason || "admin manual activate",
-        lastPaymentStatus: "manual",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    } else if (action === "deactivate") {
+if (action === "activate") {
+  const snap = await ref.get();
+  const current = snap.exists ? snap.data() : null;
+
+  const now = new Date();
+  const currentEnd = toDateSafe(current?.currentPeriodEnd);
+  const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
+
+  const end = new Date(baseDate);
+  end.setDate(end.getDate() + Number(days || 30));
+
+  const payload = {
+    userId,
+    status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    plan,
+    currentPeriodEnd: end,
+    maxGroups: Number(maxGroups || 0),
+    monthlyQuota: Number(monthlyQuota || 0),
+    manualOverride: MANUAL_OVERRIDE.NONE,
+    manualReason: reason || "admin manual activate",
+    lastPaymentStatus: "manual",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (!snap.exists) {
+    payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+
+  await ref.set(payload, { merge: true });
+}
+ else if (action === "deactivate") {
       await ref.set({
         userId,
         status: SUBSCRIPTION_STATUS.INACTIVE,
