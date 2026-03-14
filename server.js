@@ -10,7 +10,7 @@ import admin from "firebase-admin";
 import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
-
+import crypto from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -121,6 +121,38 @@ const i18n = {
     invalidUserId: "❌ userId 格式不正確"
   }
 };
+function ecpayUrlEncodeDotNet(str = "") {
+  return encodeURIComponent(str)
+    .toLowerCase()
+    .replace(/%20/g, "+")
+    .replace(/%2d/g, "-")
+    .replace(/%5f/g, "_")
+    .replace(/%2e/g, ".")
+    .replace(/%21/g, "!")
+    .replace(/%2a/g, "*")
+    .replace(/%28/g, "(")
+    .replace(/%29/g, ")");
+}
+
+function generateEcpayCheckMacValue(params = {}, hashKey, hashIV) {
+  const data = { ...params };
+  delete data.CheckMacValue;
+
+  const sortedKeys = Object.keys(data).sort((a, b) => a.localeCompare(b));
+  const query = sortedKeys.map(key => `${key}=${data[key] ?? ""}`).join("&");
+  const raw = `HashKey=${hashKey}&${query}&HashIV=${hashIV}`;
+  const encoded = ecpayUrlEncodeDotNet(raw);
+  return crypto.createHash("sha256").update(encoded).digest("hex").toUpperCase();
+}
+
+function verifyEcpayMac(params = {}, mac = "") {
+  const hashKey = process.env.ECPAY_HASH_KEY || "";
+  const hashIV = process.env.ECPAY_HASH_IV || "";
+  if (!hashKey || !hashIV || !mac) return false;
+
+  const expected = generateEcpayCheckMacValue(params, hashKey, hashIV);
+  return expected === String(mac).toUpperCase();
+}
 
 function getEnabledIndustryNames() {
   return industryMasterDocs
@@ -1541,21 +1573,21 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
   try {
     const { MerchantTradeNo, RtnCode, CheckMacValue } = req.body;
 
-    // TODO: 這裡補上你的 ECPay CheckMacValue 驗證
-    // const isValid = verifyEcpayMac(req.body, CheckMacValue);
-    const isValid = true;
+    const isValid = verifyEcpayMac(req.body, CheckMacValue);
     if (!isValid) {
+      console.error("ecpay notify invalid mac:", MerchantTradeNo);
       return res.status(400).send("0|INVALID");
     }
 
     const order = await getPaymentOrderByTradeNo(MerchantTradeNo);
     if (!order?.userId) {
+      console.error("ecpay notify order not found:", MerchantTradeNo);
       return res.status(400).send("0|ORDER_NOT_FOUND");
     }
 
     const userId = order.userId;
 
-    if (RtnCode === "1") {
+    if (String(RtnCode) === "1") {
       await activatePaidSubscription(userId, {
         tradeNo: MerchantTradeNo,
         plan: order.plan || "monthly",
@@ -1570,7 +1602,7 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
     await db.collection("paymentOrders").doc(MerchantTradeNo).set({
       callbackBody: req.body,
       callbackAt: admin.firestore.FieldValue.serverTimestamp(),
-      paymentResult: RtnCode === "1" ? "paid" : "failed",
+      paymentResult: String(RtnCode) === "1" ? "paid" : "failed",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
@@ -1580,6 +1612,7 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
     res.status(500).send("0|ERROR");
   }
 });
+
 
 
 app.post("/webhook", webhookLimiter, middleware(lineConfig), async (req, res) => {
