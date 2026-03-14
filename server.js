@@ -264,6 +264,197 @@ function restoreMentions(text, segments) {
 function isValidLineUserId(userId = "") {
   return /^U[\w-]{10,}$/.test(userId);
 }
+function getMonthKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${y}${m}`;
+}
+
+function toDateSafe(v) {
+  if (!v) return null;
+  if (typeof v.toDate === "function") return v.toDate();
+  if (v instanceof Date) return v;
+  return new Date(v);
+}
+
+async function getSubscriptionByUserId(userId) {
+  if (!userId) return null;
+  const doc = await db.collection("userSubscriptions").doc(userId).get();
+  return doc.exists ? doc.data() : null;
+}
+
+async function getMonthlyUsage(userId, monthKey = getMonthKey()) {
+  const id = `${userId}_${monthKey}`;
+  const doc = await db.collection("usageMonthly").doc(id).get();
+  if (!doc.exists) {
+    return {
+      userId,
+      monthKey,
+      translationCount: 0,
+      charCount: 0,
+    };
+  }
+  return doc.data();
+}
+
+async function incrementMonthlyUsage(userId, translationCount = 1, charCount = 0) {
+  if (!userId) return;
+  const monthKey = getMonthKey();
+  const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
+  await ref.set({
+    userId,
+    monthKey,
+    translationCount: admin.firestore.FieldValue.increment(translationCount),
+    charCount: admin.firestore.FieldValue.increment(charCount),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function countGroupsByInviter(userId) {
+  if (!userId) return 0;
+  const snap = await db.collection("groupInviters").where("userId", "==", userId).get();
+  return snap.size;
+}
+
+async function ensureSubscriptionDoc(userId) {
+  if (!userId) return null;
+  const ref = db.collection("userSubscriptions").doc(userId);
+  const doc = await ref.get();
+
+  if (!doc.exists) {
+    const now = new Date();
+    const trialEnd = new Date(now);
+    trialEnd.setDate(trialEnd.getDate() + 14);
+
+    const initData = {
+      userId,
+      status: SUBSCRIPTION_STATUS.TRIAL,
+      plan: "trial",
+      trialEndsAt: trialEnd,
+      currentPeriodEnd: null,
+      maxGroups: 2,
+      monthlyQuota: 300,
+      usedQuota: 0,
+      manualOverride: MANUAL_OVERRIDE.NONE,
+      manualReason: "",
+      lastPaymentStatus: "",
+      ecpayTradeNo: "",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await ref.set(initData, { merge: true });
+    return initData;
+  }
+
+  return doc.data();
+}
+
+async function canUseGroup(gid) {
+  const inviterUserId = groupInviter.get(gid);
+  if (!gid || !inviterUserId) {
+    return { ok: false, code: "NO_INVITER", message: "此群組尚未綁定授權者。" };
+  }
+
+  const sub = await ensureSubscriptionDoc(inviterUserId);
+  const now = new Date();
+
+  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
+    return { ok: false, code: "FORCE_INACTIVE", inviterUserId, sub, message: "此授權已被後台手動停用。" };
+  }
+
+  const groupsCount = await countGroupsByInviter(inviterUserId);
+  const usage = await getMonthlyUsage(inviterUserId);
+
+  if (sub.maxGroups > 0 && groupsCount > sub.maxGroups) {
+    return {
+      ok: false,
+      code: "GROUP_LIMIT",
+      inviterUserId,
+      sub,
+      usage,
+      message: `已超過可使用群組數上限（${sub.maxGroups}）。`,
+    };
+  }
+
+  if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
+    return {
+      ok: false,
+      code: "QUOTA_EXCEEDED",
+      inviterUserId,
+      sub,
+      usage,
+      message: `本月額度已用完（${sub.monthlyQuota}）。`,
+    };
+  }
+
+  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
+    return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub, usage };
+  }
+
+  if (sub.status === SUBSCRIPTION_STATUS.TRIAL) {
+    const trialEndsAt = toDateSafe(sub.trialEndsAt);
+    if (trialEndsAt && trialEndsAt >= now) {
+      return { ok: true, code: "TRIAL_OK", inviterUserId, sub, usage };
+    }
+    return { ok: false, code: "TRIAL_EXPIRED", inviterUserId, sub, usage, message: "試用已到期，請完成付款。" };
+  }
+
+  if (
+    sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
+    sub.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE
+  ) {
+    const currentPeriodEnd = toDateSafe(sub.currentPeriodEnd);
+    if (!currentPeriodEnd || currentPeriodEnd >= now) {
+      return { ok: true, code: "ACTIVE_OK", inviterUserId, sub, usage };
+    }
+    return { ok: false, code: "SUB_EXPIRED", inviterUserId, sub, usage, message: "訂閱已到期。" };
+  }
+
+  if (sub.status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) {
+    return { ok: false, code: "PAYMENT_FAILED", inviterUserId, sub, usage, message: "付款失敗，已停用服務。" };
+  }
+
+  return { ok: false, code: "INACTIVE", inviterUserId, sub, usage, message: "尚未開通訂閱。" };
+}
+
+async function activatePaidSubscription(userId, {
+  tradeNo = "",
+  plan = "monthly",
+  months = 1,
+  maxGroups = 5,
+  monthlyQuota = 3000,
+} = {}) {
+  const now = new Date();
+  const end = new Date(now);
+  end.setMonth(end.getMonth() + months);
+
+  await db.collection("userSubscriptions").doc(userId).set({
+    userId,
+    status: SUBSCRIPTION_STATUS.ACTIVE,
+    plan,
+    currentPeriodEnd: end,
+    maxGroups,
+    monthlyQuota,
+    manualOverride: MANUAL_OVERRIDE.NONE,
+    manualReason: "",
+    lastPaymentStatus: "paid",
+    ecpayTradeNo: tradeNo,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function markPaymentFailed(userId, tradeNo = "") {
+  await db.collection("userSubscriptions").doc(userId).set({
+    userId,
+    status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+    lastPaymentStatus: "failed",
+    ecpayTradeNo: tradeNo,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
 
 function getAllKnownGroupIds() {
   return [...new Set([
