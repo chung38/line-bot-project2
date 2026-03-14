@@ -1480,6 +1480,28 @@ adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
 });
 
 app.use("/admin", adminRouter);
+app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const { userId, MerchantTradeNo, RtnCode } = req.body;
+
+    if (RtnCode === "1") {
+      await activatePaidSubscription(userId, {
+        tradeNo: MerchantTradeNo,
+        plan: "monthly",
+        months: 1,
+        maxGroups: 5,
+        monthlyQuota: 3000,
+      });
+    } else {
+      await markPaymentFailed(userId, MerchantTradeNo);
+    }
+
+    res.send("1|OK");
+  } catch (e) {
+    console.error("ecpay notify error:", e.message);
+    res.status(500).send("0|ERROR");
+  }
+});
 
 app.post("/webhook", webhookLimiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
