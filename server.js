@@ -1460,7 +1460,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
   try {
     const userId = req.params.userId;
     const {
-      action,
+      action,              // activate | deactivate | force_active | force_inactive | clear_override
       plan = "custom",
       days = 30,
       maxGroups = 5,
@@ -1469,71 +1469,90 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     } = req.body || {};
 
     const ref = db.collection("userSubscriptions").doc(userId);
-    const now = new Date();
-    const end = new Date(now);
-    end.setDate(end.getDate() + Number(days || 30));
+    const snap = await ref.get();
+    const current = snap.exists ? snap.data() : null;
 
-if (action === "activate") {
-  const snap = await ref.get();
-  const current = snap.exists ? snap.data() : null;
+    if (action === "activate") {
+      const now = new Date();
+      const currentEnd = toDateSafe(current?.currentPeriodEnd);
+      const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
 
-  const now = new Date();
-  const currentEnd = toDateSafe(current?.currentPeriodEnd);
-  const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
+      const end = new Date(baseDate);
+      end.setDate(end.getDate() + Number(days || 30));
 
-  const end = new Date(baseDate);
-  end.setDate(end.getDate() + Number(days || 30));
+      const payload = {
+        userId,
+        status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+        plan,
+        currentPeriodEnd: end,
+        maxGroups: Number(maxGroups || 0),
+        monthlyQuota: Number(monthlyQuota || 0),
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: reason || "admin manual activate",
+        lastPaymentStatus: "manual",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
 
-  const payload = {
-    userId,
-    status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
-    plan,
-    currentPeriodEnd: end,
-    maxGroups: Number(maxGroups || 0),
-    monthlyQuota: Number(monthlyQuota || 0),
-    manualOverride: MANUAL_OVERRIDE.NONE,
-    manualReason: reason || "admin manual activate",
-    lastPaymentStatus: "manual",
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
 
-  if (!snap.exists) {
-    payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-  }
-
-  await ref.set(payload, { merge: true });
-}
- else if (action === "deactivate") {
-      await ref.set({
+      await ref.set(payload, { merge: true });
+    } else if (action === "deactivate") {
+      const payload = {
         userId,
         status: SUBSCRIPTION_STATUS.INACTIVE,
         manualOverride: MANUAL_OVERRIDE.NONE,
         manualReason: reason || "admin manual deactivate",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
     } else if (action === "force_active") {
-      await ref.set({
+      const payload = {
         userId,
         manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
         manualReason: reason || "admin force active",
         maxGroups: Number(maxGroups || 0),
         monthlyQuota: Number(monthlyQuota || 0),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
     } else if (action === "force_inactive") {
-      await ref.set({
+      const payload = {
         userId,
         manualOverride: MANUAL_OVERRIDE.FORCE_INACTIVE,
         manualReason: reason || "admin force inactive",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
     } else if (action === "clear_override") {
-      await ref.set({
+      const payload = {
         userId,
         manualOverride: MANUAL_OVERRIDE.NONE,
         manualReason: "",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
     } else {
       return res.status(400).json({ success: false, error: "invalid action" });
     }
