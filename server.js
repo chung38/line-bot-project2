@@ -756,7 +756,7 @@ async function translateLineSegments(line, targetLang, gid, segments) {
   return restoreMentions(outLine, segments);
 }
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang) {
+async function processTranslationInBackground(replyToken,gid,uid,masked,segments,rawLines,langSet,sourceLang,ownerUserId) {
   const allNeededLangs = new Set();
   const langOutputs = {};
 
@@ -821,6 +821,7 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
 
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
+  await incrementMonthlyUsage(ownerUserId, 1, masked.length);
 }
 
 async function fetchImageUrlsByDate(gid, dateStr) {
@@ -1341,6 +1342,142 @@ adminRouter.get("/logs", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+adminRouter.get("/subscriptions", async (req, res) => {
+  try {
+    const snapshot = await db.collection("userSubscriptions").get();
+    const items = snapshot.docs.map(doc => ({ userId: doc.id, ...doc.data() }));
+    res.json({ success: true, items });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.get("/subscriptions/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const sub = await getSubscriptionByUserId(userId);
+    const usage = await getMonthlyUsage(userId);
+    const groupsCount = await countGroupsByInviter(userId);
+
+    res.json({
+      success: true,
+      userId,
+      subscription: sub,
+      usage,
+      groupsCount,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const {
+      action,
+      plan = "custom",
+      days = 30,
+      maxGroups = 5,
+      monthlyQuota = 3000,
+      reason = "",
+    } = req.body || {};
+
+    const ref = db.collection("userSubscriptions").doc(userId);
+    const now = new Date();
+    const end = new Date(now);
+    end.setDate(end.getDate() + Number(days || 30));
+
+    if (action === "activate") {
+      await ref.set({
+        userId,
+        status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+        plan,
+        currentPeriodEnd: end,
+        maxGroups: Number(maxGroups || 0),
+        monthlyQuota: Number(monthlyQuota || 0),
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: reason || "admin manual activate",
+        lastPaymentStatus: "manual",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else if (action === "deactivate") {
+      await ref.set({
+        userId,
+        status: SUBSCRIPTION_STATUS.INACTIVE,
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: reason || "admin manual deactivate",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else if (action === "force_active") {
+      await ref.set({
+        userId,
+        manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
+        manualReason: reason || "admin force active",
+        maxGroups: Number(maxGroups || 0),
+        monthlyQuota: Number(monthlyQuota || 0),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else if (action === "force_inactive") {
+      await ref.set({
+        userId,
+        manualOverride: MANUAL_OVERRIDE.FORCE_INACTIVE,
+        manualReason: reason || "admin force inactive",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else if (action === "clear_override") {
+      await ref.set({
+        userId,
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: "",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else {
+      return res.status(400).json({ success: false, error: "invalid action" });
+    }
+
+    await addAdminLog(
+      "UPSERT_SUBSCRIPTION_MANUAL",
+      `${userId} ${action}`,
+      req.auth.user,
+      { userId, action, plan, days, maxGroups, monthlyQuota, reason }
+    );
+
+    const latest = await ref.get();
+    res.json({ success: true, userId, subscription: latest.data() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const monthKey = req.body?.monthKey || getMonthKey();
+    const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
+
+    await ref.set({
+      userId,
+      monthKey,
+      translationCount: 0,
+      charCount: 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    await addAdminLog(
+      "RESET_USAGE_MONTHLY",
+      `${userId} ${monthKey}`,
+      req.auth.user,
+      { userId, monthKey }
+    );
+
+    res.json({ success: true, userId, monthKey });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 app.use("/admin", adminRouter);
 
@@ -1482,14 +1619,24 @@ async function handleEvent(event) {
       if (skipTranslatePattern.test(textForLangDetect)) return;
 
       const set = groupLang.get(gid) || new Set();
-      if (set.size === 0) return;
+if (set.size === 0) return;
 
-      const sourceLang = detectLang(textForLangDetect);
-      const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
-      if (!rawLines.length) return;
+const access = await canUseGroup(gid);
+if (!access.ok) {
+  await safeReplyOrPush(
+    event.replyToken,
+    gid,
+    access.message || "此群組目前無法使用翻譯服務。"
+  );
+  return;
+}
 
-      processTranslationInBackground(event.replyToken, gid, uid, masked, segments, rawLines, set, sourceLang)
-        .catch(e => console.error("背景翻譯處理錯誤:", e.message));
+const sourceLang = detectLang(textForLangDetect);
+const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
+if (!rawLines.length) return;
+
+processTranslationInBackground(event.replyToken,gid,uid,masked,segments,rawLines,set,sourceLang,access.inviterUserId
+).catch(e => console.error("背景翻譯錯誤:", e.message));
     }
   } catch (e) {
     console.error("handleEvent 錯誤:", e);
