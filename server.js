@@ -60,6 +60,19 @@ const groupLang = new Map();
 const groupInviter = new Map();
 const groupIndustry = new Map();
 let industryMasterDocs = [];
+const SUBSCRIPTION_STATUS = {
+  TRIAL: "TRIAL",
+  ACTIVE: "ACTIVE",
+  MANUAL_ACTIVE: "MANUAL_ACTIVE",
+  INACTIVE: "INACTIVE",
+  PAYMENT_FAILED: "PAYMENT_FAILED",
+};
+
+const MANUAL_OVERRIDE = {
+  NONE: "NONE",
+  FORCE_ACTIVE: "FORCE_ACTIVE",
+  FORCE_INACTIVE: "FORCE_INACTIVE",
+};
 
 const SUPPORTED_LANGS = {
   en: "英文",
