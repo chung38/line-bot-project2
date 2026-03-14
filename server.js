@@ -425,10 +425,6 @@ async function canUseGroup(gid) {
     };
   }
 
-  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
-    return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub, usage };
-  }
-
   if (sub.status === SUBSCRIPTION_STATUS.TRIAL) {
     const trialEndsAt = toDateSafe(sub.trialEndsAt);
     if (trialEndsAt && trialEndsAt >= now) {
