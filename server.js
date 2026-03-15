@@ -1500,6 +1500,16 @@ adminRouter.put("/groups/:gid/settings", async (req, res) => {
     if (inviter && !isValidLineUserId(inviter)) {
       return res.status(400).json({ success: false, error: i18n["zh-TW"].invalidUserId });
     }
+    if (inviter) {
+  const bindCheck = await canBindGroupToInviter(inviter, gid);
+  if (!bindCheck.ok) {
+    return res.status(400).json({
+      success: false,
+      error: bindCheck.message,
+      code: bindCheck.code,
+    });
+  }
+}
 
     groupLang.set(gid, new Set(langs));
     if (industry) groupIndustry.set(gid, industry); else groupIndustry.delete(gid);
