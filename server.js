@@ -2114,7 +2114,12 @@ if (event.type === "postback" && gid) {
     return;
   }
 
-  const protectedActions = ["action=setlang", "action=setindustry", "action=showindustrymenu"];
+  const protectedActions = [
+  "action=set_lang",
+  "action=set_industry",
+  "action=show_industry_menu"
+];
+
   ...
 }
 
