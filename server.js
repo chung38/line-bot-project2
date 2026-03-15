@@ -22,6 +22,7 @@ const requiredEnv = [
  // "ECPAY_HASH_IV",
   "FIREBASE_CONFIG"
 ];
+
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
 if (missingEnv.length > 0) {
   console.error(`❌ 缺少環境變數: ${missingEnv.join(", ")}`);
