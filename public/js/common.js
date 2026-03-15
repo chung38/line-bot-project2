@@ -97,13 +97,19 @@ window.AdminCommon = (() => {
     }, 2500);
   }
 
-  function formatTime(value) {
-    if (!value) return "-";
-    if (typeof value === "object" && typeof value._seconds === "number") {
-      return new Date(value._seconds * 1000).toLocaleString();
-    }
-    return new Date(value).toLocaleString();
+function formatTime(value) {
+  if (!value) return "-";
+
+  if (typeof value === "object" && typeof value._seconds === "number") {
+    return new Date(value._seconds * 1000).toLocaleString();
   }
+
+  if (typeof value === "object" && typeof value.seconds === "number") {
+    return new Date(value.seconds * 1000).toLocaleString();
+  }
+
+  return new Date(value).toLocaleString();
+}
 
   function escapeHtml(str = "") {
     return String(str)
