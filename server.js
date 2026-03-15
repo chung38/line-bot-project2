@@ -527,26 +527,20 @@ async function canUseGroup(gid) {
   const now = new Date();
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
-    return { ok: false, code: "FORCE_INACTIVE", inviterUserId, sub, message: "此授權已被後台手動停用。" };
+    return {
+      ok: false,
+      code: "FORCE_INACTIVE",
+      inviterUserId,
+      sub,
+      message: "此授權已被後台手動停用。"
+    };
   }
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
     return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub };
   }
 
-  const groupsCount = await countGroupsByInviter(inviterUserId);
   const usage = await getMonthlyUsage(inviterUserId);
-
-  if (sub.maxGroups > 0 && groupsCount > sub.maxGroups) {
-    return {
-      ok: false,
-      code: "GROUP_LIMIT",
-      inviterUserId,
-      sub,
-      usage,
-      message: `已超過可使用群組數上限（${sub.maxGroups}）。`,
-    };
-  }
 
   if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
     return {
@@ -564,7 +558,14 @@ async function canUseGroup(gid) {
     if (trialEndsAt && trialEndsAt >= now) {
       return { ok: true, code: "TRIAL_OK", inviterUserId, sub, usage };
     }
-    return { ok: false, code: "TRIAL_EXPIRED", inviterUserId, sub, usage, message: "試用已到期，請完成付款。" };
+    return {
+      ok: false,
+      code: "TRIAL_EXPIRED",
+      inviterUserId,
+      sub,
+      usage,
+      message: "試用已到期，請完成付款。"
+    };
   }
 
   if (
@@ -575,15 +576,37 @@ async function canUseGroup(gid) {
     if (!currentPeriodEnd || currentPeriodEnd >= now) {
       return { ok: true, code: "ACTIVE_OK", inviterUserId, sub, usage };
     }
-    return { ok: false, code: "SUB_EXPIRED", inviterUserId, sub, usage, message: "訂閱已到期。" };
+    return {
+      ok: false,
+      code: "SUB_EXPIRED",
+      inviterUserId,
+      sub,
+      usage,
+      message: "訂閱已到期。"
+    };
   }
 
   if (sub.status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) {
-    return { ok: false, code: "PAYMENT_FAILED", inviterUserId, sub, usage, message: "付款失敗，已停用服務。" };
+    return {
+      ok: false,
+      code: "PAYMENT_FAILED",
+      inviterUserId,
+      sub,
+      usage,
+      message: "付款失敗，已停用服務。"
+    };
   }
 
-  return { ok: false, code: "INACTIVE", inviterUserId, sub, usage, message: "尚未開通訂閱。" };
+  return {
+    ok: false,
+    code: "INACTIVE",
+    inviterUserId,
+    sub,
+    usage,
+    message: "尚未開通訂閱。"
+  };
 }
+
 
 async function activatePaidSubscription(userId, options = {}) {
   const defaults = await getSubscriptionDefaults();
