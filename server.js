@@ -2059,24 +2059,41 @@ async function handleEvent(event) {
       return;
     }
 
-    if (event.type === "join" && gid) {
-      if (!groupInviter.has(gid) && uid) {
-        groupInviter.set(gid, uid);
-        await saveInviterForGroup(gid);
-      }
-      await sendMenu(gid);
+if (event.type === "join" && gid) {
+  if (!groupInviter.has(gid) && uid) {
+    const bindResult = await ensureInviterIfMissing(gid, uid);
+
+    if (!bindResult?.ok) {
+      await safeReplyOrPush(
+        event.replyToken,
+        gid,
+        bindResult.message || "此授權可綁定的群組數已達上限。"
+      );
       return;
     }
+  }
 
-    if (event.type === "postback" && gid) {
-      const data = event.postback?.data || "";
-      await ensureInviterIfMissing(gid, uid);
+  await sendMenu(gid);
+  return;
+}
 
-      const protectedActions = ["action=set_lang", "action=set_industry", "action=show_industry_menu"];
-      if (protectedActions.some(prefix => data.startsWith(prefix)) && !isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
-        return;
-      }
+
+if (event.type === "postback" && gid) {
+  const data = event.postback?.data || "";
+
+  const bindResult = await ensureInviterIfMissing(gid, uid);
+  if (!bindResult?.ok) {
+    await safeReplyOrPush(
+      event.replyToken,
+      gid,
+      bindResult.message || "此授權可綁定的群組數已達上限。"
+    );
+    return;
+  }
+
+  const protectedActions = ["action=setlang", "action=setindustry", "action=showindustrymenu"];
+  ...
+}
 
       if (data.startsWith("action=set_lang")) {
         const code = data.split("code=")[1];
@@ -2123,18 +2140,32 @@ async function handleEvent(event) {
 
     if (event.type === "message" && gid && event.message?.type !== "text") return;
 
-    if (event.type === "message" && event.message?.type === "text" && gid) {
-      const text = event.message.text.trim();
+if (event.type === "message" && event.message?.type === "text" && gid) {
+  const text = event.message.text.trim();
 
-      if (text === "!設定") {
-        await ensureInviterIfMissing(gid, uid);
-        if (!isAuthorizedOperator(gid, uid)) {
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
-          return;
-        }
-        await sendMenu(gid);
-        return;
-      }
+  if (text === "!設定") {
+    const bindResult = await ensureInviterIfMissing(gid, uid);
+
+    if (!bindResult?.ok) {
+      await safeReplyOrPush(
+        event.replyToken,
+        gid,
+        bindResult.message || "此授權可綁定的群組數已達上限。"
+      );
+      return;
+    }
+
+    if (!isAuthorizedOperator(gid, uid)) {
+      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+      return;
+    }
+
+    await sendMenu(gid);
+    return;
+  }
+
+  ...
+}
 
       if (text === "!查詢") {
         const langsSet = groupLang.get(gid) || new Set();
