@@ -1,5 +1,27 @@
 const { api, toast, formatTime, escapeHtml } = window.AdminCommon;
 
+const SUBSCRIPTION_STATUS = {
+  TRIAL: "TRIAL",
+  ACTIVE: "ACTIVE",
+  MANUAL_ACTIVE: "MANUAL_ACTIVE",
+  INACTIVE: "INACTIVE",
+  PAYMENT_FAILED: "PAYMENT_FAILED",
+};
+
+const MANUAL_OVERRIDE = {
+  NONE: "NONE",
+  FORCE_ACTIVE: "FORCE_ACTIVE",
+  FORCE_INACTIVE: "FORCE_INACTIVE",
+};
+
+const MANUAL_ACTIONS = {
+  ACTIVATE: "activate",
+  DEACTIVATE: "deactivate",
+  FORCE_ACTIVE: "force_active",
+  FORCE_INACTIVE: "force_inactive",
+  CLEAR_OVERRIDE: "clear_override",
+};
+
 const state = {
   items: [],
   filteredItems: [],
@@ -7,7 +29,7 @@ const state = {
   currentDefaults: null,
 };
 
-function getMonthKey(date = new Date()) {
+function getDisplayMonthKey(date = new Date()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
@@ -16,6 +38,45 @@ function getMonthKey(date = new Date()) {
 function toNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isNaN(n) ? fallback : n;
+}
+
+function normalizeStatus(value, fallback = SUBSCRIPTION_STATUS.INACTIVE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    TRIAL: SUBSCRIPTION_STATUS.TRIAL,
+    ACTIVE: SUBSCRIPTION_STATUS.ACTIVE,
+    MANUALACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    MANUAL_ACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    INACTIVE: SUBSCRIPTION_STATUS.INACTIVE,
+    PAYMENTFAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+    PAYMENT_FAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeManualOverride(value, fallback = MANUAL_OVERRIDE.NONE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    NONE: MANUAL_OVERRIDE.NONE,
+    FORCEACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCE_ACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCEINACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+    FORCE_INACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeMonthKeyForInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return getDisplayMonthKey();
+
+  const compact = raw.replace(/-/g, "");
+  if (/^\d{6}$/.test(compact)) {
+    return `${compact.slice(0, 4)}-${compact.slice(4, 6)}`;
+  }
+
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  return getDisplayMonthKey();
 }
 
 function toInputDateTime(value) {
@@ -42,45 +103,50 @@ function fromInputDateTime(value) {
   return value ? value : null;
 }
 
+function buildTag(text) {
+  return `<span class="tag">${escapeHtml(String(text || "-"))}</span>`;
+}
+
 function getStatusCount(status) {
-  return state.items.filter((item) => item.status === status).length;
+  return state.items.filter((item) => normalizeStatus(item.status) === status).length;
 }
 
 function renderStats() {
   document.getElementById("statTotal").textContent = state.items.length;
-  document.getElementById("statTrial").textContent = getStatusCount("TRIAL");
-  document.getElementById("statActive").textContent = getStatusCount("ACTIVE");
-  document.getElementById("statManual").textContent = getStatusCount("MANUALACTIVE");
-  document.getElementById("statFailed").textContent = getStatusCount("PAYMENTFAILED");
-  document.getElementById("statInactive").textContent = getStatusCount("INACTIVE");
+  document.getElementById("statTrial").textContent = getStatusCount(SUBSCRIPTION_STATUS.TRIAL);
+  document.getElementById("statActive").textContent = getStatusCount(SUBSCRIPTION_STATUS.ACTIVE);
+  document.getElementById("statManual").textContent = getStatusCount(SUBSCRIPTION_STATUS.MANUAL_ACTIVE);
+  document.getElementById("statFailed").textContent = getStatusCount(SUBSCRIPTION_STATUS.PAYMENT_FAILED);
+  document.getElementById("statInactive").textContent = getStatusCount(SUBSCRIPTION_STATUS.INACTIVE);
 }
 
 function applyFilters() {
   const keyword = document.getElementById("searchInput").value.trim().toLowerCase();
-  const status = document.getElementById("statusFilter").value.trim();
+  const status = normalizeStatus(document.getElementById("statusFilter").value.trim(), "");
 
   state.filteredItems = state.items.filter((item) => {
+    const normalizedStatus = normalizeStatus(item.status);
+    const normalizedOverride = normalizeManualOverride(item.manualOverride);
+
     const haystack = [
       item.userId,
       item.plan,
       item.status,
+      normalizedStatus,
       item.lastPaymentStatus,
       item.manualOverride,
+      normalizedOverride,
       item.manualReason,
     ]
       .join(" ")
       .toLowerCase();
 
     const passKeyword = !keyword || haystack.includes(keyword);
-    const passStatus = !status || item.status === status;
+    const passStatus = !status || normalizedStatus === status;
     return passKeyword && passStatus;
   });
 
   renderList();
-}
-
-function buildTag(text) {
-  return `<span class="tag">${escapeHtml(String(text || "-"))}</span>`;
 }
 
 function renderList() {
@@ -95,7 +161,12 @@ function renderList() {
 
   container.innerHTML = state.filteredItems
     .map((item) => {
-      const activeClass = item.userId === state.selectedUserId ? ' style="outline: 2px solid rgba(59,130,246,.75);"' : "";
+      const status = normalizeStatus(item.status);
+      const manualOverride = normalizeManualOverride(item.manualOverride);
+      const activeClass = item.userId === state.selectedUserId
+        ? ' style="outline: 2px solid rgba(59,130,246,.75);"'
+        : "";
+
       return `
         <button type="button" class="group-card" data-userid="${escapeHtml(item.userId)}"${activeClass}>
           <div class="group-card-head">
@@ -108,8 +179,8 @@ function renderList() {
           <div class="group-row">
             <div class="label">狀態</div>
             <div class="tag-wrap">
-              ${buildTag(item.status || "-")}
-              ${buildTag(item.manualOverride || "NONE")}
+              ${buildTag(status)}
+              ${buildTag(manualOverride)}
             </div>
           </div>
 
@@ -227,6 +298,9 @@ function renderSelectedSummary(subscription, usage, groupsCount) {
     return;
   }
 
+  const status = normalizeStatus(subscription.status);
+  const manualOverride = normalizeManualOverride(subscription.manualOverride);
+
   container.innerHTML = `
     <div class="group-card-head">
       <div>
@@ -238,8 +312,8 @@ function renderSelectedSummary(subscription, usage, groupsCount) {
     <div class="group-row">
       <div class="label">狀態</div>
       <div class="tag-wrap">
-        ${buildTag(subscription.status || "-")}
-        ${buildTag(subscription.manualOverride || "NONE")}
+        ${buildTag(status)}
+        ${buildTag(manualOverride)}
         ${buildTag(subscription.plan || "-")}
       </div>
     </div>
@@ -265,6 +339,11 @@ function renderSelectedSummary(subscription, usage, groupsCount) {
     </div>
 
     <div class="group-row">
+      <div class="label">本月 Key</div>
+      <div>${escapeHtml(String(usage?.monthKey ?? "-"))}</div>
+    </div>
+
+    <div class="group-row">
       <div class="label">手動原因</div>
       <div>${escapeHtml(subscription.manualReason || "-")}</div>
     </div>
@@ -272,22 +351,26 @@ function renderSelectedSummary(subscription, usage, groupsCount) {
 }
 
 function fillConfigForm(subscription) {
+  const status = normalizeStatus(subscription?.status, SUBSCRIPTION_STATUS.INACTIVE);
+  const manualOverride = normalizeManualOverride(subscription?.manualOverride, MANUAL_OVERRIDE.NONE);
+
   document.getElementById("configUserId").value = subscription?.userId || "";
-  document.getElementById("configStatus").value = subscription?.status || "INACTIVE";
+  document.getElementById("configStatus").value = status;
   document.getElementById("configPlan").value = subscription?.plan || "";
   document.getElementById("configLastPaymentStatus").value = subscription?.lastPaymentStatus || "";
   document.getElementById("configTrialEndsAt").value = toInputDateTime(subscription?.trialEndsAt);
   document.getElementById("configCurrentPeriodEnd").value = toInputDateTime(subscription?.currentPeriodEnd);
   document.getElementById("configMaxGroups").value = Number(subscription?.maxGroups ?? 0);
   document.getElementById("configMonthlyQuota").value = Number(subscription?.monthlyQuota ?? 0);
-  document.getElementById("configManualOverride").value = subscription?.manualOverride || "NONE";
+  document.getElementById("configManualOverride").value = manualOverride;
   document.getElementById("configManualReason").value = subscription?.manualReason || "";
 }
 
 function fillManualForms(userId) {
   document.getElementById("manualUserIdTarget").value = userId || "";
   document.getElementById("usageUserIdTarget").value = userId || "";
-  document.getElementById("usageMonthKey").value = getMonthKey();
+  document.getElementById("usageMonthKey").value = getDisplayMonthKey();
+  updateManualActionUI();
 }
 
 async function loadSubscriptionDetail(userId) {
@@ -315,14 +398,14 @@ async function saveConfig(event) {
   }
 
   const payload = {
-    status: document.getElementById("configStatus").value,
+    status: normalizeStatus(document.getElementById("configStatus").value),
     plan: document.getElementById("configPlan").value.trim(),
     lastPaymentStatus: document.getElementById("configLastPaymentStatus").value.trim(),
     trialEndsAt: fromInputDateTime(document.getElementById("configTrialEndsAt").value),
     currentPeriodEnd: fromInputDateTime(document.getElementById("configCurrentPeriodEnd").value),
     maxGroups: toNumber(document.getElementById("configMaxGroups").value, 0),
     monthlyQuota: toNumber(document.getElementById("configMonthlyQuota").value, 0),
-    manualOverride: document.getElementById("configManualOverride").value,
+    manualOverride: normalizeManualOverride(document.getElementById("configManualOverride").value),
     manualReason: document.getElementById("configManualReason").value.trim(),
   };
 
@@ -368,7 +451,7 @@ async function resetUsage(event) {
   event.preventDefault();
 
   const userId = document.getElementById("usageUserIdTarget").value.trim();
-  const monthKey = document.getElementById("usageMonthKey").value.trim() || getMonthKey();
+  const monthKey = normalizeMonthKeyForInput(document.getElementById("usageMonthKey").value.trim());
 
   if (!userId) {
     toast("請先選取使用者", true);
@@ -382,6 +465,28 @@ async function resetUsage(event) {
 
   toast(`已重置 ${monthKey} 用量`);
   await loadSubscriptionDetail(userId);
+}
+
+function updateManualActionUI() {
+  const action = document.getElementById("manualAction").value;
+
+  const planInput = document.getElementById("manualPlanInput");
+  const daysInput = document.getElementById("manualDaysInput");
+  const maxGroupsInput = document.getElementById("manualMaxGroupsInput");
+  const monthlyQuotaInput = document.getElementById("manualMonthlyQuotaInput");
+
+  const disableAllPlanFields =
+    action === MANUAL_ACTIONS.DEACTIVATE || action === MANUAL_ACTIONS.CLEAR_OVERRIDE;
+
+  const disableQuotaFields =
+    action === MANUAL_ACTIONS.DEACTIVATE ||
+    action === MANUAL_ACTIONS.CLEAR_OVERRIDE ||
+    action === MANUAL_ACTIONS.FORCE_INACTIVE;
+
+  planInput.disabled = disableAllPlanFields;
+  daysInput.disabled = disableAllPlanFields;
+  maxGroupsInput.disabled = disableQuotaFields;
+  monthlyQuotaInput.disabled = disableQuotaFields;
 }
 
 function bindEvents() {
@@ -412,15 +517,7 @@ function bindEvents() {
     resetUsage(e).catch((err) => toast(err.message, true));
   });
 
-  document.getElementById("manualAction").addEventListener("change", () => {
-    const action = document.getElementById("manualAction").value;
-    const disabled = action === "deactivate" || action === "clearoverride";
-
-    document.getElementById("manualPlanInput").disabled = disabled;
-    document.getElementById("manualDaysInput").disabled = disabled;
-    document.getElementById("manualMaxGroupsInput").disabled = action === "deactivate" || action === "clearoverride" || action === "forceinactive";
-    document.getElementById("manualMonthlyQuotaInput").disabled = action === "deactivate" || action === "clearoverride" || action === "forceinactive";
-  });
+  document.getElementById("manualAction").addEventListener("change", updateManualActionUI);
 }
 
 async function init() {
@@ -430,6 +527,9 @@ async function init() {
 
   if (state.items.length) {
     await loadSubscriptionDetail(state.items[0].userId);
+  } else {
+    fillManualDefaultsFromSystem();
+    updateManualActionUI();
   }
 }
 
