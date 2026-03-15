@@ -3,41 +3,41 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>授權管理</title>
-  <link rel="stylesheet" href="./style.css" />
+  <title>LINE BOT</title>
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand"></div>
+      <div class="brand">LINE BOT</div>
       <nav class="nav">
-        <a class="nav-link" href="./dashboard.html">儀表板</a>
-        <a class="nav-link" href="./groups.html">群組管理</a>
-        <a class="nav-link" href="./industries.html">產業管理</a>
-        <a class="nav-link" href="./logs.html">操作紀錄</a>
-        <a class="nav-link active" href="./subscriptions.html">授權管理</a>
+        <a class="nav-link" href="index.html">Dashboard</a>
+        <a class="nav-link" href="groups.html">群組管理</a>
+        <a class="nav-link" href="industries.html">行業管理</a>
+        <a class="nav-link active" href="subscriptions.html">授權管理</a>
+        <a class="nav-link" href="logs.html">操作紀錄</a>
       </nav>
     </aside>
 
     <main class="main">
-      <div class="topbar">
+      <header class="topbar">
         <div>
           <h1>授權管理</h1>
           <p>管理訂閱狀態、手動開通、預設方案與用量重置。</p>
         </div>
 
         <div class="auth-box">
-          <input id="authUser" type="text" placeholder="管理帳號" />
-          <input id="authPass" type="password" placeholder="管理密碼" />
+          <input id="authUser" type="text" placeholder="帳號" />
+          <input id="authPass" type="password" placeholder="密碼" />
           <button id="saveAuthBtn" type="button">儲存登入</button>
         </div>
-      </div>
+      </header>
 
       <section class="panel">
         <div class="panel-header">
           <h2>授權概況</h2>
           <div class="inline-actions">
-            <button id="reloadAllBtn" type="button">重新整理</button>
+            <button id="reloadAllBtn" type="button" class="btn-secondary">重新整理</button>
           </div>
         </div>
 
@@ -151,20 +151,19 @@
         <div class="form-grid">
           <div class="form-group">
             <label for="searchInput">搜尋 userId / 方案 / 付款狀態</label>
-            <input id="searchInput" type="text" class="search-input" placeholder="輸入關鍵字" />
+            <input id="searchInput" type="text" class="search-input" placeholder="輸入 userId、plan、payment status" />
           </div>
 
           <div class="form-group">
             <label for="statusFilter">狀態篩選</label>
             <select id="statusFilter">
-  <option value="">全部狀態</option>
-  <option value="TRIAL">TRIAL</option>
-  <option value="ACTIVE">ACTIVE</option>
-  <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
-  <option value="INACTIVE">INACTIVE</option>
-  <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
-</select>
-
+              <option value="">全部狀態</option>
+              <option value="TRIAL">TRIAL</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
+              <option value="INACTIVE">INACTIVE</option>
+              <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
+            </select>
           </div>
         </div>
       </section>
@@ -199,13 +198,12 @@
           <div class="form-group">
             <label for="configStatus">狀態</label>
             <select id="configStatus">
-  <option value="TRIAL">TRIAL</option>
-  <option value="ACTIVE">ACTIVE</option>
-  <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
-  <option value="INACTIVE">INACTIVE</option>
-  <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
-</select>
-
+              <option value="TRIAL">TRIAL</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
+              <option value="INACTIVE">INACTIVE</option>
+              <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
+            </select>
           </div>
 
           <div class="form-group">
@@ -241,11 +239,10 @@
           <div class="form-group">
             <label for="configManualOverride">手動覆寫</label>
             <select id="configManualOverride">
-  <option value="NONE">NONE</option>
-  <option value="FORCE_ACTIVE">FORCE_ACTIVE</option>
-  <option value="FORCE_INACTIVE">FORCE_INACTIVE</option>
-</select>
-
+              <option value="NONE">NONE</option>
+              <option value="FORCE_ACTIVE">FORCE_ACTIVE</option>
+              <option value="FORCE_INACTIVE">FORCE_INACTIVE</option>
+            </select>
           </div>
 
           <div class="form-group full">
@@ -263,7 +260,7 @@
 
       <section class="panel">
         <div class="panel-header">
-          <h2>手動操作</h2>
+          <h2>手動調整</h2>
         </div>
 
         <form id="manualForm" class="form-grid">
@@ -274,14 +271,13 @@
 
           <div class="form-group">
             <label for="manualAction">操作</label>
-      <select id="manualAction">
-  <option value="activate">activate</option>
-  <option value="deactivate">deactivate</option>
-  <option value="force_active">force_active</option>
-  <option value="force_inactive">force_inactive</option>
-  <option value="clear_override">clear_override</option>
-</select>
-
+            <select id="manualAction">
+              <option value="activate">activate</option>
+              <option value="deactivate">deactivate</option>
+              <option value="force_active">force_active</option>
+              <option value="force_inactive">force_inactive</option>
+              <option value="clear_override">clear_override</option>
+            </select>
           </div>
 
           <div class="form-group">
@@ -340,12 +336,12 @@
           </div>
         </form>
       </section>
-
-      <div id="toast" class="toast"></div>
     </main>
   </div>
 
-  <script src="./common.js"></script>
-  <script src="./js/subscriptions.js"></script>
+  <div id="toast" class="toast"></div>
+
+  <script src="js/common.js"></script>
+  <script src="js/subscriptions.js"></script>
 </body>
 </html>
