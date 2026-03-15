@@ -28,6 +28,24 @@ const state = {
   selectedUserId: "",
   currentDefaults: null,
 };
+function getDisplayName(item = {}) {
+  return String(item.displayName || "").trim();
+}
+
+function getPrimaryUserText(item = {}) {
+  return getDisplayName(item) || item.userId || "未知使用者";
+}
+
+function getSecondaryUserText(item = {}) {
+  return getDisplayName(item) ? (item.userId || "-") : (item.plan || "-");
+}
+
+function getSelectedUserText(item = {}) {
+  const name = getDisplayName(item);
+  const userId = item.userId || "";
+  if (name && userId) return `${name}（${userId}）`;
+  return name || userId || "尚未選取使用者";
+}
 
 function getDisplayMonthKey(date = new Date()) {
   const y = date.getFullYear();
@@ -129,18 +147,19 @@ function applyFilters() {
     const normalizedStatus = normalizeStatus(item.status);
     const normalizedOverride = normalizeManualOverride(item.manualOverride);
 
-    const haystack = [
-      item.userId,
-      item.plan,
-      item.status,
-      normalizedStatus,
-      item.lastPaymentStatus,
-      item.manualOverride,
-      normalizedOverride,
-      item.manualReason,
-    ]
-      .join(" ")
-      .toLowerCase();
+const haystack = [
+  item.displayName,
+  item.userId,
+  item.plan,
+  item.status,
+  normalizedStatus,
+  item.lastPaymentStatus,
+  item.manualOverride,
+  normalizedOverride,
+  item.manualReason,
+]
+  .join(" ")
+  .toLowerCase();
 
     const passKeyword = !keyword || haystack.includes(keyword);
     const passStatus = !status || normalizedStatus === status;
@@ -156,63 +175,41 @@ function renderList() {
   meta.textContent = `${state.filteredItems.length} 筆`;
 
   if (!state.filteredItems.length) {
-    container.innerHTML = `<div class="empty">查無符合條件的授權資料</div>`;
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-title">尚無資料</div>
+      </div>
+    `;
     return;
   }
 
   container.innerHTML = state.filteredItems
     .map((item) => {
+      const active = item.userId === state.selectedUserId ? "active" : "";
+      const title = getPrimaryUserText(item);
+      const subtitle = getSecondaryUserText(item);
       const status = normalizeStatus(item.status);
-      const manualOverride = normalizeManualOverride(item.manualOverride);
-      const activeClass = item.userId === state.selectedUserId
-        ? ' style="outline: 2px solid rgba(59,130,246,.75);"'
-        : "";
+      const override = normalizeManualOverride(item.manualOverride);
 
       return `
-        <button type="button" class="group-card" data-userid="${escapeHtml(item.userId)}"${activeClass}>
-          <div class="group-card-head">
-            <div>
-              <div class="group-title">${escapeHtml(item.userId || "-")}</div>
-              <div class="group-id">方案：${escapeHtml(item.plan || "-")}</div>
-            </div>
-          </div>
-
-          <div class="group-row">
-            <div class="label">狀態</div>
-            <div class="tag-wrap">
-              ${buildTag(status)}
-              ${buildTag(manualOverride)}
-            </div>
-          </div>
-
-          <div class="group-row">
-            <div class="label">群組 / 額度</div>
-            <div>${escapeHtml(String(item.maxGroups ?? 0))} 群 / ${escapeHtml(String(item.monthlyQuota ?? 0))} 次</div>
-          </div>
-
-          <div class="group-row">
-            <div class="label">付款</div>
-            <div>${escapeHtml(item.lastPaymentStatus || "-")}</div>
-          </div>
-
-          <div class="group-row">
-            <div class="label">到期</div>
-            <div>${escapeHtml(formatTime(item.currentPeriodEnd || item.trialEndsAt || null))}</div>
+        <button class="group-card ${active}" data-user-id="${escapeHtml(item.userId)}">
+          <div class="group-title">${escapeHtml(title)}</div>
+          <div class="group-id">${escapeHtml(subtitle)}</div>
+          <div class="tag-row">
+            <span class="tag">${buildTag(status)}</span>
+            <span class="tag">${buildTag(item.plan || "-")}</span>
+            <span class="tag">${buildTag(override)}</span>
           </div>
         </button>
       `;
     })
     .join("");
 
-  [...container.querySelectorAll("[data-userid]")].forEach((el) => {
-    el.addEventListener("click", () => {
-      const userId = el.getAttribute("data-userid");
-      if (userId) {
-        loadSubscriptionDetail(userId).catch((err) => toast(err.message, true));
-      }
-    });
+  container.querySelectorAll("[data-user-id]").forEach((el) => {
+    el.addEventListener("click", () => loadSubscriptionDetail(el.dataset.userId));
   });
 }
+
 
 function fillDefaultsForm(defaults = {}) {
   document.getElementById("trialDays").value = Number(defaults.trialDays ?? 14);
@@ -375,19 +372,26 @@ function fillManualForms(userId) {
 }
 
 async function loadSubscriptionDetail(userId) {
-  const res = await api(`/admin/subscriptions/${encodeURIComponent(userId)}`);
-  const subscription = res.subscription || null;
-  const usage = res.usage || null;
-  const groupsCount = res.groupsCount ?? 0;
+  const data = await api(`/admin/subscriptions/${encodeURIComponent(userId)}`);
+  const subscription = {
+    ...(data.subscription || {}),
+    userId: data.userId || userId,
+    displayName: data.displayName || data.subscription?.displayName || "",
+  };
 
   state.selectedUserId = userId;
-  document.getElementById("selectedUserText").textContent = userId ? `目前選取：${userId}` : "尚未選取使用者";
 
-  renderSelectedSummary(subscription, usage, groupsCount);
-  fillConfigForm(subscription || { userId });
-  fillManualForms(userId);
-  applyFilters();
+  document.getElementById("selectedUserText").textContent =
+    getSelectedUserText(subscription);
+
+  renderSelectedSummary(subscription, data.usage, data.groupsCount);
+  fillConfigForm(subscription);
+  fillManualForm(subscription);
+  fillResetUsageForm(subscription, data.usage);
+
+  renderList();
 }
+
 
 async function saveConfig(event) {
   event.preventDefault();
