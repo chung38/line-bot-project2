@@ -76,7 +76,6 @@ const MANUAL_OVERRIDE = {
   FORCE_ACTIVE: "FORCE_ACTIVE",
   FORCE_INACTIVE: "FORCE_INACTIVE",
 };
-
 const SUPPORTED_LANGS = {
   en: "英文",
   th: "泰文",
@@ -273,12 +272,24 @@ function getMonthKey(date = new Date()) {
   return `${y}${m}`;
 }
 
+function normalizeMonthKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return getMonthKey();
+
+  const compact = raw.replace(/-/g, "");
+  if (/^\d{6}$/.test(compact)) return compact;
+
+  return getMonthKey();
+}
+
 function toDateSafe(v) {
   if (!v) return null;
   if (typeof v.toDate === "function") return v.toDate();
   if (v instanceof Date) return v;
-  return new Date(v);
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
+
 const FALLBACK_SUBSCRIPTION_DEFAULTS = {
   trialDays: 14,
   trialMaxGroups: 2,
@@ -339,6 +350,54 @@ async function getSubscriptionDefaults() {
   return defaults;
 }
 
+function normalizeSubscriptionStatus(value, fallback = SUBSCRIPTION_STATUS.INACTIVE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    TRIAL: SUBSCRIPTION_STATUS.TRIAL,
+    ACTIVE: SUBSCRIPTION_STATUS.ACTIVE,
+    MANUALACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    MANUAL_ACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    INACTIVE: SUBSCRIPTION_STATUS.INACTIVE,
+    PAYMENTFAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+    PAYMENT_FAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeManualOverride(value, fallback = MANUAL_OVERRIDE.NONE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    NONE: MANUAL_OVERRIDE.NONE,
+    FORCEACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCE_ACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCEINACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+    FORCE_INACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeManualAction(value) {
+  const raw = String(value || "").trim().toLowerCase().replace(/[\s-]/g, "_");
+  const map = {
+    activate: "activate",
+    deactivate: "deactivate",
+    forceactive: "force_active",
+    force_active: "force_active",
+    forceinactive: "force_inactive",
+    force_inactive: "force_inactive",
+    clearoverride: "clear_override",
+    clear_override: "clear_override",
+  };
+  return map[raw] || raw;
+}
+
+function parseOptionalDateInput(value, fallback = undefined) {
+  if (value === undefined) return fallback;
+  if (value === "" || value === null) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? fallback : d;
+}
+
 async function getSubscriptionByUserId(userId) {
   if (!userId) return null;
   const doc = await db.collection("userSubscriptions").doc(userId).get();
@@ -346,16 +405,19 @@ async function getSubscriptionByUserId(userId) {
 }
 
 async function getMonthlyUsage(userId, monthKey = getMonthKey()) {
-  const id = `${userId}_${monthKey}`;
+  const normalizedMonthKey = normalizeMonthKey(monthKey);
+  const id = `${userId}_${normalizedMonthKey}`;
   const doc = await db.collection("usageMonthly").doc(id).get();
+
   if (!doc.exists) {
     return {
       userId,
-      monthKey,
+      monthKey: normalizedMonthKey,
       translationCount: 0,
       charCount: 0,
     };
   }
+
   return doc.data();
 }
 
@@ -363,14 +425,18 @@ async function incrementMonthlyUsage(userId, translationCount = 1, charCount = 0
   if (!userId) return;
   const monthKey = getMonthKey();
   const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
-  await ref.set({
-    userId,
-    monthKey,
-    translationCount: admin.firestore.FieldValue.increment(translationCount),
-    charCount: admin.firestore.FieldValue.increment(charCount),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+
+  await ref.set(
+    {
+      userId,
+      monthKey,
+      translationCount: admin.firestore.FieldValue.increment(translationCount),
+      charCount: admin.firestore.FieldValue.increment(charCount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 async function countGroupsByInviter(userId) {
@@ -393,14 +459,14 @@ async function ensureSubscriptionDoc(userId) {
 
   const initData = {
     userId,
-    status: SUBSCRIPTIONSTATUS.TRIAL,
+    status: SUBSCRIPTION_STATUS.TRIAL,
     plan: "trial",
     trialEndsAt: trialEnd,
     currentPeriodEnd: null,
     maxGroups: defaults.trialMaxGroups,
     monthlyQuota: defaults.trialMonthlyQuota,
     usedQuota: 0,
-    manualOverride: MANUALOVERRIDE.NONE,
+    manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "",
     ecpayTradeNo: "",
@@ -411,7 +477,6 @@ async function ensureSubscriptionDoc(userId) {
   await ref.set(initData, { merge: true });
   return initData;
 }
-
 
 async function canUseGroup(gid) {
   const inviterUserId = groupInviter.get(gid);
@@ -503,12 +568,12 @@ async function activatePaidSubscription(userId, options = {}) {
 
   const payload = {
     userId,
-    status: SUBSCRIPTIONSTATUS.ACTIVE,
+    status: SUBSCRIPTION_STATUS.ACTIVE,
     plan,
     currentPeriodEnd: end,
     maxGroups,
     monthlyQuota,
-    manualOverride: MANUALOVERRIDE.NONE,
+    manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "paid",
     ecpayTradeNo: tradeNo,
@@ -522,7 +587,6 @@ async function activatePaidSubscription(userId, options = {}) {
   await ref.set(payload, { merge: true });
 }
 
-
 async function markPaymentFailed(userId, tradeNo = "") {
   const ref = db.collection("userSubscriptions").doc(userId);
   const snap = await ref.get();
@@ -533,22 +597,28 @@ async function markPaymentFailed(userId, tradeNo = "") {
     current?.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE;
 
   if (isManualProtected) {
-    await ref.set({
-      userId,
-      lastPaymentStatus: "failed",
-      ecpayTradeNo: tradeNo,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    await ref.set(
+      {
+        userId,
+        lastPaymentStatus: "failed",
+        ecpayTradeNo: tradeNo,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
     return;
   }
 
-  await ref.set({
-    userId,
-    status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
-    lastPaymentStatus: "failed",
-    ecpayTradeNo: tradeNo,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+  await ref.set(
+    {
+      userId,
+      status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+      lastPaymentStatus: "failed",
+      ecpayTradeNo: tradeNo,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 function ecpayUrlEncodeDotNet(str = "") {
   return encodeURIComponent(str)
@@ -1494,6 +1564,7 @@ adminRouter.get("/subscriptions", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 adminRouter.get("/subscription-defaults", async (req, res) => {
   try {
     const defaults = await getSubscriptionDefaults();
@@ -1521,7 +1592,7 @@ adminRouter.put("/subscription-defaults", async (req, res) => {
     await ref.set(payload, { merge: true });
 
     await addAdminLog(
-      "UPDATESUBSCRIPTIONDEFAULTS",
+      "UPDATE_SUBSCRIPTION_DEFAULTS",
       "subscriptionDefaults",
       req.auth.user,
       defaults
@@ -1557,14 +1628,12 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     const userId = req.params.userId;
     const defaults = await getSubscriptionDefaults();
 
-    const {
-      action,
-      plan = defaults.manualPlan,
-      days = defaults.manualDays,
-      maxGroups = defaults.manualMaxGroups,
-      monthlyQuota = defaults.manualMonthlyQuota,
-      reason = "",
-    } = req.body;
+    const action = normalizeManualAction(req.body?.action);
+    const plan = String(req.body?.plan ?? defaults.manualPlan).trim() || defaults.manualPlan;
+    const days = toSafeInt(req.body?.days, defaults.manualDays, 1);
+    const maxGroups = toSafeInt(req.body?.maxGroups, defaults.manualMaxGroups, 0);
+    const monthlyQuota = toSafeInt(req.body?.monthlyQuota, defaults.manualMonthlyQuota, 0);
+    const reason = String(req.body?.reason || "").trim();
 
     const ref = db.collection("userSubscriptions").doc(userId);
     const snap = await ref.get();
@@ -1576,15 +1645,15 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
 
       const end = new Date(baseDate);
-      end.setDate(end.getDate() + Number(days || 30));
+      end.setDate(end.getDate() + days);
 
       const payload = {
         userId,
         status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
         plan,
         currentPeriodEnd: end,
-        maxGroups: Number(maxGroups || 0),
-        monthlyQuota: Number(monthlyQuota || 0),
+        maxGroups,
+        monthlyQuota,
         manualOverride: MANUAL_OVERRIDE.NONE,
         manualReason: reason || "admin manual activate",
         lastPaymentStatus: "manual",
@@ -1593,6 +1662,8 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.ecpayTradeNo = "";
+        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -1607,6 +1678,8 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.ecpayTradeNo = "";
+        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -1615,13 +1688,18 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
         userId,
         manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
         manualReason: reason || "admin force active",
-        maxGroups: Number(maxGroups || 0),
-        monthlyQuota: Number(monthlyQuota || 0),
+        maxGroups,
+        monthlyQuota,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.status = SUBSCRIPTION_STATUS.INACTIVE;
+        payload.plan = "custom";
+        payload.lastPaymentStatus = "";
+        payload.ecpayTradeNo = "";
+        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -1635,6 +1713,11 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.status = SUBSCRIPTION_STATUS.INACTIVE;
+        payload.plan = "custom";
+        payload.lastPaymentStatus = "";
+        payload.ecpayTradeNo = "";
+        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -1648,6 +1731,11 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.status = SUBSCRIPTION_STATUS.INACTIVE;
+        payload.plan = "custom";
+        payload.lastPaymentStatus = "";
+        payload.ecpayTradeNo = "";
+        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -1668,6 +1756,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
   try {
     const userId = req.params.userId;
@@ -1675,23 +1764,26 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
     const snap = await ref.get();
     const current = snap.exists ? snap.data() : null;
 
-    const status = String(req.body?.status || current?.status || SUBSCRIPTION_STATUS.INACTIVE).trim();
-    const plan = String(req.body?.plan || current?.plan || "custom").trim() || "custom";
-    const manualOverride = String(req.body?.manualOverride || current?.manualOverride || MANUAL_OVERRIDE.NONE).trim();
-    const manualReason = String(req.body?.manualReason || "");
-    const lastPaymentStatus = String(req.body?.lastPaymentStatus || current?.lastPaymentStatus || "");
+    const status = normalizeSubscriptionStatus(
+      req.body?.status,
+      current?.status || SUBSCRIPTION_STATUS.INACTIVE
+    );
+
+    const plan = String(req.body?.plan ?? current?.plan ?? "custom").trim() || "custom";
+
+    const manualOverride = normalizeManualOverride(
+      req.body?.manualOverride,
+      current?.manualOverride || MANUAL_OVERRIDE.NONE
+    );
+
+    const manualReason = String(req.body?.manualReason ?? current?.manualReason ?? "").trim();
+    const lastPaymentStatus = String(req.body?.lastPaymentStatus ?? current?.lastPaymentStatus ?? "").trim();
 
     const maxGroups = Number(req.body?.maxGroups ?? current?.maxGroups ?? 0);
     const monthlyQuota = Number(req.body?.monthlyQuota ?? current?.monthlyQuota ?? 0);
 
-    function parseDateInput(value) {
-      if (value === "" || value === null || value === undefined) return null;
-      const d = new Date(value);
-      return Number.isNaN(d.getTime()) ? null : d;
-    }
-
-    const trialEndsAt = parseDateInput(req.body?.trialEndsAt);
-    const currentPeriodEnd = parseDateInput(req.body?.currentPeriodEnd);
+    const trialEndsAt = parseOptionalDateInput(req.body?.trialEndsAt, current?.trialEndsAt);
+    const currentPeriodEnd = parseOptionalDateInput(req.body?.currentPeriodEnd, current?.currentPeriodEnd);
 
     if (!Object.values(SUBSCRIPTION_STATUS).includes(status)) {
       return res.status(400).json({ success: false, error: "invalid status" });
@@ -1739,13 +1831,13 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
         userId,
         status,
         plan,
-        trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : null,
-        currentPeriodEnd: currentPeriodEnd ? currentPeriodEnd.toISOString() : null,
+        trialEndsAt: trialEndsAt ? toDateSafe(trialEndsAt)?.toISOString?.() || null : null,
+        currentPeriodEnd: currentPeriodEnd ? toDateSafe(currentPeriodEnd)?.toISOString?.() || null : null,
         maxGroups,
         monthlyQuota,
         manualOverride,
         manualReason,
-        lastPaymentStatus
+        lastPaymentStatus,
       }
     );
 
@@ -1759,17 +1851,20 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
 adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
   try {
     const userId = req.params.userId;
-    const monthKey = req.body?.monthKey || getMonthKey();
+    const monthKey = normalizeMonthKey(req.body?.monthKey || getMonthKey());
     const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
 
-    await ref.set({
-      userId,
-      monthKey,
-      translationCount: 0,
-      charCount: 0,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    await ref.set(
+      {
+        userId,
+        monthKey,
+        translationCount: 0,
+        charCount: 0,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
     await addAdminLog(
       "RESET_USAGE_MONTHLY",
@@ -1783,6 +1878,7 @@ adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 
 app.use("/admin", adminRouter);
 app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async (req, res) => {
@@ -1801,26 +1897,30 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
       return res.status(400).send("0|ORDER_NOT_FOUND");
     }
 
+    const defaults = await getSubscriptionDefaults();
     const userId = order.userId;
 
     if (String(RtnCode) === "1") {
       await activatePaidSubscription(userId, {
         tradeNo: MerchantTradeNo,
-        plan: order.plan || "monthly",
-        months: Number(order.months || 1),
-        maxGroups: Number(order.maxGroups || 5),
-        monthlyQuota: Number(order.monthlyQuota || 3000),
+        plan: order.plan || defaults.paidPlan,
+        months: Number(order.months ?? defaults.paidMonths),
+        maxGroups: Number(order.maxGroups ?? defaults.paidMaxGroups),
+        monthlyQuota: Number(order.monthlyQuota ?? defaults.paidMonthlyQuota),
       });
     } else {
       await markPaymentFailed(userId, MerchantTradeNo);
     }
 
-    await db.collection("paymentOrders").doc(MerchantTradeNo).set({
-      callbackBody: req.body,
-      callbackAt: admin.firestore.FieldValue.serverTimestamp(),
-      paymentResult: String(RtnCode) === "1" ? "paid" : "failed",
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    await db.collection("paymentOrders").doc(MerchantTradeNo).set(
+      {
+        callbackBody: req.body,
+        callbackAt: admin.firestore.FieldValue.serverTimestamp(),
+        paymentResult: String(RtnCode) === "1" ? "paid" : "failed",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
     res.send("1|OK");
   } catch (e) {
@@ -1828,8 +1928,6 @@ app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async
     res.status(500).send("0|ERROR");
   }
 });
-
-
 
 app.post("/webhook", webhookLimiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
