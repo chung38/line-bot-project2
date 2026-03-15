@@ -477,6 +477,45 @@ async function ensureSubscriptionDoc(userId) {
   await ref.set(initData, { merge: true });
   return initData;
 }
+async function getBoundGroupsByInviter(userId) {
+  if (!userId) return [];
+  const snap = await db
+    .collection("groupInviters")
+    .where("userId", "==", userId)
+    .get();
+
+  return snap.docs.map(doc => ({
+    gid: doc.id,
+    ...doc.data(),
+  }));
+}
+
+async function canBindGroupToInviter(userId, gid) {
+  const sub = await ensureSubscriptionDoc(userId);
+  const maxGroups = Number(sub?.maxGroups || 0);
+
+  if (maxGroups <= 0) {
+    return { ok: true, sub };
+  }
+
+  const groups = await getBoundGroupsByInviter(userId);
+  const alreadyBound = groups.some(x => x.gid === gid);
+
+  if (alreadyBound) {
+    return { ok: true, sub, alreadyBound: true };
+  }
+
+  if (groups.length >= maxGroups) {
+    return {
+      ok: false,
+      code: "BIND_GROUP_LIMIT",
+      sub,
+      message: `此授權最多只能綁定 ${maxGroups} 個群組，請先移除舊群組或升級方案。`,
+    };
+  }
+
+  return { ok: true, sub };
+}
 
 async function canUseGroup(gid) {
   const inviterUserId = groupInviter.get(gid);
@@ -684,15 +723,29 @@ function isAuthorizedOperator(gid, uid) {
 }
 
 async function ensureInviterIfMissing(gid, uid) {
-  if (!gid || !uid) return null;
-  let inviter = groupInviter.get(gid);
-  if (!inviter) {
-    groupInviter.set(gid, uid);
-    await saveInviterForGroup(gid);
-    inviter = uid;
+  if (!gid || !uid) {
+    return { ok: false, message: "缺少 gid 或 uid" };
   }
-  return inviter;
+
+  let inviter = groupInviter.get(gid);
+  if (inviter) {
+    return { ok: true, inviter, alreadyBound: true };
+  }
+
+  const bindCheck = await canBindGroupToInviter(uid, gid);
+  if (!bindCheck.ok) {
+    return bindCheck;
+  }
+
+  groupInviter.set(gid, uid);
+  await saveInviterForGroup(gid, {
+    boundAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdBy: uid,
+  });
+
+  return { ok: true, inviter: uid };
 }
+
 
 async function getGroupMemberDisplayName(gid, uid) {
   if (!gid || !uid) return uid || "未知使用者";
@@ -775,15 +828,24 @@ async function saveLangForGroup(gid) {
   }
 }
 
-async function saveInviterForGroup(gid) {
+async function saveInviterForGroup(gid, extra = {}) {
   const ref = db.collection("groupInviters").doc(gid);
   const userId = groupInviter.get(gid);
+
   if (userId) {
-    await ref.set({ userId }, { merge: true });
+    await ref.set(
+      {
+        userId,
+        ...extra,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
   } else {
     await ref.delete().catch(() => {});
   }
 }
+
 
 async function saveIndustryForGroup(gid) {
   const ref = db.collection("groupIndustries").doc(gid);
