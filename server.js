@@ -703,6 +703,24 @@ async function getGroupMemberDisplayName(gid, uid) {
     return uid;
   }
 }
+async function getUserDisplayNameByUserId(userId) {
+  if (!userId) return null;
+
+  try {
+    const snap = await db
+      .collection("groupInviters")
+      .where("userId", "==", userId)
+      .limit(1)
+      .get();
+
+    if (snap.empty) return null;
+
+    const gid = snap.docs[0].id;
+    return await getGroupMemberDisplayName(gid, userId);
+  } catch {
+    return null;
+  }
+}
 
 async function safeReplyOrPush(replyToken, gid, text) {
   try {
@@ -1558,12 +1576,28 @@ adminRouter.get("/logs", async (req, res) => {
 adminRouter.get("/subscriptions", async (req, res) => {
   try {
     const snapshot = await db.collection("userSubscriptions").get();
-    const items = snapshot.docs.map(doc => ({ userId: doc.id, ...doc.data() }));
+
+    const items = await Promise.all(
+      snapshot.docs.map(async (doc) => {
+        const userId = doc.id;
+        const displayName = await getUserDisplayNameByUserId(userId);
+        const groupsCount = await countGroupsByInviter(userId);
+
+        return {
+          userId,
+          displayName: displayName || "",
+          groupsCount,
+          ...doc.data(),
+        };
+      })
+    );
+
     res.json({ success: true, items });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 
 adminRouter.get("/subscription-defaults", async (req, res) => {
   try {
@@ -1610,11 +1644,19 @@ adminRouter.get("/subscriptions/:userId", async (req, res) => {
     const sub = await getSubscriptionByUserId(userId);
     const usage = await getMonthlyUsage(userId);
     const groupsCount = await countGroupsByInviter(userId);
+    const displayName = await getUserDisplayNameByUserId(userId);
 
     res.json({
       success: true,
       userId,
-      subscription: sub,
+      displayName: displayName || "",
+      subscription: sub
+        ? {
+            ...sub,
+            userId,
+            displayName: displayName || "",
+          }
+        : null,
       usage,
       groupsCount,
     });
@@ -1622,6 +1664,7 @@ adminRouter.get("/subscriptions/:userId", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 
 adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
   try {
