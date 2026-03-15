@@ -2099,8 +2099,6 @@ if (event.type === "join" && gid) {
   await sendMenu(gid);
   return;
 }
-
-
 if (event.type === "postback" && gid) {
   const data = event.postback?.data || "";
 
@@ -2115,56 +2113,75 @@ if (event.type === "postback" && gid) {
   }
 
   const protectedActions = [
-  "action=set_lang",
-  "action=set_industry",
-  "action=show_industry_menu"
-];
+    "action=set_lang",
+    "action=set_industry",
+    "action=show_industry_menu"
+  ];
 
-  ...
+  if (protectedActions.some(action => data.startsWith(action)) && !isAuthorizedOperator(gid, uid)) {
+    await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+    return;
+  }
+
+  if (data.startsWith("action=set_lang")) {
+    const code = data.split("code=")[1];
+    let set = groupLang.get(gid) || new Set();
+
+    if (code === "cancel") {
+      set = new Set();
+    } else if (SUPPORTED_LANGS[code]) {
+      if (set.has(code)) set.delete(code);
+      else set.add(code);
+    }
+
+    groupLang.set(gid, set);
+    await saveLangForGroup(gid);
+
+    const langs = [...set].map(c => SUPPORTED_LANGS[c]).join("、");
+    await safeReplyOrPush(
+      event.replyToken,
+      gid,
+      set.size
+        ? i18n["zh-TW"].langSelected.replace("{langs}", langs)
+        : i18n["zh-TW"].langCanceled
+    );
+    return;
+  }
+
+  if (data.startsWith("action=set_industry")) {
+    const industry = decodeURIComponent(data.split("industry=")[1] || "");
+
+    if (industry && !isValidIndustry(industry)) {
+      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].invalidIndustry);
+      return;
+    }
+
+    if (industry) {
+      groupIndustry.set(gid, industry);
+      await saveIndustryForGroup(gid);
+      await safeReplyOrPush(
+        event.replyToken,
+        gid,
+        i18n["zh-TW"].industrySet.replace("{industry}", industry)
+      );
+    } else {
+      groupIndustry.delete(gid);
+      await saveIndustryForGroup(gid);
+      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
+    }
+    return;
+  }
+
+  if (data === "action=show_industry_menu") {
+    try {
+      await client.replyMessage(event.replyToken, buildIndustryMenu());
+    } catch {
+      await client.pushMessage(gid, buildIndustryMenu());
+    }
+    return;
+  }
 }
 
-      if (data.startsWith("action=set_lang")) {
-        const code = data.split("code=")[1];
-        let set = groupLang.get(gid) || new Set();
-        if (code === "cancel") set = new Set();
-        else if (SUPPORTED_LANGS[code]) {
-          if (set.has(code)) set.delete(code); else set.add(code);
-        }
-        groupLang.set(gid, set);
-        await saveLangForGroup(gid);
-        const langs = [...set].map(c => SUPPORTED_LANGS[c]).join("、");
-        await safeReplyOrPush(event.replyToken, gid, set.size ? i18n["zh-TW"].langSelected.replace("{langs}", langs) : i18n["zh-TW"].langCanceled);
-        return;
-      }
-
-      if (data.startsWith("action=set_industry")) {
-        const industry = decodeURIComponent(data.split("industry=")[1] || "");
-        if (industry && !isValidIndustry(industry)) {
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].invalidIndustry);
-          return;
-        }
-
-        if (industry) {
-          groupIndustry.set(gid, industry);
-          await saveIndustryForGroup(gid);
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industrySet.replace("{industry}", industry));
-        } else {
-          groupIndustry.delete(gid);
-          await saveIndustryForGroup(gid);
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
-        }
-        return;
-      }
-
-      if (data === "action=show_industry_menu") {
-        try {
-          await client.replyMessage(event.replyToken, buildIndustryMenu());
-        } catch {
-          await client.pushMessage(gid, buildIndustryMenu());
-        }
-        return;
-      }
-    }
 
     if (event.type === "message" && gid && event.message?.type !== "text") return;
 
