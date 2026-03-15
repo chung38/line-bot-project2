@@ -2191,10 +2191,6 @@ if (event.type === "message" && event.message?.type === "text" && gid) {
     await sendMenu(gid);
     return;
   }
-
-  ...
-}
-
       if (text === "!查詢") {
         const langsSet = groupLang.get(gid) || new Set();
         const langs = langsSet.size ? [...langsSet].map(code => SUPPORTED_LANGS[code] || code).join("、") : "尚未設定語言";
