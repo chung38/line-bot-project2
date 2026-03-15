@@ -846,7 +846,6 @@ async function saveInviterForGroup(gid, extra = {}) {
   }
 }
 
-
 async function saveIndustryForGroup(gid) {
   const ref = db.collection("groupIndustries").doc(gid);
   const industry = groupIndustry.get(gid);
