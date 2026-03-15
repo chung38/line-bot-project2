@@ -83,7 +83,9 @@ function toInputDateTime(value) {
   if (!value) return "";
   let d = null;
 
-  if (typeof value === "object" && typeof value.seconds === "number") {
+  if (typeof value === "object" && typeof value._seconds === "number") {
+    d = new Date(value._seconds * 1000);
+  } else if (typeof value === "object" && typeof value.seconds === "number") {
     d = new Date(value.seconds * 1000);
   } else {
     d = new Date(value);
@@ -98,7 +100,6 @@ function toInputDateTime(value) {
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${y}-${m}-${day}T${hh}:${mm}`;
 }
-
 function fromInputDateTime(value) {
   return value ? value : null;
 }
