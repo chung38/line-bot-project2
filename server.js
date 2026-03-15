@@ -278,6 +278,65 @@ function toDateSafe(v) {
   if (v instanceof Date) return v;
   return new Date(v);
 }
+const FALLBACK_SUBSCRIPTION_DEFAULTS = {
+  trialDays: 14,
+  trialMaxGroups: 2,
+  trialMonthlyQuota: 300,
+
+  paidPlan: "monthly",
+  paidMonths: 1,
+  paidMaxGroups: 5,
+  paidMonthlyQuota: 3000,
+
+  manualPlan: "custom",
+  manualDays: 30,
+  manualMaxGroups: 5,
+  manualMonthlyQuota: 3000,
+};
+
+function toSafeInt(value, fallback, min = 0) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return fallback;
+  return Math.max(min, Math.floor(num));
+}
+
+function normalizeSubscriptionDefaults(raw = {}) {
+  return {
+    trialDays: toSafeInt(raw.trialDays, FALLBACK_SUBSCRIPTION_DEFAULTS.trialDays, 1),
+    trialMaxGroups: toSafeInt(raw.trialMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.trialMaxGroups, 0),
+    trialMonthlyQuota: toSafeInt(raw.trialMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.trialMonthlyQuota, 0),
+
+    paidPlan: String(raw.paidPlan ?? FALLBACK_SUBSCRIPTION_DEFAULTS.paidPlan).trim() || "monthly",
+    paidMonths: toSafeInt(raw.paidMonths, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonths, 1),
+    paidMaxGroups: toSafeInt(raw.paidMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMaxGroups, 0),
+    paidMonthlyQuota: toSafeInt(raw.paidMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonthlyQuota, 0),
+
+    manualPlan: String(raw.manualPlan ?? FALLBACK_SUBSCRIPTION_DEFAULTS.manualPlan).trim() || "custom",
+    manualDays: toSafeInt(raw.manualDays, FALLBACK_SUBSCRIPTION_DEFAULTS.manualDays, 1),
+    manualMaxGroups: toSafeInt(raw.manualMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.manualMaxGroups, 0),
+    manualMonthlyQuota: toSafeInt(raw.manualMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.manualMonthlyQuota, 0),
+  };
+}
+
+async function getSubscriptionDefaults() {
+  const ref = db.collection("systemSettings").doc("subscriptionDefaults");
+  const snap = await ref.get();
+
+  const defaults = normalizeSubscriptionDefaults(snap.exists ? snap.data() : {});
+
+  if (!snap.exists) {
+    await ref.set(
+      {
+        ...defaults,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  return defaults;
+}
 
 async function getSubscriptionByUserId(userId) {
   if (!userId) return null;
@@ -321,37 +380,37 @@ async function countGroupsByInviter(userId) {
 
 async function ensureSubscriptionDoc(userId) {
   if (!userId) return null;
+
   const ref = db.collection("userSubscriptions").doc(userId);
   const doc = await ref.get();
+  if (doc.exists) return doc.data();
 
-  if (!doc.exists) {
-    const now = new Date();
-    const trialEnd = new Date(now);
-    trialEnd.setDate(trialEnd.getDate() + 14);
+  const defaults = await getSubscriptionDefaults();
+  const now = new Date();
+  const trialEnd = new Date(now);
+  trialEnd.setDate(trialEnd.getDate() + defaults.trialDays);
 
-    const initData = {
-      userId,
-      status: SUBSCRIPTION_STATUS.TRIAL,
-      plan: "trial",
-      trialEndsAt: trialEnd,
-      currentPeriodEnd: null,
-      maxGroups: 2,
-      monthlyQuota: 300,
-      usedQuota: 0,
-      manualOverride: MANUAL_OVERRIDE.NONE,
-      manualReason: "",
-      lastPaymentStatus: "",
-      ecpayTradeNo: "",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
+  const initData = {
+    userId,
+    status: SUBSCRIPTIONSTATUS.TRIAL,
+    plan: "trial",
+    trialEndsAt: trialEnd,
+    currentPeriodEnd: null,
+    maxGroups: defaults.trialMaxGroups,
+    monthlyQuota: defaults.trialMonthlyQuota,
+    usedQuota: 0,
+    manualOverride: MANUALOVERRIDE.NONE,
+    manualReason: "",
+    lastPaymentStatus: "",
+    ecpayTradeNo: "",
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
 
-    await ref.set(initData, { merge: true });
-    return initData;
-  }
-
-  return doc.data();
+  await ref.set(initData, { merge: true });
+  return initData;
 }
+
 
 async function canUseGroup(gid) {
   const inviterUserId = groupInviter.get(gid);
@@ -421,13 +480,15 @@ async function canUseGroup(gid) {
   return { ok: false, code: "INACTIVE", inviterUserId, sub, usage, message: "尚未開通訂閱。" };
 }
 
-async function activatePaidSubscription(userId, {
-  tradeNo = "",
-  plan = "monthly",
-  months = 1,
-  maxGroups = 5,
-  monthlyQuota = 3000,
-} = {}) {
+async function activatePaidSubscription(userId, options = {}) {
+  const defaults = await getSubscriptionDefaults();
+
+  const tradeNo = options.tradeNo || "";
+  const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
+  const months = toSafeInt(options.months, defaults.paidMonths, 1);
+  const maxGroups = toSafeInt(options.maxGroups, defaults.paidMaxGroups, 0);
+  const monthlyQuota = toSafeInt(options.monthlyQuota, defaults.paidMonthlyQuota, 0);
+
   const ref = db.collection("userSubscriptions").doc(userId);
   const snap = await ref.get();
   const current = snap.exists ? snap.data() : null;
@@ -437,16 +498,16 @@ async function activatePaidSubscription(userId, {
   const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
 
   const end = new Date(baseDate);
-  end.setMonth(end.getMonth() + Number(months || 1));
+  end.setMonth(end.getMonth() + months);
 
   const payload = {
     userId,
-    status: SUBSCRIPTION_STATUS.ACTIVE,
+    status: SUBSCRIPTIONSTATUS.ACTIVE,
     plan,
     currentPeriodEnd: end,
     maxGroups,
     monthlyQuota,
-    manualOverride: MANUAL_OVERRIDE.NONE,
+    manualOverride: MANUALOVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "paid",
     ecpayTradeNo: tradeNo,
@@ -459,6 +520,7 @@ async function activatePaidSubscription(userId, {
 
   await ref.set(payload, { merge: true });
 }
+
 
 async function markPaymentFailed(userId, tradeNo = "") {
   const ref = db.collection("userSubscriptions").doc(userId);
@@ -1431,6 +1493,44 @@ adminRouter.get("/subscriptions", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+adminRouter.get("/subscription-defaults", async (req, res) => {
+  try {
+    const defaults = await getSubscriptionDefaults();
+    res.json({ success: true, defaults });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.put("/subscription-defaults", async (req, res) => {
+  try {
+    const ref = db.collection("systemSettings").doc("subscriptionDefaults");
+    const snap = await ref.get();
+
+    const defaults = normalizeSubscriptionDefaults(req.body || {});
+    const payload = {
+      ...defaults,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (!snap.exists) {
+      payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    await ref.set(payload, { merge: true });
+
+    await addAdminLog(
+      "UPDATESUBSCRIPTIONDEFAULTS",
+      "subscriptionDefaults",
+      req.auth.user,
+      defaults
+    );
+
+    res.json({ success: true, defaults });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 adminRouter.get("/subscriptions/:userId", async (req, res) => {
   try {
@@ -1454,14 +1554,16 @@ adminRouter.get("/subscriptions/:userId", async (req, res) => {
 adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
   try {
     const userId = req.params.userId;
+    const defaults = await getSubscriptionDefaults();
+
     const {
-      action,              // activate | deactivate | force_active | force_inactive | clear_override
-      plan = "custom",
-      days = 30,
-      maxGroups = 5,
-      monthlyQuota = 3000,
+      action,
+      plan = defaults.manualPlan,
+      days = defaults.manualDays,
+      maxGroups = defaults.manualMaxGroups,
+      monthlyQuota = defaults.manualMonthlyQuota,
       reason = "",
-    } = req.body || {};
+    } = req.body;
 
     const ref = db.collection("userSubscriptions").doc(userId);
     const snap = await ref.get();
