@@ -196,11 +196,11 @@ function detectLang(text) {
     return "id";
   }
 
-  if (chineseLen >= 2 && foreignLen === 0) return "zh-TW";
-  if (chineseRatio > 0.45 && chineseLen >= 2) return "zh-TW";
+  if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
+if (chineseRatio >= 0.45 && chineseLen >= 1) return 'zh-TW';
+if (latinLen === 0) return 'en';
+if (chineseLen >= 1) return 'zh-TW';
 
-  if (latinLen > 0) return "en";
-  if (chineseLen >= 2) return "zh-TW";
 
   return "en";
 }
