@@ -162,13 +162,15 @@ function normalizeTextForLangDetect(text = "") {
     .replace(/\s+/g, " ")
     .trim();
 }
-function detectLang(text = "") {
-  const cleaned = normalizeTextForLangDetect(text);
-  if (!cleaned) return "en";
-
-  const totalLen = cleaned.length || 1;
-
-  const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
+function detectLang(text) {
+  const cleaned = normalizeTextForLangDetect(text)
+  if (!cleaned) return 'en'
+  
+  // 修改原本的 const totalLen = cleaned.length || 1
+  const noNumCleaned = cleaned.replace(/[0-9]/g, '')
+  const totalLen = noNumCleaned.length || 1
+  
+  const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length
   const thaiLen = (cleaned.match(/[\u0E00-\u0E7F]/g) || []).length;
   const viCharLen = (cleaned.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (cleaned.match(/[a-zA-Z]/g) || []).length;
