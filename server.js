@@ -175,6 +175,7 @@ function detectLang(text = "") {
 
   const chineseRatio = chineseLen / totalLen;
   const thaiRatio = thaiLen / totalLen;
+  const foreignLen = thaiLen + viCharLen + latinLen;
 
   if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
 
@@ -186,21 +187,22 @@ function detectLang(text = "") {
   }
 
   if (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|datang|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(cleaned) ||
+    /\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|data|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(cleaned) ||
     /\b(di|ke|me|ber|ter)\w+\b/i.test(cleaned) ||
     /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
   ) {
     return "id";
   }
 
-  if (chineseRatio > 0.45 && chineseLen >= 4) return "zh-TW";
+  if (chineseLen >= 2 && foreignLen === 0) return "zh-TW";
+  if (chineseRatio > 0.45 && chineseLen >= 2) return "zh-TW";
 
   if (latinLen > 0) return "en";
-
-  if (chineseLen >= 4) return "zh-TW";
+  if (chineseLen >= 2) return "zh-TW";
 
   return "en";
 }
+
 
 function isPureChineseMessage(text = "") {
   const cleaned = normalizeTextForLangDetect(text);
