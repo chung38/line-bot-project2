@@ -985,17 +985,20 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       .trim();
 
     if (targetLang === "zh-TW") {
-      const hasChinese = /[\u4e00-\u9fff]/.test(out);
-      const unchanged = out === text.trim();
+  const hasChinese = /[\u4e00-\u9fff]/.test(out);
+  const unchanged = out === text.trim();
+  const sourceLooksChinese =
+    detectLang(text) === "zh-TW" || isPureChineseMessage(text);
 
-      if (unchanged || !hasChinese) {
-        if (retry < 2) {
-          const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
-          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
-        }
-        out = "（翻譯異常，請稍後再試）";
-      }
+  if (!hasChinese || (!sourceLooksChinese && unchanged)) {
+    if (retry < 2) {
+      const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
     }
+    out = "（翻譯異常，請稍後再試）";
+  }
+}
+
 
     translationCache.set(cacheKey, out);
     return out;
