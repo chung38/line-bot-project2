@@ -217,11 +217,10 @@ function isPureChineseMessage(text = "") {
   const thaiLen = (compact.match(/[\u0E00-\u0E7F]/g) || []).length;
   const viCharLen = (compact.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (compact.match(/[a-zA-Z]/g) || []).length;
-
   const foreignLen = thaiLen + viCharLen + latinLen;
   const chineseRatio = chineseLen / (compact.length || 1);
-
-  return chineseLen >= 4 && chineseRatio >= 0.6 && foreignLen === 0;
+  return chineseLen >= 1 && chineseRatio >= 0.6 && foreignLen === 0
+;
 }
 
 function extractMentionsFromLineMessage(message) {
