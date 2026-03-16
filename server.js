@@ -1086,7 +1086,8 @@ async function processTranslationInBackground(replyToken,gid,uid,masked,segments
   const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
 
   const foreignLen = thaiLen + viCharLen + latinLen;
-  const isChineseDominant = chineseLen >= 4 && chineseLen >= foreignLen;
+  const isChineseDominant = detectLang(normalizedMergedText) === "zh-TW";
+
 
   if (!isChineseDominant) {
     allNeededLangs.add("zh-TW");
