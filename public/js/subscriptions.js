@@ -386,7 +386,7 @@ async function loadSubscriptionDetail(userId) {
 
   renderSelectedSummary(subscription, data.usage, data.groupsCount);
   fillConfigForm(subscription);
-  fillManualForm(subscription);
+  fillManualForms(subscription);
   fillResetUsageForm(subscription, data.usage);
 
   renderList();
