@@ -163,14 +163,14 @@ function normalizeTextForLangDetect(text = "") {
     .trim();
 }
 function detectLang(text) {
-  const cleaned = normalizeTextForLangDetect(text)
-  if (!cleaned) return 'en'
-  
-  // 修改原本的 const totalLen = cleaned.length || 1
-  const noNumCleaned = cleaned.replace(/[0-9]/g, '')
-  const totalLen = noNumCleaned.length || 1
-  
-  const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length
+  const cleaned = normalizeTextForLangDetect(text);
+  if (!cleaned) return 'en';
+
+  // 去掉數字再算長度
+  const noNumCleaned = cleaned.replace(/[0-9]/g, '');
+  const totalLen = noNumCleaned.length || 1;
+
+  const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
   const thaiLen = (cleaned.match(/[\u0E00-\u0E7F]/g) || []).length;
   const viCharLen = (cleaned.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (cleaned.match(/[a-zA-Z]/g) || []).length;
@@ -179,31 +179,39 @@ function detectLang(text) {
   const thaiRatio = thaiLen / totalLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
 
-  if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
+  // 泰文判斷
+  if (thaiRatio > 0.2 || thaiLen >= 4) return 'th';
 
+  // 越南文判斷
   if (
     /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
     viCharLen >= 2
   ) {
-    return "vi";
+    return 'vi';
   }
 
+  // 印尼文判斷（已加強）
   if (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|data|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(cleaned) ||
-    /\b(di|ke|me|ber|ter)\w+\b/i.test(cleaned) ||
-    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
+    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|data|pulang|izin|sakit|bos|iya|terima|kasih|makasih|selamat|cuti|lembur|barusan|sopir|supir|telp|telepon|makan|tidur|bangun|pergi|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|pengen|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/i.test(cleaned) ||
+    /\b(di|ke|me|ber|ter)\s*\w+\b/i.test(cleaned) ||
+    /\w+(nya|nya?|kan|lah|pun)\b/i.test(cleaned)
   ) {
-    return "id";
+    return 'id';
   }
 
+  // 中文優先規則
   if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
-if (chineseRatio >= 0.45 && chineseLen >= 1) return 'zh-TW';
-if (latinLen === 0) return 'en';
-if (chineseLen >= 1) return 'zh-TW';
+  if (chineseRatio >= 0.45 && chineseLen >= 1) return 'zh-TW';
 
+  // 純符號或沒有拉丁字母時，當英文 fallback
+  if (latinLen === 0) return 'en';
 
-  return "en";
+  // 有摻中文時偏向中文
+  if (chineseLen >= 1) return 'zh-TW';
+
+  return 'en';
 }
+
 
 
 function isPureChineseMessage(text = "") {
