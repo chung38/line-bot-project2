@@ -1,48 +1,16 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LINE BOT 管理台</title>
-  <link rel="stylesheet" href="/css/style.css" />
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">LINE BOT 管理台</div>
-<nav class="nav">
-  <a class="nav-link active" href="/index.html">Dashboard</a>
-  <a class="nav-link" href="/groups.html">群組設定</a>
-  <a class="nav-link" href="/industries.html">行業主檔</a>
-  <a class="nav-link" href="/subscriptions.html">授權管理</a>
-  <a class="nav-link" href="/logs.html">操作紀錄</a>
-</nav>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>Dashboard</h1>
-          <p>群組設定、行業主檔與操作紀錄總覽</p>
-        </div>
-        <div class="auth-box">
-          <input id="authUser" type="text" placeholder="帳號" />
-          <input id="authPass" type="password" placeholder="密碼" />
-          <button id="saveAuthBtn">儲存登入</button>
-        </div>
-      </header>
-      <section class="cards" id="statsCards"></section>
-      <section class="panel">
-        <div class="panel-header"><h2>語言使用統計</h2></div>
-        <div id="langUsage" class="tag-wrap"></div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h2>最近操作</h2></div>
-        <div id="recentLogs"></div>
-      </section>
-    </main>
-  </div>
-  <div id="toast" class="toast"></div>
-  <script src="/js/common.js"></script>
-  <script src="/js/dashboard.js"></script>
-</body>
-</html>
+<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Dashboard — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link  active" href="/index.html"><span class="ni">📊</span>Dashboard</a>
+<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
+<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
+<a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
+<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
+</nav></aside><div class="main">
+<header class="topbar"><div><div class="topbar-title">Dashboard</div><div class="topbar-sub">系統總覽</div></div><div class="auth-box"><input id="authUser" type="text" class="field" placeholder="帳號"/><input id="authPass" type="password" class="field" placeholder="密碼"/><button class="btn btn-primary btn-sm" id="saveAuthBtn">儲存登入</button></div></header>
+<div class="page"><div class="page-header"><h1>📊 Dashboard</h1><p>系統總覽：群組、行業與最近操作一覽</p></div>
+<div id="statsCards" class="stats-grid" style="margin-bottom:16px"></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🌐</span>語言使用統計</h2><button class="btn btn-ghost btn-sm" onclick="loadDashboard()">🔄 重新整理</button></div><div id="langUsage" class="tag-wrap"><span class="badge badge-gray">載入中…</span></div></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🕐</span>最近操作紀錄</h2></div><div id="recentLogs"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">尚無資料</div></div></div></div></div></div></div>
+<div id="toast" class="toast"></div>
+<script src="/js/common.js"></script><script src="/js/dashboard.js"></script></body></html>

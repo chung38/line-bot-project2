@@ -1,85 +1,21 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>行業主檔</title>
-  <link rel="stylesheet" href="/css/style.css" />
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">LINE BOT 管理台</div>
-    <nav class="nav">
-  <a class="nav-link" href="/index.html">Dashboard</a>
-  <a class="nav-link" href="/groups.html">群組設定</a>
-  <a class="nav-link active" href="/industries.html">行業主檔</a>
-  <a class="nav-link" href="/subscriptions.html">授權管理</a>
-  <a class="nav-link" href="/logs.html">操作紀錄</a>
-</nav>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>行業主檔</h1>
-          <p>可新增、修改與停用行業別項目</p>
-        </div>
-      </header>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2 id="industryFormTitle">新增行業</h2>
-          <button id="industryResetBtn" type="button" class="btn-secondary">清空表單</button>
-        </div>
-
-        <form id="industryForm" class="form-grid">
-          <input id="industryId" type="hidden" />
-
-          <div class="form-group">
-            <label for="industryName">行業名稱</label>
-            <input id="industryName" type="text" placeholder="請輸入行業名稱" required />
-          </div>
-
-          <div class="form-group">
-            <label for="sortOrder">排序</label>
-            <input id="sortOrder" type="number" value="9999" />
-          </div>
-
-          <div class="form-group full">
-            <label class="checkbox-item">
-              <input id="industryEnabled" type="checkbox" checked />
-              <span>啟用此行業</span>
-            </label>
-          </div>
-
-          <div class="form-group full">
-            <div class="inline-actions">
-              <button type="submit">儲存行業</button>
-            </div>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>行業列表</h2>
-          <input
-            id="industryKeyword"
-            class="search-input"
-            type="text"
-            placeholder="搜尋 行業名稱 / ID"
-          />
-        </div>
-
-        <div id="industryList" class="list-grid"></div>
-      </section>
-    </main>
-  </div>
-
-  <div id="toast" class="toast"></div>
-
-  <script src="/js/common.js"></script>
-  <script src="/js/industries.js"></script>
-</body>
-</html>
+<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>行業主檔 — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="/index.html"><span class="ni">📊</span>Dashboard</a>
+<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
+<a class="nav-link  active" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
+<a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
+<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
+</nav></aside><div class="main">
+<header class="topbar"><div><div class="topbar-title">行業主檔</div><div class="topbar-sub">管理群組翻譯所使用的行業分類</div></div></header>
+<div class="page"><div class="page-header"><h1>🏭 行業主檔</h1><p>管理所有行業分類</p></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">➕</span>新增 / 編輯行業</h2><button id="resetIndBtn" class="btn btn-ghost btn-sm">✕ 清空</button></div>
+<form id="industryForm" class="form-grid">
+<div class="form-group"><label>行業名稱 *</label><input id="indName" type="text" class="field" placeholder="例如：餐飲業" required/></div>
+<div class="form-group full"><div class="btn-row"><button type="submit" class="btn btn-primary">💾 儲存</button><button type="button" id="deleteIndBtn" class="btn btn-danger">🗑 刪除</button></div></div>
+</form></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">📋</span>行業列表</h2><button class="btn btn-ghost btn-sm" onclick="loadIndustries()">🔄 重新整理</button></div>
+<div class="filter-bar"><div class="search-wrap"><span class="search-icon">🔍</span><input id="indKeyword" type="text" class="field search-field" placeholder="搜尋行業名稱"/></div><span id="indCount" class="filter-count">— 筆</span></div>
+<div id="industryList" class="card-grid"></div></div></div></div></div>
+<div id="toast" class="toast"></div>
+<script src="/js/common.js"></script><script src="/js/industries.js"></script></body></html>

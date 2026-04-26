@@ -1,342 +1,105 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LINE BOT</title>
-  <link rel="stylesheet" href="css/style.css" />
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">LINE BOT</div>
-      <nav class="nav">
-        <a class="nav-link" href="index.html">Dashboard</a>
-        <a class="nav-link" href="groups.html">群組管理</a>
-        <a class="nav-link" href="industries.html">行業管理</a>
-        <a class="nav-link active" href="subscriptions.html">授權管理</a>
-        <a class="nav-link" href="logs.html">操作紀錄</a>
-      </nav>
-    </aside>
+<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>授權管理 — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="/index.html"><span class="ni">📊</span>Dashboard</a>
+<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
+<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
+<a class="nav-link  active" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
+<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
+</nav></aside><div class="main">
+<header class="topbar"><div><div class="topbar-title">授權管理</div><div class="topbar-sub">查詢與設定訂閱狀態</div></div></header>
+<div class="page"><div class="page-header"><h1>🔑 授權管理</h1><p>查詢與設定每位使用者的訂閱狀態</p></div>
+<div id="subTabs">
+<div class="tabs">
+  <button class="tab-btn active" data-tab="tab-list">📋 授權清單</button>
+  <button class="tab-btn" data-tab="tab-config">⚙️ 設定授權</button>
+  <button class="tab-btn" data-tab="tab-manual">🛠 手動操作</button>
+  <button class="tab-btn" data-tab="tab-defaults">📐 預設值</button>
+</div>
 
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>授權管理</h1>
-          <p>管理訂閱狀態、手動開通、預設方案與用量重置。</p>
-        </div>
-
-      </header>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>授權概況</h2>
-          <div class="inline-actions">
-            <button id="reloadAllBtn" type="button" class="btn-secondary">重新整理</button>
-          </div>
-        </div>
-
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-label">總授權數</div>
-            <div id="statTotal" class="stat-value">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">試用中</div>
-            <div id="statTrial" class="stat-value">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">有效中</div>
-            <div id="statActive" class="stat-value">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">手動開通</div>
-            <div id="statManual" class="stat-value">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">付款失敗</div>
-            <div id="statFailed" class="stat-value">0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">停用中</div>
-            <div id="statInactive" class="stat-value">0</div>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>預設方案設定</h2>
-        </div>
-
-        <form id="defaultsForm" class="form-grid">
-          <div class="form-group">
-            <label for="trialDays">試用天數</label>
-            <input id="trialDays" type="number" min="1" step="1" value="14" />
-          </div>
-
-          <div class="form-group">
-            <label for="trialMaxGroups">試用群組上限</label>
-            <input id="trialMaxGroups" type="number" min="0" step="1" value="2" />
-          </div>
-
-          <div class="form-group">
-            <label for="trialMonthlyQuota">試用月額度上限</label>
-            <input id="trialMonthlyQuota" type="number" min="0" step="1" value="300" />
-          </div>
-
-          <div class="form-group">
-            <label for="paidPlan">付費預設方案代碼</label>
-            <input id="paidPlan" type="text" value="monthly" />
-          </div>
-
-          <div class="form-group">
-            <label for="paidMonths">付費預設月數</label>
-            <input id="paidMonths" type="number" min="1" step="1" value="1" />
-          </div>
-
-          <div class="form-group">
-            <label for="paidMaxGroups">付費群組上限</label>
-            <input id="paidMaxGroups" type="number" min="0" step="1" value="5" />
-          </div>
-
-          <div class="form-group">
-            <label for="paidMonthlyQuota">付費月額度上限</label>
-            <input id="paidMonthlyQuota" type="number" min="0" step="1" value="3000" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualPlan">手動開通預設方案代碼</label>
-            <input id="manualPlan" type="text" value="custom" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualDays">手動開通預設天數</label>
-            <input id="manualDays" type="number" min="1" step="1" value="30" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualMaxGroups">手動開通群組上限</label>
-            <input id="manualMaxGroups" type="number" min="0" step="1" value="5" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualMonthlyQuota">手動開通月額度上限</label>
-            <input id="manualMonthlyQuota" type="number" min="0" step="1" value="3000" />
-          </div>
-
-          <div class="form-group full">
-            <div id="defaultsHint" class="muted">尚未載入預設方案設定</div>
-          </div>
-
-          <div class="form-group full">
-            <div class="inline-actions">
-              <button id="saveDefaultsBtn" type="submit">儲存預設值</button>
-              <button id="reloadDefaultsBtn" type="button" class="btn-secondary">重新載入</button>
-            </div>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>查詢條件</h2>
-        </div>
-
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="searchInput">搜尋 userId / 方案 / 付款狀態</label>
-            <input id="searchInput" type="text" class="search-input" placeholder="輸入 userId、plan、payment status" />
-          </div>
-
-          <div class="form-group">
-            <label for="statusFilter">狀態篩選</label>
-            <select id="statusFilter">
-              <option value="">全部狀態</option>
-              <option value="TRIAL">TRIAL</option>
-              <option value="ACTIVE">ACTIVE</option>
-              <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
-              <option value="INACTIVE">INACTIVE</option>
-              <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
-            </select>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>授權清單</h2>
-          <div id="listMeta" class="muted">0 筆</div>
-        </div>
-
-        <div id="subscriptionList" class="list-grid">
-          <div class="empty">尚無資料</div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>使用者授權設定</h2>
-          <div id="selectedUserText" class="muted">尚未選取使用者</div>
-        </div>
-
-        <div id="selectedSummary" class="group-card">
-          <div class="empty">請先從上方授權清單選擇一位使用者</div>
-        </div>
-
-        <form id="configForm" class="form-grid" style="margin-top: 16px;">
-          <div class="form-group">
-            <label for="configUserId">User ID</label>
-            <input id="configUserId" type="text" readonly />
-          </div>
-
-          <div class="form-group">
-            <label for="configStatus">狀態</label>
-            <select id="configStatus">
-              <option value="TRIAL">TRIAL</option>
-              <option value="ACTIVE">ACTIVE</option>
-              <option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option>
-              <option value="INACTIVE">INACTIVE</option>
-              <option value="PAYMENT_FAILED">PAYMENT_FAILED</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="configPlan">方案代碼</label>
-            <input id="configPlan" type="text" />
-          </div>
-
-          <div class="form-group">
-            <label for="configLastPaymentStatus">付款狀態</label>
-            <input id="configLastPaymentStatus" type="text" />
-          </div>
-
-          <div class="form-group">
-            <label for="configTrialEndsAt">試用到期</label>
-            <input id="configTrialEndsAt" type="datetime-local" />
-          </div>
-
-          <div class="form-group">
-            <label for="configCurrentPeriodEnd">方案到期</label>
-            <input id="configCurrentPeriodEnd" type="datetime-local" />
-          </div>
-
-          <div class="form-group">
-            <label for="configMaxGroups">群組上限</label>
-            <input id="configMaxGroups" type="number" min="0" step="1" />
-          </div>
-
-          <div class="form-group">
-            <label for="configMonthlyQuota">月額度上限</label>
-            <input id="configMonthlyQuota" type="number" min="0" step="1" />
-          </div>
-
-          <div class="form-group">
-            <label for="configManualOverride">手動覆寫</label>
-            <select id="configManualOverride">
-              <option value="NONE">NONE</option>
-              <option value="FORCE_ACTIVE">FORCE_ACTIVE</option>
-              <option value="FORCE_INACTIVE">FORCE_INACTIVE</option>
-            </select>
-          </div>
-
-          <div class="form-group full">
-            <label for="configManualReason">覆寫原因</label>
-            <textarea id="configManualReason" rows="3"></textarea>
-          </div>
-
-          <div class="form-group full">
-            <div class="inline-actions">
-              <button type="submit">儲存授權設定</button>
-            </div>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>手動調整</h2>
-        </div>
-
-        <form id="manualForm" class="form-grid">
-          <div class="form-group">
-            <label for="manualUserIdTarget">User ID</label>
-            <input id="manualUserIdTarget" type="text" readonly />
-          </div>
-
-          <div class="form-group">
-            <label for="manualAction">操作</label>
-            <select id="manualAction">
-              <option value="activate">activate</option>
-              <option value="deactivate">deactivate</option>
-              <option value="force_active">force_active</option>
-              <option value="force_inactive">force_inactive</option>
-              <option value="clear_override">clear_override</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="manualPlanInput">方案代碼</label>
-            <input id="manualPlanInput" type="text" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualDaysInput">天數</label>
-            <input id="manualDaysInput" type="number" min="1" step="1" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualMaxGroupsInput">群組上限</label>
-            <input id="manualMaxGroupsInput" type="number" min="0" step="1" />
-          </div>
-
-          <div class="form-group">
-            <label for="manualMonthlyQuotaInput">月額度上限</label>
-            <input id="manualMonthlyQuotaInput" type="number" min="0" step="1" />
-          </div>
-
-          <div class="form-group full">
-            <label for="manualReasonInput">原因</label>
-            <textarea id="manualReasonInput" rows="3"></textarea>
-          </div>
-
-          <div class="form-group full">
-            <div class="inline-actions">
-              <button type="submit">套用手動操作</button>
-            </div>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>用量重置</h2>
-        </div>
-
-        <form id="usageForm" class="form-grid">
-          <div class="form-group">
-            <label for="usageUserIdTarget">User ID</label>
-            <input id="usageUserIdTarget" type="text" readonly />
-          </div>
-
-          <div class="form-group">
-            <label for="usageMonthKey">月份</label>
-            <input id="usageMonthKey" type="text" placeholder="YYYY-MM" />
-          </div>
-
-          <div class="form-group full">
-            <div class="inline-actions">
-              <button type="submit" class="btn-secondary">重置當月用量</button>
-            </div>
-          </div>
-        </form>
-      </section>
-    </main>
+<div id="tab-list" class="tab-panel active">
+  <div class="panel">
+    <div class="panel-header"><h2><span class="ph-icon">📊</span>統計</h2><button class="btn btn-ghost btn-sm" id="reloadAllBtn">🔄 重新整理</button></div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">全部</div><div class="stat-value" id="statTotal">—</div></div>
+      <div class="stat-card"><div class="stat-label">TRIAL</div><div class="stat-value c-yellow" id="statTrial">—</div></div>
+      <div class="stat-card"><div class="stat-label">ACTIVE</div><div class="stat-value c-green" id="statActive">—</div></div>
+      <div class="stat-card"><div class="stat-label">MANUAL</div><div class="stat-value c-purple" id="statManual">—</div></div>
+      <div class="stat-card"><div class="stat-label">FAILED</div><div class="stat-value c-red" id="statFailed">—</div></div>
+      <div class="stat-card"><div class="stat-label">INACTIVE</div><div class="stat-value" id="statInactive">—</div></div>
+    </div>
   </div>
+  <div class="panel">
+    <div class="panel-header"><h2><span class="ph-icon">👤</span>使用者清單</h2></div>
+    <div class="filter-bar">
+      <div class="search-wrap"><span class="search-icon">🔍</span><input id="searchInput" type="text" class="field search-field" placeholder="搜尋使用者名稱 / ID / 狀態"/></div>
+      <select id="statusFilter" class="field" style="width:160px"><option value="">全部狀態</option><option value="TRIAL">TRIAL</option><option value="ACTIVE">ACTIVE</option><option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option><option value="PAYMENT_FAILED">PAYMENT_FAILED</option><option value="INACTIVE">INACTIVE</option></select>
+      <span id="listMeta" class="filter-count">— 筆</span>
+    </div>
+    <div id="subscriptionList" class="card-grid"></div>
+  </div>
+</div>
 
-  <div id="toast" class="toast"></div>
+<div id="tab-config" class="tab-panel">
+  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">⚙️</span>設定授權 — <span id="selectedUserText" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
+  <div id="selectedSummary" class="detail-grid" style="margin-bottom:16px"></div>
+  <form id="configForm" class="form-grid">
+    <input id="configUserId" type="hidden"/>
+    <div class="form-group"><label>狀態</label><select id="configStatus" class="field"><option value="TRIAL">TRIAL</option><option value="ACTIVE">ACTIVE</option><option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option><option value="PAYMENT_FAILED">PAYMENT_FAILED</option><option value="INACTIVE">INACTIVE</option></select></div>
+    <div class="form-group"><label>方案名稱</label><input id="configPlan" type="text" class="field" placeholder="monthly / yearly…"/></div>
+    <div class="form-group"><label>付款狀態</label><input id="configLastPaymentStatus" type="text" class="field" placeholder="paid / failed / —"/></div>
+    <div class="form-group"><label>試用到期</label><input id="configTrialEndsAt" type="datetime-local" class="field"/></div>
+    <div class="form-group"><label>方案到期</label><input id="configCurrentPeriodEnd" type="datetime-local" class="field"/></div>
+    <div class="form-group"><label>群組上限</label><input id="configMaxGroups" type="number" class="field" min="0" placeholder="e.g. 5"/></div>
+    <div class="form-group"><label>月額度</label><input id="configMonthlyQuota" type="number" class="field" min="0" placeholder="e.g. 3000"/></div>
+    <div class="form-group"><label>手動覆寫</label><select id="configManualOverride" class="field"><option value="NONE">NONE</option><option value="FORCE_ACTIVE">FORCE_ACTIVE</option><option value="FORCE_INACTIVE">FORCE_INACTIVE</option></select></div>
+    <div class="form-group"><label>覆寫原因</label><input id="configManualReason" type="text" class="field" placeholder="備注"/></div>
+    <div class="form-group full"><button type="submit" class="btn btn-primary">💾 儲存授權設定</button></div>
+  </form></div>
+</div>
 
-  <script src="js/common.js"></script>
-  <script src="js/subscriptions.js"></script>
-</body>
-</html>
+<div id="tab-manual" class="tab-panel">
+  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🛠</span>手動操作 — <span id="manualUserBadge" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
+  <input id="manualUserIdTarget" type="hidden"/>
+  <form id="manualForm" class="form-grid">
+    <div class="form-group"><label>操作類型</label><select id="manualAction" class="field"><option value="activate">啟用（MANUAL_ACTIVE）</option><option value="deactivate">停用（INACTIVE）</option><option value="reset_trial">重設試用</option><option value="extend">延長方案</option></select></div>
+    <div class="form-group"><label>方案名稱（選填）</label><input id="manualPlanInput" type="text" class="field" placeholder="manual / monthly…"/></div>
+    <div class="form-group"><label>天數（延長/試用）</label><input id="manualDaysInput" type="number" class="field" min="1" placeholder="e.g. 30"/></div>
+    <div class="form-group"><label>群組上限（選填）</label><input id="manualMaxGroupsInput" type="number" class="field" min="1" placeholder="e.g. 5"/></div>
+    <div class="form-group"><label>月額度（選填）</label><input id="manualMonthlyQuotaInput" type="number" class="field" min="1" placeholder="e.g. 3000"/></div>
+    <div class="form-group full"><label>原因 / 備注</label><input id="manualReasonInput" type="text" class="field" placeholder="例如：客服補償"/></div>
+    <div class="form-group full"><button type="submit" class="btn btn-primary">▶ 執行操作</button></div>
+  </form>
+  <hr/>
+  <div class="panel-header" style="margin-top:0"><h2><span class="ph-icon">🔄</span>重置月用量 — <span id="usageUserBadge" style="color:var(--blue);font-size:13px"></span></h2></div>
+  <input id="usageUserIdTarget" type="hidden"/>
+  <form id="usageForm" class="form-grid">
+    <div class="form-group"><label>月份（YYYY-MM）</label><input id="usageMonthKey" type="text" class="field" placeholder="2025-06"/></div>
+    <div class="form-group full"><button type="submit" class="btn btn-secondary">🔄 重置用量</button></div>
+  </form></div>
+</div>
+
+<div id="tab-defaults" class="tab-panel">
+  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">📐</span>預設值管理</h2><button id="reloadDefaultsBtn" class="btn btn-ghost btn-sm">🔄 重新載入</button></div>
+  <span id="defaultsHint" class="form-hint" style="display:block;margin-bottom:12px"></span>
+  <form id="defaultsForm" class="form-grid">
+    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🔵 試用期預設</label></div>
+    <div class="form-group"><label>試用天數</label><input id="trialDays" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>試用群組上限</label><input id="trialMaxGroups" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>試用月額度</label><input id="trialMonthlyQuota" type="number" class="field" min="1"/></div>
+    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🟢 付費方案預設</label></div>
+    <div class="form-group"><label>方案名稱</label><input id="paidPlan" type="text" class="field" placeholder="monthly"/></div>
+    <div class="form-group"><label>購買月數</label><input id="paidMonths" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>群組上限</label><input id="paidMaxGroups" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>月額度</label><input id="paidMonthlyQuota" type="number" class="field" min="1"/></div>
+    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🟣 手動啟用預設</label></div>
+    <div class="form-group"><label>方案名稱</label><input id="manualPlan" type="text" class="field" placeholder="custom"/></div>
+    <div class="form-group"><label>啟用天數</label><input id="manualDays" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>群組上限</label><input id="manualMaxGroups" type="number" class="field" min="1"/></div>
+    <div class="form-group"><label>月額度</label><input id="manualMonthlyQuota" type="number" class="field" min="1"/></div>
+    <div class="form-group full"><button type="submit" class="btn btn-primary">💾 儲存預設值</button></div>
+  </form></div>
+</div>
+</div></div></div></div>
+<div id="toast" class="toast"></div>
+<script src="/js/common.js"></script><script src="/js/subscriptions.js"></script></body></html>
