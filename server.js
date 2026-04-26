@@ -18,8 +18,6 @@ const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
   "OPENAI_API_KEY",
-  //"ECPAY_HASH_KEY",
- // "ECPAY_HASH_IV",
   "FIREBASE_CONFIG"
 ];
 
@@ -480,7 +478,6 @@ async function ensureSubscriptionDoc(userId) {
     manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "",
-    ecpayTradeNo: "",
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
@@ -622,7 +619,6 @@ async function canUseGroup(gid) {
 async function activatePaidSubscription(userId, options = {}) {
   const defaults = await getSubscriptionDefaults();
 
-  const tradeNo = options.tradeNo || "";
   const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
   const months = toSafeInt(options.months, defaults.paidMonths, 1);
   const maxGroups = toSafeInt(options.maxGroups, defaults.paidMaxGroups, 0);
@@ -649,7 +645,6 @@ async function activatePaidSubscription(userId, options = {}) {
     manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "paid",
-    ecpayTradeNo: tradeNo,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
@@ -660,7 +655,7 @@ async function activatePaidSubscription(userId, options = {}) {
   await ref.set(payload, { merge: true });
 }
 
-async function markPaymentFailed(userId, tradeNo = "") {
+async function markPaymentFailed(userId) {
   const ref = db.collection("userSubscriptions").doc(userId);
   const snap = await ref.get();
   const current = snap.exists ? snap.data() : null;
@@ -674,7 +669,6 @@ async function markPaymentFailed(userId, tradeNo = "") {
       {
         userId,
         lastPaymentStatus: "failed",
-        ecpayTradeNo: tradeNo,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
@@ -687,58 +681,10 @@ async function markPaymentFailed(userId, tradeNo = "") {
       userId,
       status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
       lastPaymentStatus: "failed",
-      ecpayTradeNo: tradeNo,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
-}
-function ecpayUrlEncodeDotNet(str = "") {
-  return encodeURIComponent(str)
-    .replace(/%20/g, "+")
-    .replace(/%2D/g, "-")
-    .replace(/%5F/g, "_")
-    .replace(/%2E/g, ".")
-    .replace(/%21/g, "!")
-    .replace(/%2A/g, "*")
-    .replace(/%28/g, "(")
-    .replace(/%29/g, ")")
-    .toLowerCase();
-}
-
-function generateEcpayCheckMacValue(params = {}, hashKey, hashIV) {
-  const data = { ...params };
-  delete data.CheckMacValue;
-
-  const sorted = Object.keys(data)
-    .sort((a, b) => a.localeCompare(b))
-    .map(key => `${key}=${data[key] ?? ""}`)
-    .join("&");
-
-  const raw = `HashKey=${hashKey}&${sorted}&HashIV=${hashIV}`;
-  const encoded = ecpayUrlEncodeDotNet(raw);
-
-  return crypto
-    .createHash("sha256")
-    .update(encoded)
-    .digest("hex")
-    .toUpperCase();
-}
-
-function verifyEcpayMac(params = {}, checkMacValue = "") {
-  const hashKey = process.env.ECPAY_HASH_KEY || "";
-  const hashIV = process.env.ECPAY_HASH_IV || "";
-
-  if (!hashKey || !hashIV || !checkMacValue) return false;
-
-  const expected = generateEcpayCheckMacValue(params, hashKey, hashIV);
-  return expected === String(checkMacValue).trim().toUpperCase();
-}
-
-  async function getPaymentOrderByTradeNo(tradeNo) {
-  if (!tradeNo) return null;
-  const doc = await db.collection("paymentOrders").doc(tradeNo).get();
-  return doc.exists ? doc.data() : null;
 }
 
 
@@ -1814,7 +1760,6 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-        payload.ecpayTradeNo = "";
         payload.usedQuota = 0;
       }
 
@@ -1830,7 +1775,6 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-        payload.ecpayTradeNo = "";
         payload.usedQuota = 0;
       }
 
@@ -1850,7 +1794,6 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
         payload.status = SUBSCRIPTION_STATUS.INACTIVE;
         payload.plan = "custom";
         payload.lastPaymentStatus = "";
-        payload.ecpayTradeNo = "";
         payload.usedQuota = 0;
       }
 
@@ -1868,7 +1811,6 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
         payload.status = SUBSCRIPTION_STATUS.INACTIVE;
         payload.plan = "custom";
         payload.lastPaymentStatus = "";
-        payload.ecpayTradeNo = "";
         payload.usedQuota = 0;
       }
 
@@ -1886,7 +1828,6 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
         payload.status = SUBSCRIPTION_STATUS.INACTIVE;
         payload.plan = "custom";
         payload.lastPaymentStatus = "";
-        payload.ecpayTradeNo = "";
         payload.usedQuota = 0;
       }
 
@@ -1969,7 +1910,6 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
 
     if (!snap.exists) {
       payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-      payload.ecpayTradeNo = "";
       payload.usedQuota = 0;
     }
 
@@ -2033,53 +1973,6 @@ adminRouter.post("/subscriptions/:userId/reset-usage", async (req, res) => {
 
 
 app.use("/admin", adminRouter);
-app.post("/billing/ecpay/notify", express.urlencoded({ extended: false }), async (req, res) => {
-  try {
-    const { MerchantTradeNo, RtnCode, CheckMacValue } = req.body;
-
-    const isValid = verifyEcpayMac(req.body, CheckMacValue);
-    if (!isValid) {
-      console.error("ecpay notify invalid mac:", MerchantTradeNo);
-      return res.status(400).send("0|INVALID");
-    }
-
-    const order = await getPaymentOrderByTradeNo(MerchantTradeNo);
-    if (!order?.userId) {
-      console.error("ecpay notify order not found:", MerchantTradeNo);
-      return res.status(400).send("0|ORDER_NOT_FOUND");
-    }
-
-    const defaults = await getSubscriptionDefaults();
-    const userId = order.userId;
-
-    if (String(RtnCode) === "1") {
-      await activatePaidSubscription(userId, {
-        tradeNo: MerchantTradeNo,
-        plan: order.plan || defaults.paidPlan,
-        months: Number(order.months ?? defaults.paidMonths),
-        maxGroups: Number(order.maxGroups ?? defaults.paidMaxGroups),
-        monthlyQuota: Number(order.monthlyQuota ?? defaults.paidMonthlyQuota),
-      });
-    } else {
-      await markPaymentFailed(userId, MerchantTradeNo);
-    }
-
-    await db.collection("paymentOrders").doc(MerchantTradeNo).set(
-      {
-        callbackBody: req.body,
-        callbackAt: admin.firestore.FieldValue.serverTimestamp(),
-        paymentResult: String(RtnCode) === "1" ? "paid" : "failed",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    res.send("1|OK");
-  } catch (e) {
-    console.error("ecpay notify error:", e.message);
-    res.status(500).send("0|ERROR");
-  }
-});
 
 app.post("/webhook", webhookLimiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
