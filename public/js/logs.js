@@ -1,39 +1,18 @@
-const { api, toast, escapeHtml, formatTime } = window.AdminCommon;
-
+const { api, toast, formatTime, escapeHtml } = window.AdminCommon;
+let logItems = [];
 async function loadLogs() {
-  try {
-    const q = document.getElementById("logKeyword").value.trim();
-    const action = document.getElementById("logAction").value.trim();
-    const params = new URLSearchParams();
-    if (q) params.set("q", q);
-    if (action) params.set("action", action);
-
-    const data = await api(`/admin/logs?${params.toString()}`);
-    const items = data.items || [];
-
-    document.getElementById("logList").innerHTML = items.length ? `
-      <div class="table-wrap">
-        <table class="table">
-          <thead><tr><th>時間</th><th>動作</th><th>內容</th><th>操作者</th></tr></thead>
-          <tbody>
-            ${items.map(item => `
-              <tr>
-                <td>${formatTime(item.createdAt)}</td>
-                <td><span class="tag">${escapeHtml(item.action || "-")}</span></td>
-                <td>${escapeHtml(item.detail || "-")}</td>
-                <td>${escapeHtml(item.actor || "-")}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>` : `<div class="empty">沒有符合條件的紀錄</div>`;
-  } catch (e) {
-    toast(`讀取失敗：${e.message}`, true);
-  }
+  try { const d = await api('/admin/logs'); logItems = d.logs || []; renderLogs(); }
+  catch(e) { toast(`讀取失敗：${e.message}`, true); }
 }
-
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("logSearchBtn").addEventListener("click", loadLogs);
-  document.getElementById("logKeyword").addEventListener("keydown", e => { if (e.key === "Enter") loadLogs(); });
-  document.getElementById("logAction").addEventListener("keydown", e => { if (e.key === "Enter") loadLogs(); });
+function renderLogs() {
+  const kw = document.getElementById('logKeyword').value.trim().toLowerCase();
+  const fl = logItems.filter(x => [x.action,x.detail,x.actor].join(' ').toLowerCase().includes(kw));
+  document.getElementById('logCount').textContent = `共 ${fl.length} 筆`;
+  document.getElementById('logList').innerHTML = fl.length
+    ? fl.map(x=>`<div class="log-item"><div class="log-dot"></div><div class="log-main"><div class="log-action">${escapeHtml(x.action||'—')}</div><div class="log-detail">${escapeHtml(x.detail||'—')}</div></div><div class="log-meta"><div>${escapeHtml(x.actor||'—')}</div><div>${formatTime(x.createdAt)}</div></div></div>`).join('')
+    : '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">沒有符合的紀錄</div></div>';
+}
+document.addEventListener('DOMContentLoaded', () => {
   loadLogs();
+  document.getElementById('logKeyword').addEventListener('input', renderLogs);
 });

@@ -1,108 +1,45 @@
-const { api, toast, escapeHtml, formatTime } = window.AdminCommon;
-
-let industryItems = [];
-
-function resetIndustryForm() {
-  document.getElementById("industryId").value = "";
-  document.getElementById("industryName").value = "";
-  document.getElementById("sortOrder").value = 9999;
-  document.getElementById("industryEnabled").checked = true;
-  document.getElementById("industryFormTitle").textContent = "新增行業";
-}
-
+const { api, toast, escapeHtml } = window.AdminCommon;
+let indItems = [], editingInd = null;
 async function loadIndustries() {
-  const data = await api("/admin/industries");
-  industryItems = data.items || [];
-  renderIndustries();
+  const d = await api('/admin/constants');
+  indItems = d.industries || []; renderIndustries();
 }
-
 function renderIndustries() {
-  const keyword = document.getElementById("industryKeyword").value.trim().toLowerCase();
-  const filtered = industryItems.filter(item => [item.name, item.id].join(" ").toLowerCase().includes(keyword));
-
-  document.getElementById("industryList").innerHTML = filtered.length ? filtered.map(item => `
-    <div class="group-card">
-      <div class="group-card-head">
-        <div>
-          <div class="group-title">${escapeHtml(item.name || "-")}</div>
-          <div class="group-id">ID: ${escapeHtml(item.id || "-")}</div>
-        </div>
-        <div class="group-actions">
-          <button onclick="editIndustry('${escapeHtml(item.id)}')">編輯</button>
-          <button onclick="deleteIndustry('${escapeHtml(item.id)}')" class="btn-danger">刪除</button>
-        </div>
-      </div>
-      <div class="group-row"><span class="label">排序</span><div>${item.sortOrder ?? 9999}</div></div>
-      <div class="group-row"><span class="label">狀態</span><div>${item.enabled === false ? '<span class="muted">停用</span>' : '<span class="tag">啟用</span>'}</div></div>
-      <div class="group-row"><span class="label">建立/更新</span><div>${formatTime(item.updatedAt || item.createdAt)}</div></div>
-    </div>`).join("") : `<div class="empty">沒有符合條件的行業</div>`;
+  const kw = document.getElementById('indKeyword').value.trim().toLowerCase();
+  const fl = indItems.filter(n => n.toLowerCase().includes(kw));
+  document.getElementById('indCount').textContent = `共 ${fl.length} 筆`;
+  document.getElementById('industryList').innerHTML = fl.length
+    ? fl.map(name=>`<div class="item-card"><div class="item-card-head"><div class="item-title">🏭 ${escapeHtml(name)}</div><div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="editInd('${escapeHtml(name)}')">✏️ 編輯</button><button class="btn btn-danger btn-sm" onclick="deleteInd('${escapeHtml(name)}')">🗑 刪除</button></div></div></div>`).join('')
+    : '<div class="empty-state"><div class="empty-icon">🏭</div><div class="empty-title">沒有符合的行業</div></div>';
 }
-
-function editIndustry(id) {
-  const item = industryItems.find(x => x.id === id);
-  if (!item) return;
-  document.getElementById("industryId").value = item.id;
-  document.getElementById("industryName").value = item.name || "";
-  document.getElementById("sortOrder").value = item.sortOrder ?? 9999;
-  document.getElementById("industryEnabled").checked = item.enabled !== false;
-  document.getElementById("industryFormTitle").textContent = `編輯行業：${item.name}`;
-  window.scrollTo({ top: 0, behavior: "smooth" });
+function editInd(name) {
+  editingInd = name; document.getElementById('indName').value = name;
+  window.scrollTo({ top:0, behavior:'smooth' });
 }
-
-async function submitIndustry(e) {
+async function handleIndSubmit(e) {
   e.preventDefault();
-  const id = document.getElementById("industryId").value.trim();
-  const name = document.getElementById("industryName").value.trim();
-  const sortOrder = Number(document.getElementById("sortOrder").value || 9999);
-  const enabled = document.getElementById("industryEnabled").checked;
-
-  if (!name) return toast("名稱不可空白", true);
-
+  const name = document.getElementById('indName').value.trim();
+  if (!name) return toast('請輸入行業名稱', true);
   try {
-    if (id) {
-      await api(`/admin/industries/${encodeURIComponent(id)}`, {
-        method: "PUT",
-        body: JSON.stringify({ name, sortOrder, enabled })
-      });
-      toast("行業已更新");
-    } else {
-      await api("/admin/industries", {
-        method: "POST",
-        body: JSON.stringify({ name, sortOrder, enabled })
-      });
-      toast("行業已新增");
-    }
-
-    resetIndustryForm();
-    await loadIndustries();
-  } catch (e) {
-    toast(`儲存失敗：${e.message}`, true);
-  }
+    if (editingInd && editingInd !== name)
+      await api(`/admin/industries/${encodeURIComponent(editingInd)}`, { method:'DELETE' });
+    await api('/admin/industries', { method:'POST', body:JSON.stringify({ name }) });
+    toast(`✅ 行業「${name}」已儲存`); editingInd = null; document.getElementById('indName').value = ''; loadIndustries();
+  } catch(e) { toast(`儲存失敗：${e.message}`, true); }
 }
-
-async function deleteIndustry(id) {
-  if (!confirm("確定刪除此行業？")) return;
+async function deleteInd(name) {
+  if (!confirm(`確定要刪除行業「${name}」？`)) return;
   try {
-    await api(`/admin/industries/${encodeURIComponent(id)}`, { method: "DELETE" });
-    toast("行業已刪除");
-    resetIndustryForm();
-    await loadIndustries();
-  } catch (e) {
-    toast(`刪除失敗：${e.message}`, true);
-  }
+    await api(`/admin/industries/${encodeURIComponent(name)}`, { method:'DELETE' });
+    toast('✅ 已刪除');
+    if (editingInd===name) { editingInd=null; document.getElementById('indName').value=''; }
+    loadIndustries();
+  } catch(e) { toast(`刪除失敗：${e.message}`, true); }
 }
-
-window.editIndustry = editIndustry;
-window.deleteIndustry = deleteIndustry;
-
-document.addEventListener("DOMContentLoaded", async () => {
-  document.getElementById("industryForm").addEventListener("submit", submitIndustry);
-  document.getElementById("industryResetBtn").addEventListener("click", resetIndustryForm);
-  document.getElementById("industryKeyword").addEventListener("input", renderIndustries);
-
-  try {
-    await loadIndustries();
-  } catch (e) {
-    toast(`初始化失敗：${e.message}`, true);
-  }
+document.addEventListener('DOMContentLoaded', () => {
+  loadIndustries();
+  document.getElementById('industryForm').addEventListener('submit', handleIndSubmit);
+  document.getElementById('resetIndBtn').addEventListener('click', () => { editingInd=null; document.getElementById('indName').value=''; });
+  document.getElementById('deleteIndBtn').addEventListener('click', () => { if (editingInd) deleteInd(editingInd); else toast('請先選取一個行業', true); });
+  document.getElementById('indKeyword').addEventListener('input', renderIndustries);
 });

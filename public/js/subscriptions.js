@@ -1,545 +1,183 @@
-const { api, toast, formatTime, escapeHtml } = window.AdminCommon;
+const { api, toast, formatTime, escapeHtml, statusBadge } = window.AdminCommon;
+let allSubs=[], selectedUserId=null;
 
-const SUBSCRIPTION_STATUS = {
-  TRIAL: "TRIAL",
-  ACTIVE: "ACTIVE",
-  MANUAL_ACTIVE: "MANUAL_ACTIVE",
-  INACTIVE: "INACTIVE",
-  PAYMENT_FAILED: "PAYMENT_FAILED",
-};
-
-const MANUAL_OVERRIDE = {
-  NONE: "NONE",
-  FORCE_ACTIVE: "FORCE_ACTIVE",
-  FORCE_INACTIVE: "FORCE_INACTIVE",
-};
-
-const MANUAL_ACTIONS = {
-  ACTIVATE: "activate",
-  DEACTIVATE: "deactivate",
-  FORCE_ACTIVE: "force_active",
-  FORCE_INACTIVE: "force_inactive",
-  CLEAR_OVERRIDE: "clear_override",
-};
-
-const state = {
-  items: [],
-  filteredItems: [],
-  selectedUserId: "",
-  currentDefaults: null,
-};
-function getDisplayName(item = {}) {
-  return String(item.displayName || "").trim();
+function updateStats(subs) {
+  const n = s => subs.filter(x=>x.status===s).length;
+  document.getElementById('statTotal').textContent    = subs.length;
+  document.getElementById('statTrial').textContent    = n('TRIAL');
+  document.getElementById('statActive').textContent   = n('ACTIVE');
+  document.getElementById('statManual').textContent   = n('MANUAL_ACTIVE');
+  document.getElementById('statFailed').textContent   = n('PAYMENT_FAILED');
+  document.getElementById('statInactive').textContent = n('INACTIVE');
 }
 
-function getPrimaryUserText(item = {}) {
-  return getDisplayName(item) || item.userId || "未知使用者";
+async function loadAllSubs() {
+  try { const d = await api('/admin/subscriptions'); allSubs = d.subscriptions||[]; updateStats(allSubs); renderSubList(); }
+  catch(e) { toast(`讀取失敗：${e.message}`, true); }
 }
 
-function getSecondaryUserText(item = {}) {
-  return getDisplayName(item) ? (item.userId || "-") : (item.plan || "-");
-}
-
-function getSelectedUserText(item = {}) {
-  const name = getDisplayName(item);
-  const userId = item.userId || "";
-  if (name && userId) return `${name}（${userId}）`;
-  return name || userId || "尚未選取使用者";
-}
-
-function getDisplayMonthKey(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isNaN(n) ? fallback : n;
-}
-
-function normalizeStatus(value, fallback = SUBSCRIPTION_STATUS.INACTIVE) {
-  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
-  const map = {
-    TRIAL: SUBSCRIPTION_STATUS.TRIAL,
-    ACTIVE: SUBSCRIPTION_STATUS.ACTIVE,
-    MANUALACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
-    MANUAL_ACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
-    INACTIVE: SUBSCRIPTION_STATUS.INACTIVE,
-    PAYMENTFAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
-    PAYMENT_FAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
-  };
-  return map[raw] || fallback;
-}
-
-function normalizeManualOverride(value, fallback = MANUAL_OVERRIDE.NONE) {
-  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
-  const map = {
-    NONE: MANUAL_OVERRIDE.NONE,
-    FORCEACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
-    FORCE_ACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
-    FORCEINACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
-    FORCE_INACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
-  };
-  return map[raw] || fallback;
-}
-
-function normalizeMonthKeyForInput(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return getDisplayMonthKey();
-
-  const compact = raw.replace(/-/g, "");
-  if (/^\d{6}$/.test(compact)) {
-    return `${compact.slice(0, 4)}-${compact.slice(4, 6)}`;
-  }
-
-  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
-  return getDisplayMonthKey();
-}
-
-function toInputDateTime(value) {
-  if (!value) return "";
-  let d = null;
-
-  if (typeof value === "object" && typeof value._seconds === "number") {
-    d = new Date(value._seconds * 1000);
-  } else if (typeof value === "object" && typeof value.seconds === "number") {
-    d = new Date(value.seconds * 1000);
-  } else {
-    d = new Date(value);
-  }
-
-  if (Number.isNaN(d.getTime())) return "";
-
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${day}T${hh}:${mm}`;
-}
-function fromInputDateTime(value) {
-  return value ? value : null;
-}
-
-function buildTag(text) {
-  return `<span class="tag">${escapeHtml(String(text || "-"))}</span>`;
-}
-
-function getStatusCount(status) {
-  return state.items.filter((item) => normalizeStatus(item.status) === status).length;
-}
-
-function renderStats() {
-  document.getElementById("statTotal").textContent = state.items.length;
-  document.getElementById("statTrial").textContent = getStatusCount(SUBSCRIPTION_STATUS.TRIAL);
-  document.getElementById("statActive").textContent = getStatusCount(SUBSCRIPTION_STATUS.ACTIVE);
-  document.getElementById("statManual").textContent = getStatusCount(SUBSCRIPTION_STATUS.MANUAL_ACTIVE);
-  document.getElementById("statFailed").textContent = getStatusCount(SUBSCRIPTION_STATUS.PAYMENT_FAILED);
-  document.getElementById("statInactive").textContent = getStatusCount(SUBSCRIPTION_STATUS.INACTIVE);
-}
-
-function applyFilters() {
-  const keyword = document.getElementById("searchInput").value.trim().toLowerCase();
-  const status = normalizeStatus(document.getElementById("statusFilter").value.trim(), "");
-
-  state.filteredItems = state.items.filter((item) => {
-    const normalizedStatus = normalizeStatus(item.status);
-    const normalizedOverride = normalizeManualOverride(item.manualOverride);
-
-const haystack = [
-  item.displayName,
-  item.userId,
-  item.plan,
-  item.status,
-  normalizedStatus,
-  item.lastPaymentStatus,
-  item.manualOverride,
-  normalizedOverride,
-  item.manualReason,
-]
-  .join(" ")
-  .toLowerCase();
-
-    const passKeyword = !keyword || haystack.includes(keyword);
-    const passStatus = !status || normalizedStatus === status;
-    return passKeyword && passStatus;
-  });
-
-  renderList();
-}
-
-function renderList() {
-  const container = document.getElementById("subscriptionList");
-  const meta = document.getElementById("listMeta");
-  meta.textContent = `${state.filteredItems.length} 筆`;
-
-  if (!state.filteredItems.length) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-title">尚無資料</div>
-      </div>
-    `;
-    return;
-  }
-
-  container.innerHTML = state.filteredItems
-    .map((item) => {
-      const active = item.userId === state.selectedUserId ? "active" : "";
-      const title = getPrimaryUserText(item);
-      const subtitle = getSecondaryUserText(item);
-      const status = normalizeStatus(item.status);
-      const override = normalizeManualOverride(item.manualOverride);
-
-      return `
-        <button class="group-card ${active}" data-user-id="${escapeHtml(item.userId)}">
-          <div class="group-title">${escapeHtml(title)}</div>
-          <div class="group-id">${escapeHtml(subtitle)}</div>
-          <div class="tag-row">
-            <span class="tag">${buildTag(status)}</span>
-            <span class="tag">${buildTag(item.plan || "-")}</span>
-            <span class="tag">${buildTag(override)}</span>
-          </div>
-        </button>
-      `;
-    })
-    .join("");
-
-  container.querySelectorAll("[data-user-id]").forEach((el) => {
-    el.addEventListener("click", () => loadSubscriptionDetail(el.dataset.userId));
+function getFiltered() {
+  const kw = document.getElementById('searchInput').value.trim().toLowerCase();
+  const sf = document.getElementById('statusFilter').value;
+  return allSubs.filter(s=>{
+    const ok = [s.userId,s.displayName,s.plan,s.status,s.lastPaymentStatus].join(' ').toLowerCase().includes(kw);
+    return ok && (!sf||s.status===sf);
   });
 }
 
-
-function fillDefaultsForm(defaults = {}) {
-  document.getElementById("trialDays").value = Number(defaults.trialDays ?? 14);
-  document.getElementById("trialMaxGroups").value = Number(defaults.trialMaxGroups ?? 2);
-  document.getElementById("trialMonthlyQuota").value = Number(defaults.trialMonthlyQuota ?? 300);
-
-  document.getElementById("paidPlan").value = defaults.paidPlan || "monthly";
-  document.getElementById("paidMonths").value = Number(defaults.paidMonths ?? 1);
-  document.getElementById("paidMaxGroups").value = Number(defaults.paidMaxGroups ?? 5);
-  document.getElementById("paidMonthlyQuota").value = Number(defaults.paidMonthlyQuota ?? 3000);
-
-  document.getElementById("manualPlan").value = defaults.manualPlan || "custom";
-  document.getElementById("manualDays").value = Number(defaults.manualDays ?? 30);
-  document.getElementById("manualMaxGroups").value = Number(defaults.manualMaxGroups ?? 5);
-  document.getElementById("manualMonthlyQuota").value = Number(defaults.manualMonthlyQuota ?? 3000);
-
-  document.getElementById("defaultsHint").textContent =
-    `試用 ${defaults.trialDays ?? 14} 天 / ${defaults.trialMaxGroups ?? 2} 群 / ${defaults.trialMonthlyQuota ?? 300} 次；` +
-    `付費 ${defaults.paidPlan || "monthly"} ${defaults.paidMonths ?? 1} 月 / ${defaults.paidMaxGroups ?? 5} 群 / ${defaults.paidMonthlyQuota ?? 3000} 次；` +
-    `手動 ${defaults.manualPlan || "custom"} ${defaults.manualDays ?? 30} 天 / ${defaults.manualMaxGroups ?? 5} 群 / ${defaults.manualMonthlyQuota ?? 3000} 次`;
-
-  state.currentDefaults = defaults;
+function renderSubList() {
+  const fl = getFiltered();
+  document.getElementById('listMeta').textContent = `${fl.length} 筆`;
+  document.getElementById('subscriptionList').innerHTML = fl.length
+    ? fl.map(s=>`<div class="item-card${s.userId===selectedUserId?' selected':''}">
+        <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.displayName||s.userId)}</div><div class="item-sub">${escapeHtml(s.userId)}</div></div>${statusBadge(s.status)}</div>
+        <div class="item-row"><span class="row-label">方案</span><div>${escapeHtml(s.plan||'—')}</div></div>
+        <div class="item-row"><span class="row-label">付款</span><div>${escapeHtml(s.lastPaymentStatus||'—')}</div></div>
+        <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.currentPeriodEnd)}</div></div>
+        <div class="item-row"><span class="row-label">群組上限</span><div>${s.maxGroups??'—'}</div></div>
+        <div class="item-row"><span class="row-label">月額度</span><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
+        <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
+          <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-config')">⚙️ 設定</button>
+          <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-manual')">🛠 調整</button>
+        </div></div></div>`).join('')
+    : '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
 }
 
-function readDefaultsForm() {
-  return {
-    trialDays: toNumber(document.getElementById("trialDays").value, 14),
-    trialMaxGroups: toNumber(document.getElementById("trialMaxGroups").value, 2),
-    trialMonthlyQuota: toNumber(document.getElementById("trialMonthlyQuota").value, 300),
-
-    paidPlan: document.getElementById("paidPlan").value.trim() || "monthly",
-    paidMonths: toNumber(document.getElementById("paidMonths").value, 1),
-    paidMaxGroups: toNumber(document.getElementById("paidMaxGroups").value, 5),
-    paidMonthlyQuota: toNumber(document.getElementById("paidMonthlyQuota").value, 3000),
-
-    manualPlan: document.getElementById("manualPlan").value.trim() || "custom",
-    manualDays: toNumber(document.getElementById("manualDays").value, 30),
-    manualMaxGroups: toNumber(document.getElementById("manualMaxGroups").value, 5),
-    manualMonthlyQuota: toNumber(document.getElementById("manualMonthlyQuota").value, 3000),
-  };
+function toLocalInput(v) {
+  if (!v) return '';
+  const d = new Date(v._seconds?v._seconds*1000:v.seconds?v.seconds*1000:v);
+  const p = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-async function loadSubscriptionDefaults() {
-  const res = await api("/admin/subscription-defaults");
-  fillDefaultsForm(res.defaults || {});
-  fillManualDefaultsFromSystem();
+function selectUser(userId, tab) {
+  selectedUserId = userId;
+  const s = allSubs.find(x=>x.userId===userId); if (!s) return;
+  const name = s.displayName || userId;
+  document.getElementById('selectedUserText').textContent = name;
+  document.getElementById('manualUserBadge').textContent  = name;
+  document.getElementById('usageUserBadge').textContent   = name;
+  document.getElementById('configUserId').value              = s.userId;
+  document.getElementById('configStatus').value              = s.status||'TRIAL';
+  document.getElementById('configPlan').value                = s.plan||'';
+  document.getElementById('configLastPaymentStatus').value   = s.lastPaymentStatus||'';
+  document.getElementById('configTrialEndsAt').value         = toLocalInput(s.trialEndsAt);
+  document.getElementById('configCurrentPeriodEnd').value    = toLocalInput(s.currentPeriodEnd);
+  document.getElementById('configMaxGroups').value           = s.maxGroups??'';
+  document.getElementById('configMonthlyQuota').value        = s.monthlyQuota??'';
+  document.getElementById('configManualOverride').value      = s.manualOverride||'NONE';
+  document.getElementById('configManualReason').value        = s.manualReason||'';
+  document.getElementById('selectedSummary').innerHTML = `
+    <div class="detail-item"><div class="detail-label">狀態</div><div>${statusBadge(s.status)}</div></div>
+    <div class="detail-item"><div class="detail-label">方案</div><div>${escapeHtml(s.plan||'—')}</div></div>
+    <div class="detail-item"><div class="detail-label">本月用量</div><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
+    <div class="detail-item"><div class="detail-label">手動覆寫</div><div>${escapeHtml(s.manualOverride||'NONE')}</div></div>`;
+  document.getElementById('manualUserIdTarget').value = userId;
+  document.getElementById('usageUserIdTarget').value  = userId;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active', p.id===tab));
+  window.scrollTo({ top:0, behavior:'smooth' });
+  renderSubList();
 }
 
-async function saveSubscriptionDefaults(event) {
-  event.preventDefault();
-  const payload = readDefaultsForm();
-
-  const res = await api("/admin/subscription-defaults", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-
-  fillDefaultsForm(res.defaults || payload);
-  fillManualDefaultsFromSystem();
-  toast("預設方案設定已儲存");
+async function handleConfigSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('configUserId').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  try {
+    await api('/admin/subscriptions/config', { method:'POST', body:JSON.stringify({
+      userId,
+      status:           document.getElementById('configStatus').value,
+      plan:             document.getElementById('configPlan').value.trim(),
+      lastPaymentStatus:document.getElementById('configLastPaymentStatus').value.trim(),
+      trialEndsAt:      document.getElementById('configTrialEndsAt').value||null,
+      currentPeriodEnd: document.getElementById('configCurrentPeriodEnd').value||null,
+      maxGroups:        parseInt(document.getElementById('configMaxGroups').value)||null,
+      monthlyQuota:     parseInt(document.getElementById('configMonthlyQuota').value)||null,
+      manualOverride:   document.getElementById('configManualOverride').value,
+      manualReason:     document.getElementById('configManualReason').value.trim(),
+    })});
+    toast('✅ 授權設定已儲存'); loadAllSubs();
+  } catch(e) { toast(`儲存失敗：${e.message}`, true); }
 }
 
-function fillManualDefaultsFromSystem() {
-  const d = state.currentDefaults || {};
-  document.getElementById("manualPlanInput").value = d.manualPlan || "custom";
-  document.getElementById("manualDaysInput").value = Number(d.manualDays ?? 30);
-  document.getElementById("manualMaxGroupsInput").value = Number(d.manualMaxGroups ?? 5);
-  document.getElementById("manualMonthlyQuotaInput").value = Number(d.manualMonthlyQuota ?? 3000);
+async function handleManualSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('manualUserIdTarget').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  try {
+    await api('/admin/subscriptions/manual-action', { method:'POST', body:JSON.stringify({
+      userId,
+      action:       document.getElementById('manualAction').value,
+      plan:         document.getElementById('manualPlanInput').value.trim()||undefined,
+      days:         parseInt(document.getElementById('manualDaysInput').value)||undefined,
+      maxGroups:    parseInt(document.getElementById('manualMaxGroupsInput').value)||undefined,
+      monthlyQuota: parseInt(document.getElementById('manualMonthlyQuotaInput').value)||undefined,
+      reason:       document.getElementById('manualReasonInput').value.trim(),
+    })});
+    toast('✅ 操作已套用'); loadAllSubs();
+  } catch(e) { toast(`操作失敗：${e.message}`, true); }
 }
 
-async function loadSubscriptions() {
-  const res = await api("/admin/subscriptions");
-  state.items = Array.isArray(res.items) ? res.items : [];
-  state.items.sort((a, b) => String(a.userId || "").localeCompare(String(b.userId || "")));
-  renderStats();
-  applyFilters();
+async function handleUsageSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('usageUserIdTarget').value.trim();
+  const monthKey = document.getElementById('usageMonthKey').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return toast('月份格式錯誤，請輸入 YYYY-MM', true);
+  try {
+    await api('/admin/subscriptions/reset-usage', { method:'POST', body:JSON.stringify({ userId, monthKey }) });
+    toast('✅ 用量已重置'); loadAllSubs();
+  } catch(e) { toast(`重置失敗：${e.message}`, true); }
 }
 
-function renderSelectedSummary(subscription, usage, groupsCount) {
-  const container = document.getElementById("selectedSummary");
-
-  if (!subscription) {
-    container.innerHTML = `<div class="empty">找不到授權資料</div>`;
-    return;
-  }
-
-  const status = normalizeStatus(subscription.status);
-  const manualOverride = normalizeManualOverride(subscription.manualOverride);
-
-  container.innerHTML = `
-    <div class="group-card-head">
-      <div>
-        <div class="group-title">${escapeHtml(subscription.userId || "-")}</div>
-        <div class="group-id">最近付款：${escapeHtml(subscription.lastPaymentStatus || "-")}</div>
-      </div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">狀態</div>
-      <div class="tag-wrap">
-        ${buildTag(status)}
-        ${buildTag(manualOverride)}
-        ${buildTag(subscription.plan || "-")}
-      </div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">試用到期</div>
-      <div>${escapeHtml(formatTime(subscription.trialEndsAt))}</div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">方案到期</div>
-      <div>${escapeHtml(formatTime(subscription.currentPeriodEnd))}</div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">群組限制</div>
-      <div>${escapeHtml(String(subscription.maxGroups ?? 0))} 群，現有 ${escapeHtml(String(groupsCount ?? 0))} 群</div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">月額度</div>
-      <div>${escapeHtml(String(subscription.monthlyQuota ?? 0))} 次，已用 ${escapeHtml(String(usage?.translationCount ?? 0))} 次</div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">本月 Key</div>
-      <div>${escapeHtml(String(usage?.monthKey ?? "-"))}</div>
-    </div>
-
-    <div class="group-row">
-      <div class="label">手動原因</div>
-      <div>${escapeHtml(subscription.manualReason || "-")}</div>
-    </div>
-  `;
+async function loadDefaults() {
+  try {
+    const d = await api('/admin/subscriptions/default-settings');
+    const df = d.defaults||{};
+    document.getElementById('trialDays').value          = df.trialDays??14;
+    document.getElementById('trialMaxGroups').value     = df.trialMaxGroups??2;
+    document.getElementById('trialMonthlyQuota').value  = df.trialMonthlyQuota??300;
+    document.getElementById('paidPlan').value           = df.paidPlan??'monthly';
+    document.getElementById('paidMonths').value         = df.paidMonths??1;
+    document.getElementById('paidMaxGroups').value      = df.paidMaxGroups??5;
+    document.getElementById('paidMonthlyQuota').value   = df.paidMonthlyQuota??3000;
+    document.getElementById('manualPlan').value         = df.manualPlan??'custom';
+    document.getElementById('manualDays').value         = df.manualDays??30;
+    document.getElementById('manualMaxGroups').value    = df.manualMaxGroups??5;
+    document.getElementById('manualMonthlyQuota').value = df.manualMonthlyQuota??3000;
+    document.getElementById('defaultsHint').textContent = '✅ 預設值已載入';
+  } catch(e) { document.getElementById('defaultsHint').textContent=`讀取失敗：${e.message}`; }
 }
 
-function fillConfigForm(subscription) {
-  const status = normalizeStatus(subscription?.status, SUBSCRIPTION_STATUS.INACTIVE);
-  const manualOverride = normalizeManualOverride(subscription?.manualOverride, MANUAL_OVERRIDE.NONE);
-
-  document.getElementById("configUserId").value = subscription?.userId || "";
-  document.getElementById("configStatus").value = status;
-  document.getElementById("configPlan").value = subscription?.plan || "";
-  document.getElementById("configLastPaymentStatus").value = subscription?.lastPaymentStatus || "";
-  document.getElementById("configTrialEndsAt").value = toInputDateTime(subscription?.trialEndsAt);
-  document.getElementById("configCurrentPeriodEnd").value = toInputDateTime(subscription?.currentPeriodEnd);
-  document.getElementById("configMaxGroups").value = Number(subscription?.maxGroups ?? 0);
-  document.getElementById("configMonthlyQuota").value = Number(subscription?.monthlyQuota ?? 0);
-  document.getElementById("configManualOverride").value = manualOverride;
-  document.getElementById("configManualReason").value = subscription?.manualReason || "";
+async function saveDefaults(e) {
+  e.preventDefault();
+  try {
+    await api('/admin/subscriptions/default-settings', { method:'POST', body:JSON.stringify({
+      trialDays:         parseInt(document.getElementById('trialDays').value),
+      trialMaxGroups:    parseInt(document.getElementById('trialMaxGroups').value),
+      trialMonthlyQuota: parseInt(document.getElementById('trialMonthlyQuota').value),
+      paidPlan:          document.getElementById('paidPlan').value.trim(),
+      paidMonths:        parseInt(document.getElementById('paidMonths').value),
+      paidMaxGroups:     parseInt(document.getElementById('paidMaxGroups').value),
+      paidMonthlyQuota:  parseInt(document.getElementById('paidMonthlyQuota').value),
+      manualPlan:        document.getElementById('manualPlan').value.trim(),
+      manualDays:        parseInt(document.getElementById('manualDays').value),
+      manualMaxGroups:   parseInt(document.getElementById('manualMaxGroups').value),
+      manualMonthlyQuota:parseInt(document.getElementById('manualMonthlyQuota').value),
+    })});
+    toast('✅ 預設值已儲存'); loadDefaults();
+  } catch(e) { toast(`儲存失敗：${e.message}`, true); }
 }
 
-function fillManualForms(userId) {
-  document.getElementById("manualUserIdTarget").value = userId || "";
-  document.getElementById("usageUserIdTarget").value = userId || "";
-  document.getElementById("usageMonthKey").value = getDisplayMonthKey();
-  updateManualActionUI();
-}
-
-async function loadSubscriptionDetail(userId) {
-  const data = await api(`/admin/subscriptions/${encodeURIComponent(userId)}`);
-  const subscription = {
-    ...(data.subscription || {}),
-    userId: data.userId || userId,
-    displayName: data.displayName || data.subscription?.displayName || "",
-  };
-
-  state.selectedUserId = userId;
-
-  document.getElementById("selectedUserText").textContent =
-    getSelectedUserText(subscription);
-
-  renderSelectedSummary(subscription, data.usage, data.groupsCount);
-  fillConfigForm(subscription);
-  fillManualForm(subscription);
-  fillResetUsageForm(subscription, data.usage);
-
-  renderList();
-}
-
-
-async function saveConfig(event) {
-  event.preventDefault();
-
-  const userId = document.getElementById("configUserId").value.trim();
-  if (!userId) {
-    toast("請先選取使用者", true);
-    return;
-  }
-
-  const payload = {
-    status: normalizeStatus(document.getElementById("configStatus").value),
-    plan: document.getElementById("configPlan").value.trim(),
-    lastPaymentStatus: document.getElementById("configLastPaymentStatus").value.trim(),
-    trialEndsAt: fromInputDateTime(document.getElementById("configTrialEndsAt").value),
-    currentPeriodEnd: fromInputDateTime(document.getElementById("configCurrentPeriodEnd").value),
-    maxGroups: toNumber(document.getElementById("configMaxGroups").value, 0),
-    monthlyQuota: toNumber(document.getElementById("configMonthlyQuota").value, 0),
-    manualOverride: normalizeManualOverride(document.getElementById("configManualOverride").value),
-    manualReason: document.getElementById("configManualReason").value.trim(),
-  };
-
-  await api(`/admin/subscriptions/${encodeURIComponent(userId)}/config`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-
-  toast("授權設定已更新");
-  await loadSubscriptions();
-  await loadSubscriptionDetail(userId);
-}
-
-async function submitManualAction(event) {
-  event.preventDefault();
-
-  const userId = document.getElementById("manualUserIdTarget").value.trim();
-  if (!userId) {
-    toast("請先選取使用者", true);
-    return;
-  }
-
-  const payload = {
-    action: document.getElementById("manualAction").value,
-    plan: document.getElementById("manualPlanInput").value.trim(),
-    days: toNumber(document.getElementById("manualDaysInput").value, 30),
-    maxGroups: toNumber(document.getElementById("manualMaxGroupsInput").value, 5),
-    monthlyQuota: toNumber(document.getElementById("manualMonthlyQuotaInput").value, 3000),
-    reason: document.getElementById("manualReasonInput").value.trim(),
-  };
-
-  await api(`/admin/subscriptions/${encodeURIComponent(userId)}/manual`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-
-  toast("手動操作已套用");
-  await loadSubscriptions();
-  await loadSubscriptionDetail(userId);
-}
-
-async function resetUsage(event) {
-  event.preventDefault();
-
-  const userId = document.getElementById("usageUserIdTarget").value.trim();
-  const monthKey = normalizeMonthKeyForInput(document.getElementById("usageMonthKey").value.trim());
-
-  if (!userId) {
-    toast("請先選取使用者", true);
-    return;
-  }
-
-  await api(`/admin/subscriptions/${encodeURIComponent(userId)}/reset-usage`, {
-    method: "POST",
-    body: JSON.stringify({ monthKey }),
-  });
-
-  toast(`已重置 ${monthKey} 用量`);
-  await loadSubscriptionDetail(userId);
-}
-
-function updateManualActionUI() {
-  const action = document.getElementById("manualAction").value;
-
-  const planInput = document.getElementById("manualPlanInput");
-  const daysInput = document.getElementById("manualDaysInput");
-  const maxGroupsInput = document.getElementById("manualMaxGroupsInput");
-  const monthlyQuotaInput = document.getElementById("manualMonthlyQuotaInput");
-
-  const disableAllPlanFields =
-    action === MANUAL_ACTIONS.DEACTIVATE || action === MANUAL_ACTIONS.CLEAR_OVERRIDE;
-
-  const disableQuotaFields =
-    action === MANUAL_ACTIONS.DEACTIVATE ||
-    action === MANUAL_ACTIONS.CLEAR_OVERRIDE ||
-    action === MANUAL_ACTIONS.FORCE_INACTIVE;
-
-  planInput.disabled = disableAllPlanFields;
-  daysInput.disabled = disableAllPlanFields;
-  maxGroupsInput.disabled = disableQuotaFields;
-  monthlyQuotaInput.disabled = disableQuotaFields;
-}
-
-function bindEvents() {
-  document.getElementById("reloadAllBtn").addEventListener("click", () => {
-    Promise.all([loadSubscriptionDefaults(), loadSubscriptions()]).catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("searchInput").addEventListener("input", applyFilters);
-  document.getElementById("statusFilter").addEventListener("change", applyFilters);
-
-  document.getElementById("defaultsForm").addEventListener("submit", (e) => {
-    saveSubscriptionDefaults(e).catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("reloadDefaultsBtn").addEventListener("click", () => {
-    loadSubscriptionDefaults().catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("configForm").addEventListener("submit", (e) => {
-    saveConfig(e).catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("manualForm").addEventListener("submit", (e) => {
-    submitManualAction(e).catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("usageForm").addEventListener("submit", (e) => {
-    resetUsage(e).catch((err) => toast(err.message, true));
-  });
-
-  document.getElementById("manualAction").addEventListener("change", updateManualActionUI);
-}
-
-async function init() {
-  bindEvents();
-  await loadSubscriptionDefaults();
-  await loadSubscriptions();
-
-  if (state.items.length) {
-    await loadSubscriptionDetail(state.items[0].userId);
-  } else {
-    fillManualDefaultsFromSystem();
-    updateManualActionUI();
-  }
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  init().catch((err) => {
-    toast(err.message, true);
-  });
+document.addEventListener('DOMContentLoaded', () => {
+  loadAllSubs(); loadDefaults();
+  document.getElementById('reloadAllBtn').addEventListener('click', loadAllSubs);
+  document.getElementById('searchInput').addEventListener('input', renderSubList);
+  document.getElementById('statusFilter').addEventListener('input', renderSubList);
+  document.getElementById('configForm').addEventListener('submit', handleConfigSubmit);
+  document.getElementById('manualForm').addEventListener('submit', handleManualSubmit);
+  document.getElementById('usageForm').addEventListener('submit', handleUsageSubmit);
+  document.getElementById('defaultsForm').addEventListener('submit', saveDefaults);
+  document.getElementById('reloadDefaultsBtn').addEventListener('click', loadDefaults);
 });
