@@ -143,7 +143,7 @@ function isOnlyEmojiOrWhitespace(txt = "") {
   const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
   if (!stripped) return true;
 
-  let s = stripped.replace(/[\s.,!?，。？！、:：;；"'""''（）【】《》\[\]()]/g, "");
+  let s = stripped.replace(/[\s.,!?，。？！、:：;；"'"'（）【】《》\[\]()]/g, "");
   s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
   if (!s) return true;
 
@@ -151,7 +151,7 @@ function isOnlyEmojiOrWhitespace(txt = "") {
 }
 
 function isSymbolOrNum(txt = "") {
-  return /^[\d\s.,!?，。？！、:：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+  return /^[\d\s.,!?，。？！、:：；"'"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
 function normalizeTextForLangDetect(text = "") {
   return String(text)
@@ -1628,6 +1628,7 @@ adminRouter.get("/logs", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 adminRouter.get("/subscriptions", async (req, res) => {
   try {
     const snapshot = await db.collection("userSubscriptions").get();
@@ -1720,6 +1721,26 @@ adminRouter.get("/subscriptions/:userId", async (req, res) => {
   }
 });
 
+// ✅ 新增：刪除使用者授權資料
+adminRouter.delete("/subscriptions/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) return res.status(400).json({ success: false, error: "缺少 userId" });
+
+    await db.collection("userSubscriptions").doc(userId).delete();
+
+    await addAdminLog(
+      "DELETE_SUBSCRIPTION",
+      `刪除使用者授權 ${userId}`,
+      req.auth.user,
+      { userId }
+    );
+
+    res.json({ success: true, userId });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
   try {
@@ -1985,237 +2006,4 @@ async function handleEvent(event) {
     const gid = event.source?.groupId;
     const uid = event.source?.userId;
 
-    if (event.type === "leave" && gid) {
-      await deleteGroupSettings(gid);
-      return;
-    }
-
-if (event.type === "join" && gid) {
-  if (!groupInviter.has(gid) && uid) {
-    const bindResult = await ensureInviterIfMissing(gid, uid);
-
-    if (!bindResult?.ok) {
-      await safeReplyOrPush(
-        event.replyToken,
-        gid,
-        bindResult.message || "此授權可綁定的群組數已達上限。"
-      );
-      return;
-    }
-  }
-
-  await sendMenu(gid);
-  return;
-}
-if (event.type === "postback" && gid) {
-  const data = event.postback?.data || "";
-
-  const bindResult = await ensureInviterIfMissing(gid, uid);
-  if (!bindResult?.ok) {
-    await safeReplyOrPush(
-      event.replyToken,
-      gid,
-      bindResult.message || "此授權可綁定的群組數已達上限。"
-    );
-    return;
-  }
-
-  const protectedActions = [
-    "action=set_lang",
-    "action=set_industry",
-    "action=show_industry_menu"
-  ];
-
-  if (protectedActions.some(action => data.startsWith(action)) && !isAuthorizedOperator(gid, uid)) {
-    await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
-    return;
-  }
-
-  if (data.startsWith("action=set_lang")) {
-    const code = data.split("code=")[1];
-    let set = groupLang.get(gid) || new Set();
-
-    if (code === "cancel") {
-      set = new Set();
-    } else if (SUPPORTED_LANGS[code]) {
-      if (set.has(code)) set.delete(code);
-      else set.add(code);
-    }
-
-    groupLang.set(gid, set);
-    await saveLangForGroup(gid);
-
-    const langs = [...set].map(c => SUPPORTED_LANGS[c]).join("、");
-    await safeReplyOrPush(
-      event.replyToken,
-      gid,
-      set.size
-        ? i18n["zh-TW"].langSelected.replace("{langs}", langs)
-        : i18n["zh-TW"].langCanceled
-    );
-    return;
-  }
-
-  if (data.startsWith("action=set_industry")) {
-    const industry = decodeURIComponent(data.split("industry=")[1] || "");
-
-    if (industry && !isValidIndustry(industry)) {
-      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].invalidIndustry);
-      return;
-    }
-
-    if (industry) {
-      groupIndustry.set(gid, industry);
-      await saveIndustryForGroup(gid);
-      await safeReplyOrPush(
-        event.replyToken,
-        gid,
-        i18n["zh-TW"].industrySet.replace("{industry}", industry)
-      );
-    } else {
-      groupIndustry.delete(gid);
-      await saveIndustryForGroup(gid);
-      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
-    }
-    return;
-  }
-
-  if (data === "action=show_industry_menu") {
-    try {
-      await client.replyMessage(event.replyToken, buildIndustryMenu());
-    } catch {
-      await client.pushMessage(gid, buildIndustryMenu());
-    }
-    return;
-  }
-}
-
-
-    if (event.type === "message" && gid && event.message?.type !== "text") return;
-
-if (event.type === "message" && event.message?.type === "text" && gid) {
-  const text = event.message.text.trim();
-
-  if (text === "!設定") {
-    const bindResult = await ensureInviterIfMissing(gid, uid);
-
-    if (!bindResult?.ok) {
-      await safeReplyOrPush(
-        event.replyToken,
-        gid,
-        bindResult.message || "此授權可綁定的群組數已達上限。"
-      );
-      return;
-    }
-
-    if (!isAuthorizedOperator(gid, uid)) {
-      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
-      return;
-    }
-
-    await sendMenu(gid);
-    return;
-  }
-      if (text === "!查詢") {
-        const langsSet = groupLang.get(gid) || new Set();
-        const langs = langsSet.size ? [...langsSet].map(code => SUPPORTED_LANGS[code] || code).join("、") : "尚未設定語言";
-        const industry = groupIndustry.get(gid) || "尚未設定行業別";
-        const inviterId = groupInviter.get(gid);
-        let inviterName = inviterId || "尚未設定邀請人";
-        if (inviterId) inviterName = await getGroupMemberDisplayName(gid, inviterId);
-        await safeReplyOrPush(event.replyToken, gid, `📋 群組設定查詢：\n語言設定：${langs}\n行業別：${industry}\n第一位設定者：${inviterName}`);
-        return;
-      }
-
-      if (text.startsWith("!文宣")) {
-        const parts = text.split(/\s+/);
-        if (parts.length < 2 || !/^\d{4}-\d{2}-\d{2}$/.test(parts[1])) {
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].wrongFormat);
-          return;
-        }
-
-        const dateStr = parts[1];
-        const wanted = groupLang.get(gid) || new Set();
-        if (wanted.size === 0) {
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noLanguageSetting);
-          return;
-        }
-
-        try {
-          const count = await sendImagesToGroup(gid, dateStr);
-          await safeReplyOrPush(event.replyToken, gid, count > 0 ? i18n["zh-TW"].propagandaPushed.replace("{dateStr}", dateStr) : i18n["zh-TW"].propagandaNotFound);
-        } catch {
-          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].propagandaFailed);
-        }
-        return;
-      }
-
-      const { masked, segments } = extractMentionsFromLineMessage(event.message);
-      const textForLangDetect = normalizeTextForLangDetect(masked);
-      if (isOnlyEmojiOrWhitespace(textForLangDetect)) return;
-      if (isSymbolOrNum(textForLangDetect.replace(/\n/g, " "))) return;
-      if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) return;
-      if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(textForLangDetect)) return;
-
-      const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
-      if (skipTranslatePattern.test(textForLangDetect)) return;
-
-      const set = groupLang.get(gid) || new Set();
-if (set.size === 0) return;
-
-const access = await canUseGroup(gid);
-if (!access.ok) {
-  await safeReplyOrPush(
-    event.replyToken,
-    gid,
-    access.message || "此群組目前無法使用翻譯服務。"
-  );
-  return;
-}
-
-const sourceLang = detectLang(textForLangDetect);
-const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
-if (!rawLines.length) return;
-
-processTranslationInBackground(event.replyToken,gid,uid,masked,segments,rawLines,set,sourceLang,access.inviterUserId
-).catch(e => console.error("背景翻譯錯誤:", e.message));
-    }
-  } catch (e) {
-    console.error("handleEvent 錯誤:", e);
-  }
-}
-
-app.get("/", (_, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
-app.get("/ping", (_, res) => res.send("pong"));
-app.get("/healthz", (_, res) => {
-  res.json({
-    ok: true,
-    uptime: process.uptime(),
-    groupCount: getAllKnownGroupIds().length,
-    enabledIndustries: getEnabledIndustryNames().length
-  });
-});
-
-if (process.env.PING_URL) {
-  setInterval(() => {
-    https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
-      .on("error", e => console.error("PING 失敗:", e.message));
-  }, 10 * 60 * 1000);
-}
-
-process.on("unhandledRejection", reason => { console.error("未捕捉的 Promise 拒絕:", reason); });
-process.on("uncaughtException", err => { console.error("未捕捉的例外錯誤:", err); });
-
-const PORT = process.env.PORT || 10000;
-(async () => {
-  try {
-    await loadLang();
-    await loadInviter();
-    await loadIndustry();
-    await loadIndustryMaster();
-    app.listen(PORT, () => console.log(`🚀 服務啟動成功，監聽於 http://localhost:${PORT}`));
-  } catch (e) {
-    console.error("❌ 啟動時初始化資料失敗:", e);
-    process.exit(1);
-  }
-})();
+    if (event.type === "leave" &&
