@@ -12,7 +12,7 @@ function updateStats(subs) {
 }
 
 async function loadAllSubs() {
-  try { const d = await api('/admin/subscriptions'); allSubs = d.subscriptions||[]; updateStats(allSubs); renderSubList(); }
+  try { const d = await api('/admin/subscriptions'); allSubs = d.items||[]; updateStats(allSubs); renderSubList(); }
   catch(e) { toast(`讀取失敗：${e.message}`, true); }
 }
 
@@ -85,8 +85,7 @@ async function handleConfigSubmit(e) {
   const userId = document.getElementById('configUserId').value.trim();
   if (!userId) return toast('請先在清單選取使用者', true);
   try {
-    await api('/admin/subscriptions/config', { method:'POST', body:JSON.stringify({
-      userId,
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/config`, { method:'PUT', body:JSON.stringify({
       status:           document.getElementById('configStatus').value,
       plan:             document.getElementById('configPlan').value.trim(),
       lastPaymentStatus:document.getElementById('configLastPaymentStatus').value.trim(),
@@ -106,8 +105,7 @@ async function handleManualSubmit(e) {
   const userId = document.getElementById('manualUserIdTarget').value.trim();
   if (!userId) return toast('請先在清單選取使用者', true);
   try {
-    await api('/admin/subscriptions/manual-action', { method:'POST', body:JSON.stringify({
-      userId,
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/manual`, { method:'PUT', body:JSON.stringify({
       action:       document.getElementById('manualAction').value,
       plan:         document.getElementById('manualPlanInput').value.trim()||undefined,
       days:         parseInt(document.getElementById('manualDaysInput').value)||undefined,
@@ -126,14 +124,14 @@ async function handleUsageSubmit(e) {
   if (!userId) return toast('請先在清單選取使用者', true);
   if (!/^\d{4}-\d{2}$/.test(monthKey)) return toast('月份格式錯誤，請輸入 YYYY-MM', true);
   try {
-    await api('/admin/subscriptions/reset-usage', { method:'POST', body:JSON.stringify({ userId, monthKey }) });
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/reset-usage`, { method:'POST', body:JSON.stringify({ monthKey }) });
     toast('✅ 用量已重置'); loadAllSubs();
   } catch(e) { toast(`重置失敗：${e.message}`, true); }
 }
 
 async function loadDefaults() {
   try {
-    const d = await api('/admin/subscriptions/default-settings');
+    const d = await api('/admin/subscription-defaults');
     const df = d.defaults||{};
     document.getElementById('trialDays').value          = df.trialDays??14;
     document.getElementById('trialMaxGroups').value     = df.trialMaxGroups??2;
@@ -153,7 +151,7 @@ async function loadDefaults() {
 async function saveDefaults(e) {
   e.preventDefault();
   try {
-    await api('/admin/subscriptions/default-settings', { method:'POST', body:JSON.stringify({
+    await api('/admin/subscription-defaults', { method:'PUT', body:JSON.stringify({
       trialDays:         parseInt(document.getElementById('trialDays').value),
       trialMaxGroups:    parseInt(document.getElementById('trialMaxGroups').value),
       trialMonthlyQuota: parseInt(document.getElementById('trialMonthlyQuota').value),
