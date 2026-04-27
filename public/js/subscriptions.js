@@ -39,6 +39,7 @@ function renderSubList() {
         <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
           <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-config')">⚙️ 設定</button>
           <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-manual')">🛠 調整</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(s.userId)}','${escapeHtml(s.displayName||s.userId)}')">🗑 刪除</button>
         </div></div></div>`).join('')
     : '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
 }
@@ -48,6 +49,17 @@ function toLocalInput(v) {
   const d = new Date(v._seconds?v._seconds*1000:v.seconds?v.seconds*1000:v);
   const p = n=>String(n).padStart(2,'0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function deleteUser(userId, displayName) {
+  const label = displayName || userId;
+  if (!confirm(`確定要刪除「${label}」的授權資料？\n\n此操作不可復原。`)) return;
+  try {
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    toast(`✅ 已刪除 ${label} 的授權`);
+    if (selectedUserId === userId) selectedUserId = null;
+    loadAllSubs();
+  } catch(e) { toast(`刪除失敗：${e.message}`, true); }
 }
 
 function selectUser(userId, tab) {
