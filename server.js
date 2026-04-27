@@ -2006,4 +2006,239 @@ async function handleEvent(event) {
     const gid = event.source?.groupId;
     const uid = event.source?.userId;
 
-    if (event.type === "leave" &&
+    if (event.type === "leave" && gid) {
+      await deleteGroupSettings(gid);
+      return null;
+    }
+
+    if (event.type === "join" && gid) {
+      return null;
+    }
+
+    if (event.type === "memberLeft" && gid) {
+      return null;
+    }
+
+    if (event.type === "postback") {
+      if (!gid || !uid) return null;
+
+      const authCheck = await ensureInviterIfMissing(gid, uid);
+      if (!authCheck.ok) {
+        await safeReplyOrPush(event.replyToken, gid, authCheck.message || "此群組無法綁定授權。");
+        return null;
+      }
+
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      const params = new URLSearchParams(event.postback?.data || "");
+      const action = params.get("action");
+
+      if (action === "set_lang") {
+        const code = params.get("code");
+
+        if (code === "cancel") {
+          groupLang.delete(gid);
+          await saveLangForGroup(gid);
+          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].langCanceled);
+          return null;
+        }
+
+        if (code && SUPPORTED_LANGS[code]) {
+          const current = groupLang.get(gid) || new Set();
+          current.add(code);
+          groupLang.set(gid, current);
+          await saveLangForGroup(gid);
+
+          const langsText = [...current].map(c => SUPPORTED_LANGS[c] || c).join("、");
+          await safeReplyOrPush(
+            event.replyToken,
+            gid,
+            i18n["zh-TW"].langSelected.replace("{langs}", langsText)
+          );
+        }
+
+        return null;
+      }
+
+      if (action === "show_industry_menu") {
+        await client.replyMessage(event.replyToken, buildIndustryMenu());
+        return null;
+      }
+
+      if (action === "set_industry") {
+        const industry = decodeURIComponent(params.get("industry") || "").trim();
+
+        if (!industry) {
+          groupIndustry.delete(gid);
+          await saveIndustryForGroup(gid);
+          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
+          return null;
+        }
+
+        await loadIndustryMaster();
+        if (!isValidIndustry(industry)) {
+          await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].invalidIndustry);
+          return null;
+        }
+
+        groupIndustry.set(gid, industry);
+        await saveIndustryForGroup(gid);
+        await safeReplyOrPush(
+          event.replyToken,
+          gid,
+          i18n["zh-TW"].industrySet.replace("{industry}", industry)
+        );
+        return null;
+      }
+
+      return null;
+    }
+
+    if (event.type !== "message" || event.message?.type !== "text") {
+      return null;
+    }
+
+    if (!gid || !uid) return null;
+
+    const text = (event.message.text || "").trim();
+    if (!text) return null;
+
+    const bindResult = await ensureInviterIfMissing(gid, uid);
+    if (!bindResult.ok) {
+      await safeReplyOrPush(event.replyToken, gid, bindResult.message || "此群組無法綁定授權。");
+      return null;
+    }
+
+    if (text === "!設定") {
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+      await sendMenu(gid);
+      return null;
+    }
+
+    if (text.startsWith("!行業 ")) {
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      await loadIndustryMaster();
+      const industry = text.replace(/^!行業\s+/, "").trim();
+
+      if (!industry) {
+        groupIndustry.delete(gid);
+        await saveIndustryForGroup(gid);
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
+        return null;
+      }
+
+      if (!isValidIndustry(industry)) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].invalidIndustry);
+        return null;
+      }
+
+      groupIndustry.set(gid, industry);
+      await saveIndustryForGroup(gid);
+      await safeReplyOrPush(
+        event.replyToken,
+        gid,
+        i18n["zh-TW"].industrySet.replace("{industry}", industry)
+      );
+      return null;
+    }
+
+    if (text === "!清除行業") {
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      groupIndustry.delete(gid);
+      await saveIndustryForGroup(gid);
+      await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].industryCleared);
+      return null;
+    }
+
+    if (text.startsWith("!文宣")) {
+      const langSet = groupLang.get(gid) || new Set();
+      if (!langSet.size) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].noLanguageSetting);
+        return null;
+      }
+
+      const match = text.match(/^!文宣\s+(\d{4}-\d{2}-\d{2})$/);
+      if (!match) {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].wrongFormat);
+        return null;
+      }
+
+      const dateStr = match[1];
+      const success = await sendImagesToGroup(gid, dateStr);
+
+      if (success > 0) {
+        await safeReplyOrPush(
+          event.replyToken,
+          gid,
+          i18n["zh-TW"].propagandaPushed.replace("{dateStr}", dateStr)
+        );
+      } else {
+        await safeReplyOrPush(event.replyToken, gid, i18n["zh-TW"].propagandaNotFound);
+      }
+      return null;
+    }
+
+    const access = await canUseGroup(gid);
+    if (!access.ok) {
+      await safeReplyOrPush(event.replyToken, gid, access.message || "此群組目前無法使用翻譯功能。");
+      return null;
+    }
+
+    const langSet = groupLang.get(gid) || new Set();
+    if (!langSet.size) return null;
+
+    const { masked, segments } = extractMentionsFromLineMessage(event.message);
+    const rawLines = masked.split("\n");
+    const sourceLang = detectLang(masked);
+
+    processTranslationInBackground(
+      event.replyToken,
+      gid,
+      uid,
+      masked,
+      segments,
+      rawLines,
+      langSet,
+      sourceLang,
+      access.inviterUserId
+    ).catch(err => {
+      console.error("背景翻譯失敗:", err.message);
+    });
+
+    return null;
+  } catch (e) {
+    console.error("handleEvent error:", e);
+    return null;
+  }
+}
+
+const PORT = Number(process.env.PORT || 3000);
+
+await Promise.all([
+  loadLang(),
+  loadInviter(),
+  loadIndustry(),
+  loadIndustryMaster()
+]);
+
+app.get("/health", (req, res) => {
+  res.json({ success: true });
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
