@@ -9,7 +9,30 @@
 </nav></aside><div class="main">
 <header class="topbar"><div><div class="topbar-title">Dashboard</div><div class="topbar-sub">系統總覽</div></div><div class="auth-box"><input id="authUser" type="text" class="field" placeholder="帳號"/><input id="authPass" type="password" class="field" placeholder="密碼"/><button class="btn btn-primary btn-sm" id="saveAuthBtn">儲存登入</button></div></header>
 <div class="page"><div class="page-header"><h1>📊 Dashboard</h1><p>系統總覽：群組、行業與最近操作一覽</p></div>
+
 <div id="statsCards" class="stats-grid" style="margin-bottom:16px"></div>
+
+<!-- 喚醒伺服器 -->
+<div class="panel" style="margin-bottom:16px">
+  <div class="panel-header">
+    <h2><span class="ph-icon">🚀</span>Render 伺服器</h2>
+    <button class="btn btn-primary btn-sm" id="wakeBtn" onclick="wakeServer()">⚡ 喚醒伺服器</button>
+  </div>
+  <div id="wakeStatus" style="padding:8px 0;color:var(--text-muted,#888);font-size:13px">點擊按鈕喚醒 Render 伺服器，避免閒置休眠。</div>
+</div>
+
+<!-- !查詢 -->
+<div class="panel" style="margin-bottom:16px">
+  <div class="panel-header">
+    <h2><span class="ph-icon">🔍</span>查詢授權使用者</h2>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-bottom:8px">
+    <input id="queryUserId" type="text" class="field" placeholder="輸入 LINE userId（U開頭）" style="flex:1;min-width:220px"/>
+    <button class="btn btn-primary btn-sm" onclick="queryUser()">🔍 查詢</button>
+  </div>
+  <div id="queryResult"></div>
+</div>
+
 <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🌐</span>語言使用統計</h2><button class="btn btn-ghost btn-sm" onclick="loadDashboard()">🔄 重新整理</button></div><div id="langUsage" class="tag-wrap"><span class="badge badge-gray">載入中…</span></div></div>
 <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🕐</span>最近操作紀錄</h2></div><div id="recentLogs"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">尚無資料</div></div></div></div></div></div></div>
 <div id="toast" class="toast"></div>
