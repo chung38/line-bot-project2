@@ -2228,6 +2228,12 @@ async function handleEvent(event) {
 
 const PORT = Number(process.env.PORT || 3000);
 
+// === PING 伺服器 ===
+setInterval(() => {
+  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
+    .on("error", e => console.error("PING 失敗:", e.message));
+}, 10 * 60 * 1000);
+
 await Promise.all([
   loadLang(),
   loadInviter(),
