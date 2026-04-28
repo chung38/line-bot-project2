@@ -234,6 +234,7 @@ function extractMentionsFromLineMessage(message) {
   const segments = [];
 
   if (message.mentioned?.mentionees?.length) {
+    // LINE API 有提供精確位置，直接用，不做 regex fallback
     const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
@@ -241,10 +242,14 @@ function extractMentionsFromLineMessage(message) {
       segments.unshift({ key, text: mentionText });
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
+
+    // ✅ API 有資料就直接 return，不繼續跑 regex
+    return { masked, segments };
   }
 
-  const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
-  let idx = segments.length;
+  // 以下 regex fallback 只在 LINE API 沒有提供 mentionees 時才執行
+  const manualRegex = /@([^\s@，,。、:：;；!?！()[\]{}【】（）]+)/g;
+  let idx = 0;
   let newMasked = "";
   let last = 0;
   let m;
