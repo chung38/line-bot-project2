@@ -7,7 +7,8 @@
 <a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
 <a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
 </nav></aside><div class="main">
-<header class="topbar"><div><div class="topbar-title">Dashboard</div><div class="topbar-sub">系統總覽</div></div><div class="auth-box"><input id="authUser" type="text" class="field" placeholder="帳號"/><input id="authPass" type="password" class="field" placeholder="密碼"/><button class="btn btn-primary btn-sm" id="saveAuthBtn">儲存登入</button></div></header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">Dashboard</div><div class="topbar-sub">系統總覽</div></div></div><div class="auth-box"><input id="authUser" type="text" class="field" placeholder="帳號"/><input id="authPass" type="password" class="field" placeholder="密碼"/><button class="btn btn-primary btn-sm" id="saveAuthBtn">儲存登入</button></div></header>
 <div class="page"><div class="page-header"><h1>📊 Dashboard</h1><p>系統總覽：群組、行業與最近操作一覽</p></div>
 
 <div id="statsCards" class="stats-grid" style="margin-bottom:16px"></div>

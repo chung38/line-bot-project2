@@ -70,12 +70,25 @@ window.AdminCommon = (() => {
     });
   }
 
+  function initMobileMenu() {
+    const toggle = document.getElementById('menuToggle');
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    if (!toggle || !sidebar) return;
+    const open = () => { sidebar.classList.add('open'); if(overlay) overlay.classList.add('open'); };
+    const close = () => { sidebar.classList.remove('open'); if(overlay) overlay.classList.remove('open'); };
+    toggle.addEventListener('click', () => sidebar.classList.contains('open') ? close() : open());
+    if (overlay) overlay.addEventListener('click', close);
+    sidebar.querySelectorAll('.nav-link').forEach(link => link.addEventListener('click', close));
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     if (!isHome() && !getPass()) { location.href = '/index.html'; return; }
     loadAuthInputs();
     const btn = document.getElementById('saveAuthBtn');
     if (btn) btn.addEventListener('click', saveAuth);
     initTabs('#subTabs');
+    initMobileMenu();
   });
 
   return { api, toast, formatTime, escapeHtml, statusBadge };

@@ -123,5 +123,24 @@ textarea.field{resize:vertical;min-height:80px}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.error{border-color:var(--red);background:#2a1a18}
 hr{border:none;border-top:1px solid var(--border);margin:16px 0}
-@media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{display:none}.stats-grid{grid-template-columns:repeat(2,1fr)}}
+/* ── 漢堡選單按鈕（桌機隱藏） ── */
+.menu-toggle{display:none;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:18px;cursor:pointer;color:var(--text);line-height:1;flex-shrink:0}
+/* ── 遮罩層 ── */
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:199;}
+@media(max-width:900px){
+  .layout{grid-template-columns:1fr}
+  .sidebar{
+    display:flex;
+    position:fixed;left:0;top:0;
+    height:100vh;width:var(--sidebar-w);
+    z-index:200;
+    transform:translateX(-100%);
+    transition:transform .25s ease;
+    box-shadow:4px 0 24px rgba(0,0,0,.6);
+  }
+  .sidebar.open{transform:translateX(0)}
+  .sidebar-overlay.open{display:block}
+  .menu-toggle{display:inline-flex}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+}
 @media(max-width:600px){.page{padding:12px}.topbar{padding:0 14px}.card-grid{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.tab-btn{padding:6px 10px;font-size:12px}}

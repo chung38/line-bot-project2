@@ -7,7 +7,8 @@
 <a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
 <a class="nav-link  active" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
 </nav></aside><div class="main">
-<header class="topbar"><div><div class="topbar-title">操作紀錄</div><div class="topbar-sub">查看所有管理員操作歷程</div></div></header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">操作紀錄</div><div class="topbar-sub">查看所有管理員操作歷程</div></div></div></header>
 <div class="page"><div class="page-header"><h1>📋 操作紀錄</h1><p>查看所有管理員的操作歷程</p></div>
 <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🔍</span>搜尋</h2><button class="btn btn-ghost btn-sm" onclick="loadLogs()">🔄 重新整理</button></div>
 <div class="filter-bar"><div class="search-wrap"><span class="search-icon">🔍</span><input id="logKeyword" type="text" class="field search-field" placeholder="搜尋操作類型 / 詳細 / 操作者"/></div><span id="logCount" class="filter-count">— 筆</span></div></div>
