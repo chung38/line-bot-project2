@@ -2086,7 +2086,11 @@ async function handleEvent(event) {
 
   return null;
 }
-
+// === PING 伺服器 ===
+setInterval(() => {
+  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
+    .on("error", e => console.error("PING 失敗:", e.message));
+}, 10 * 60 * 1000);
 // ✅ Step 4: 啟動時載入封鎖群組清單
 Promise.all([
   loadLang(),
