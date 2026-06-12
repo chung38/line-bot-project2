@@ -145,7 +145,7 @@ function isOnlyEmojiOrWhitespace(txt = "") {
   const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
   if (!stripped) return true;
 
-  let s = stripped.replace(/[\s.,!?，。？！、:：;；\"'\"'（）【】《》\[\]()]/g, "");
+  let s = stripped.replace(/[\s.,!?，。？！、:：;；\"'\u201c\u2019（）【】《》\[\]()]/g, "");
   s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
   if (!s) return true;
 
@@ -153,7 +153,7 @@ function isOnlyEmojiOrWhitespace(txt = "") {
 }
 
 function isSymbolOrNum(txt = "") {
-  return /^[\d\s.,!?，。？！、:：；\"'\"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+  return /^[\d\s.,!?，。？！、:：；\"'\u201c\u2019（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
 function normalizeTextForLangDetect(text = "") {
   return String(text)
@@ -889,9 +889,9 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 
 // ===== 各行業專屬術語 context =====
 const INDUSTRY_CONTEXT_MAP = {
+  "一般製造業": "目前工廠類型：一般製造業。翻譯時優先採用製造現場的專業術語，包含生產管理、品管、倉儲、ERP、MES等常用語彙。",
   "畜牧業": "目前工廠類型：畜牧業。翻譯時優先使用畜牧、養殖、飼養、飼料、動物管理、獸醫、疫苗、消毒、雞舍/豬舍/牛棚、屠宰、出欄、批次等現場術語。",
   "農業相關": "目前工廠類型：農業相關。翻譯時優先使用農作、耕種、播種、灌溉、施肥、農藥、採收、包裝、冷鏈、田間管理等現場術語。",
-  "一般製造業": "目前工廠類型：一般製造業。翻譯時優先採用製造現場的專業術語。",
 };
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
