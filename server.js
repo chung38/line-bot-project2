@@ -902,10 +902,15 @@ const industryContext = industry
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
-  const industryContext = industry
-    ? (INDUSTRY_CONTEXT_MAP[industry] ?? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`)
-    : "目前無指定行業別，請使用通用工作場所術語翻譯。";
+   const industryDoc = industry
+    ? industryMasterDocs.find(x => x.name === industry)
+    : null;
 
+  const industryContext = industryDoc?.promptContext
+    ? industryDoc.promptContext
+    : industry
+      ? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`
+      : "目前無指定行業別，請使用通用工作場所術語翻譯。";
   return `
 你是台灣製造業與工廠現場的專業口譯員。
 
@@ -1694,21 +1699,32 @@ adminRouter.put("/industries/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const name = String(req.body.name || "").trim();
-    const sortOrder = Number(req.body.sortOrder || 9999);
+    const sortOrder = Number(req.body.sortOrder ?? 9999);
     const enabled = req.body.enabled !== false;
+    const promptContext = String(req.body.promptContext || "").trim();
 
     if (!name) return res.status(400).json({ success: false, error: "name 不可空白" });
 
-    await db.collection("systemIndustries").doc(id).set({
-      name,
-      sortOrder,
-      enabled,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    await loadIndustryMaster();
+    const exists = industryMasterDocs.find(x => x.id === id);
+    if (!exists) return res.status(404).json({ success: false, error: "找不到此行業" });
+
+    const ref = db.collection("systemIndustries").doc(id);
+    await ref.set(
+      {
+        name,
+        sortOrder,
+        enabled,
+        promptContext,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
 
     await loadIndustryMaster();
-    await addAdminLog("UPDATE_INDUSTRY", `修改行業 ${name}`, req.auth.user, { id, name });
-    res.json({ success: true, item: { id, name, sortOrder, enabled } });
+    await addAdminLog("UPDATE_INDUSTRY", `更新行業 ${id} → ${name}`, req.auth.user, { id, name, sortOrder, enabled, promptContext });
+
+    res.json({ success: true, id, name, sortOrder, enabled, promptContext });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
