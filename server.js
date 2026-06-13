@@ -886,15 +886,12 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
     console.error("admin log 寫入失敗:", e.message);
   }
 }
-
-// ✅ 行業別 PROMPT 對照表（依行業提供專屬翻譯語境）
 const INDUSTRY_CONTEXT_MAP = {
   "一般製造業": "目前工廠類型：一般製造業。翻譯時優先採用製造現場的專業術語，包含生產管理、品管、倉儲、ERP、MES等常用語彙。",
-  "畜牧業": "目前工廠類型：畜牧業。翻譯時優先使用畜牧、養殖、飼養、飼料、動物管理、獸醫、疫苗、消毒、雞舍/豬舍/牛棚、屠宰、出欄、批次、頭數、欄位清洗等現場術語。避免使用製造業或農耕相關詞彙。",
-  "農業相關": "目前工廠類型：農業相關。翻譯時優先使用農作、耕種、播種、灌溉、施肥、農藥、採收、包裝、冷鏈、田間管理、嫁接、定植、移苗、溫室、作物生長期等現場術語。避免使用製造業或畜牧相關詞彙。",
-  "食用菌菇類栽培業": "目前工廠類型：食用菌菇類栽培業。翻譯時優先使用菌包、太空包、接種、發菌、出菇、疏菇、採菇、冷房、培養室、覆土、滅菌、消毒等現場術語。",
+  "畜牧業": "目前工廠類型：畜牧業。翻譯時優先使用畜牧、養殖、飼養、飼料、動物管理、獸醫、疫苗、消毒、雞舍/豬舍/牛棚、屠宰、出欄、批次等現場術語。",
+  "農業相關": "目前工廠類型：農業相關。翻譯時優先使用農作、耕種、播種、灌溉、施肥、農藥、採收、包裝、冷鏈、田間管理等現場術語。",
+  "食用菌菇類栽培業": "目前工廠類型：食用菌菇類栽培業。翻譯時優先使用菌包、太空包、接種、發菌、出菇、疏菇、採菇、冷房、培養室、覆土、滅菌、消毒等現場術語。"
 };
-
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
@@ -1666,3 +1663,570 @@ adminRouter.post("/industries", async (req, res) => {
     if (!name) return res.status(400).json({ success: false, error: "name 不可空白" });
 
     await loadIndustryMaster();
+    if (industryMasterDocs.some(x => x.name === name)) {
+      return res.status(400).json({ success: false, error: "行業名稱已存在" });
+    }
+
+    const ref = await db.collection("systemIndustries").add({
+      name,
+      sortOrder,
+      enabled,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await loadIndustryMaster();
+    await addAdminLog("CREATE_INDUSTRY", `新增行業 ${name}`, req.auth.user, { id: ref.id, name });
+    res.json({ success: true, item: { id: ref.id, name, sortOrder, enabled } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.put("/industries/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const name = String(req.body.name || "").trim();
+    const sortOrder = Number(req.body.sortOrder || 9999);
+    const enabled = req.body.enabled !== false;
+
+    if (!name) return res.status(400).json({ success: false, error: "name 不可空白" });
+
+    await db.collection("systemIndustries").doc(id).set({
+      name,
+      sortOrder,
+      enabled,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await loadIndustryMaster();
+    await addAdminLog("UPDATE_INDUSTRY", `修改行業 ${name}`, req.auth.user, { id, name });
+    res.json({ success: true, item: { id, name, sortOrder, enabled } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.delete("/industries/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await db.collection("systemIndustries").doc(id).get();
+    const name = doc.exists ? doc.data().name : null;
+    await db.collection("systemIndustries").doc(id).delete();
+    await loadIndustryMaster();
+    await addAdminLog("DELETE_INDUSTRY", `刪除行業 ${name || id}`, req.auth.user, { id, name });
+    res.json({ success: true, id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.get("/logs", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim().toLowerCase();
+    const action = String(req.query.action || "").trim();
+    const snapshot = await db.collection("adminLogs").orderBy("createdAt", "desc").limit(200).get();
+    let items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    if (action) items = items.filter(x => x.action === action);
+    if (q) {
+      items = items.filter(x => [x.action, x.detail, x.actor, JSON.stringify(x.extra || {})].join(" ").toLowerCase().includes(q));
+    }
+
+    res.json({ success: true, items });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.get("/subscriptions", async (req, res) => {
+  try {
+    const snapshot = await db.collection("userSubscriptions").get();
+
+    const items = await Promise.all(
+      snapshot.docs.map(async (doc) => {
+        const userId = doc.id;
+        const displayName = await getUserDisplayNameByUserId(userId);
+        const groupsCount = await countGroupsByInviter(userId);
+
+        return {
+          userId,
+          displayName: displayName || "",
+          groupsCount,
+          ...doc.data(),
+        };
+      })
+    );
+
+    res.json({ success: true, items });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
+adminRouter.get("/subscription-defaults", async (req, res) => {
+  try {
+    const defaults = await getSubscriptionDefaults();
+    res.json({ success: true, defaults });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.put("/subscription-defaults", async (req, res) => {
+  try {
+    const ref = db.collection("systemSettings").doc("subscriptionDefaults");
+    const snap = await ref.get();
+
+    const defaults = normalizeSubscriptionDefaults(req.body || {});
+    const payload = {
+      ...defaults,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (!snap.exists) {
+      payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    await ref.set(payload, { merge: true });
+
+    await addAdminLog(
+      "UPDATE_SUBSCRIPTION_DEFAULTS",
+      "subscriptionDefaults",
+      req.auth.user,
+      defaults
+    );
+
+    res.json({ success: true, defaults });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+adminRouter.get("/subscriptions/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const sub = await getSubscriptionByUserId(userId);
+    const usage = await getMonthlyUsage(userId);
+    const groupsCount = await countGroupsByInviter(userId);
+    const displayName = await getUserDisplayNameByUserId(userId);
+
+    res.json({
+      success: true,
+      userId,
+      displayName: displayName || "",
+      subscription: sub
+        ? {
+            ...sub,
+            userId,
+            displayName: displayName || "",
+          }
+        : null,
+      usage,
+      groupsCount,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ✅ 新增：刪除使用者授權資料
+adminRouter.delete("/subscriptions/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) return res.status(400).json({ success: false, error: "缺少 userId" });
+
+    await db.collection("userSubscriptions").doc(userId).delete();
+
+    await addAdminLog(
+      "DELETE_SUBSCRIPTION",
+      `刪除使用者授權 ${userId}`,
+      req.auth.user,
+      { userId }
+    );
+
+    res.json({ success: true, userId });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+// 設定授權
+adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!isValidLineUserId(userId)) {
+      return res.status(400).json({ error: "userId 格式不正確" });
+    }
+
+    const {
+      status,
+      plan,
+      lastPaymentStatus,
+      trialEndsAt,
+      currentPeriodEnd,
+      maxGroups,
+      monthlyQuota,
+      manualOverride,
+      manualReason,
+    } = req.body;
+
+    const payload = {
+      userId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (status !== undefined)           payload.status           = normalizeSubscriptionStatus(status);
+    if (plan !== undefined)             payload.plan             = String(plan || "").trim();
+    if (lastPaymentStatus !== undefined) payload.lastPaymentStatus = String(lastPaymentStatus || "").trim();
+    if (maxGroups !== undefined)        payload.maxGroups        = toSafeInt(maxGroups, 0, 0);
+    if (monthlyQuota !== undefined)     payload.monthlyQuota     = toSafeInt(monthlyQuota, 0, 0);
+    if (manualOverride !== undefined)   payload.manualOverride   = normalizeManualOverride(manualOverride);
+    if (manualReason !== undefined)     payload.manualReason     = String(manualReason || "").trim();
+
+    const trialDate = parseOptionalDateInput(trialEndsAt);
+    if (trialDate !== undefined)        payload.trialEndsAt      = trialDate;
+
+    const periodDate = parseOptionalDateInput(currentPeriodEnd);
+    if (periodDate !== undefined)       payload.currentPeriodEnd = periodDate;
+
+    const ref = db.collection("userSubscriptions").doc(userId);
+    const snap = await ref.get();
+    if (!snap.exists) payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+
+    await ref.set(payload, { merge: true });
+
+    await addAdminLog("subscription_config", `設定授權 ${userId}`, "admin", payload);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PUT /subscriptions/:userId/config 錯誤:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const defaults = await getSubscriptionDefaults();
+
+    const action = normalizeManualAction(req.body?.action);
+    const plan = String(req.body?.plan ?? defaults.manualPlan).trim() || defaults.manualPlan;
+    const days = toSafeInt(req.body?.days, defaults.manualDays, 1);
+    const maxGroups = toSafeInt(req.body?.maxGroups, defaults.manualMaxGroups, 0);
+    const monthlyQuota = toSafeInt(req.body?.monthlyQuota, defaults.manualMonthlyQuota, 0);
+    const reason = String(req.body?.reason || "").trim();
+
+    const ref = db.collection("userSubscriptions").doc(userId);
+    const snap = await ref.get();
+    const current = snap.exists ? snap.data() : null;
+
+    if (action === "activate") {
+      const now = new Date();
+      const currentEnd = toDateSafe(current?.currentPeriodEnd);
+      const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
+
+      const end = new Date(baseDate);
+      end.setDate(end.getDate() + days);
+
+      const payload = {
+        userId,
+        status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+        plan,
+        currentPeriodEnd: end,
+        maxGroups,
+        monthlyQuota,
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: reason || "admin manual activate",
+        lastPaymentStatus: "manual",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.usedQuota = 0;
+      }
+
+      await ref.set(payload, { merge: true });
+    } else if (action === "deactivate") {
+      const payload = {
+        userId,
+        status: SUBSCRIPTION_STATUS.INACTIVE,
+        manualOverride: MANUAL_OVERRIDE.NONE,
+        manualReason: reason || "admin manual deactivate",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
+    } else if (action === "force_active") {
+      const payload = {
+        userId,
+        manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
+        manualReason: reason || "admin force active",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        payload.status = SUBSCRIPTION_STATUS.MANUAL_ACTIVE;
+        payload.usedQuota = 0;
+      }
+
+      await ref.set(payload, { merge: true });
+    } else if (action === "force_inactive") {
+      const payload = {
+        userId,
+        manualOverride: MANUAL_OVERRIDE.FORCE_INACTIVE,
+        manualReason: reason || "admin force inactive",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (!snap.exists) {
+        payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await ref.set(payload, { merge: true });
+    } else if (action === "clear_override") {
+      await ref.set(
+        {
+          manualOverride: MANUAL_OVERRIDE.NONE,
+          manualReason: "",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } else {
+      return res.status(400).json({ success: false, error: `不支援的 action: ${action}` });
+    }
+
+    await addAdminLog("MANUAL_SUBSCRIPTION", `手動操作 ${userId} → ${action}`, req.auth.user, { userId, action, plan, days, maxGroups, monthlyQuota, reason });
+
+    const updated = await getSubscriptionByUserId(userId);
+    res.json({ success: true, userId, subscription: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.use("/admin", adminRouter);
+
+app.post(
+  "/webhook",
+  webhookLimiter,
+  middleware(lineConfig),
+  async (req, res) => {
+    res.sendStatus(200);
+    const events = req.body.events || [];
+    for (const event of events) {
+      try {
+        await handleEvent(event);
+      } catch (e) {
+        console.error("handleEvent error:", e);
+      }
+    }
+  }
+);
+
+async function handleEvent(event) {
+  const gid = event.source?.groupId || null;
+  const uid = event.source?.userId || null;
+  const replyToken = event.replyToken || null;
+
+  if (event.type === "leave" && gid) {
+    await deleteGroupSettings(gid);
+    return null;
+  }
+
+  if (event.type === "join" && gid) {
+    await sendMenu(gid);
+    return null;
+  }
+
+  if (event.type === "postback" && gid && uid) {
+    const data = new URLSearchParams(event.postback?.data || "");
+    const action = data.get("action");
+
+    if (action === "set_lang") {
+      const ensureRes = await ensureInviterIfMissing(gid, uid);
+      if (!ensureRes.ok) {
+        await safeReplyOrPush(replyToken, gid, ensureRes.message);
+        return null;
+      }
+
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      const code = data.get("code");
+
+      if (code === "cancel") {
+        groupLang.set(gid, new Set());
+        await saveLangForGroup(gid);
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].langCanceled);
+        return null;
+      }
+
+      if (!SUPPORTED_LANGS[code]) return null;
+
+      const set = groupLang.get(gid) || new Set();
+      if (set.has(code)) {
+        set.delete(code);
+      } else {
+        set.add(code);
+      }
+      groupLang.set(gid, set);
+      await saveLangForGroup(gid);
+
+      const selectedLabels = [...set].map(c => SUPPORTED_LANGS[c]).join("、");
+      const msg = set.size > 0
+        ? i18n["zh-TW"].langSelected.replace("{langs}", selectedLabels)
+        : i18n["zh-TW"].langCanceled;
+
+      await safeReplyOrPush(replyToken, gid, msg);
+      return null;
+    }
+
+    if (action === "show_industry_menu") {
+      const ensureRes = await ensureInviterIfMissing(gid, uid);
+      if (!ensureRes.ok) {
+        await safeReplyOrPush(replyToken, gid, ensureRes.message);
+        return null;
+      }
+
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      await loadIndustryMaster();
+      await client.pushMessage(gid, buildIndustryMenu());
+      return null;
+    }
+
+    if (action === "set_industry") {
+      const ensureRes = await ensureInviterIfMissing(gid, uid);
+      if (!ensureRes.ok) {
+        await safeReplyOrPush(replyToken, gid, ensureRes.message);
+        return null;
+      }
+
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      const industry = decodeURIComponent(data.get("industry") || "").trim();
+
+      if (!industry) {
+        groupIndustry.delete(gid);
+        await saveIndustryForGroup(gid);
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].industryCleared);
+        return null;
+      }
+
+      await loadIndustryMaster();
+      if (!isValidIndustry(industry)) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].invalidIndustry);
+        return null;
+      }
+
+      groupIndustry.set(gid, industry);
+      await saveIndustryForGroup(gid);
+      await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].industrySet.replace("{industry}", industry));
+      return null;
+    }
+  }
+
+  if (event.type === "message" && event.message?.type === "text" && gid && uid) {
+    const rawText = event.message.text || "";
+
+    if (rawText.trim() === "!設定") {
+      const ensureRes = await ensureInviterIfMissing(gid, uid);
+      if (!ensureRes.ok) {
+        await safeReplyOrPush(replyToken, gid, ensureRes.message);
+        return null;
+      }
+
+      if (!isAuthorizedOperator(gid, uid)) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        return null;
+      }
+
+      await sendMenu(gid);
+      return null;
+    }
+
+    const propagandaMatch = rawText.trim().match(/^!文宣\s+(\d{4}-\d{2}-\d{2})$/);
+    if (propagandaMatch) {
+      const dateStr = propagandaMatch[1];
+      const langSet = groupLang.get(gid) || new Set();
+
+      if (langSet.size === 0) {
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noLanguageSetting);
+        return null;
+      }
+
+      await safeReplyOrPush(replyToken, gid, `正在抓取 ${dateStr} 的文宣圖片，請稍候...`);
+      const count = await sendImagesToGroup(gid, dateStr);
+
+      if (count > 0) {
+        await client.pushMessage(gid, { type: "text", text: i18n["zh-TW"].propagandaPushed.replace("{dateStr}", dateStr) });
+      } else {
+        await client.pushMessage(gid, { type: "text", text: i18n["zh-TW"].propagandaNotFound });
+      }
+      return null;
+    }
+
+    if (rawText.trim().startsWith("!")) return null;
+
+    const langSet = groupLang.get(gid);
+    if (!langSet || langSet.size === 0) return null;
+
+    const { masked, segments } = extractMentionsFromLineMessage(event.message);
+    const normalizedForDetect = normalizeTextForLangDetect(masked);
+
+    if (!normalizedForDetect.trim()) return null;
+    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return null;
+    if (isSymbolOrNum(normalizedForDetect)) return null;
+
+    const sourceLang = detectLang(normalizedForDetect);
+
+    const useResult = await canUseGroup(gid);
+    if (!useResult.ok) return null;
+
+    const rawLines = masked.split("\n").filter(l => l.trim());
+    if (!rawLines.length) return null;
+
+    processTranslationInBackground(
+      replyToken, gid, uid, masked, segments, rawLines,
+      langSet, sourceLang, useResult.inviterUserId
+    ).catch(e => console.error("背景翻譯失敗:", e));
+  }
+
+  return null;
+}
+// === PING 伺服器 ===
+setInterval(() => {
+  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
+    .on("error", e => console.error("PING 失敗:", e.message));
+}, 10 * 60 * 1000);
+// ✅ Step 4: 啟動時載入封鎖群組清單
+Promise.all([
+  loadLang(),
+  loadInviter(),
+  loadIndustry(),
+  loadIndustryMaster(),
+  loadDeletedGroups()
+]).then(() => {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`✅ Server running on port ${PORT}`);
+  });
+}).catch(e => {
+  console.error("❌ 初始化失敗:", e);
+  process.exit(1);
+});
