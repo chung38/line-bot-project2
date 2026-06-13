@@ -1851,7 +1851,59 @@ adminRouter.delete("/subscriptions/:userId", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+// 設定授權
+adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!isValidLineUserId(userId)) {
+      return res.status(400).json({ error: "userId 格式不正確" });
+    }
 
+    const {
+      status,
+      plan,
+      lastPaymentStatus,
+      trialEndsAt,
+      currentPeriodEnd,
+      maxGroups,
+      monthlyQuota,
+      manualOverride,
+      manualReason,
+    } = req.body;
+
+    const payload = {
+      userId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (status !== undefined)           payload.status           = normalizeSubscriptionStatus(status);
+    if (plan !== undefined)             payload.plan             = String(plan || "").trim();
+    if (lastPaymentStatus !== undefined) payload.lastPaymentStatus = String(lastPaymentStatus || "").trim();
+    if (maxGroups !== undefined)        payload.maxGroups        = toSafeInt(maxGroups, 0, 0);
+    if (monthlyQuota !== undefined)     payload.monthlyQuota     = toSafeInt(monthlyQuota, 0, 0);
+    if (manualOverride !== undefined)   payload.manualOverride   = normalizeManualOverride(manualOverride);
+    if (manualReason !== undefined)     payload.manualReason     = String(manualReason || "").trim();
+
+    const trialDate = parseOptionalDateInput(trialEndsAt);
+    if (trialDate !== undefined)        payload.trialEndsAt      = trialDate;
+
+    const periodDate = parseOptionalDateInput(currentPeriodEnd);
+    if (periodDate !== undefined)       payload.currentPeriodEnd = periodDate;
+
+    const ref = db.collection("userSubscriptions").doc(userId);
+    const snap = await ref.get();
+    if (!snap.exists) payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+
+    await ref.set(payload, { merge: true });
+
+    await addAdminLog("subscription_config", `設定授權 ${userId}`, "admin", payload);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PUT /subscriptions/:userId/config 錯誤:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
   try {
     const userId = req.params.userId;
