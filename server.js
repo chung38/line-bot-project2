@@ -895,9 +895,6 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
     console.error("admin log 寫入失敗:", e.message);
   }
 }
-const industryContext = industry
-  ? (industryContextMap.get(industry) ?? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`)
-  : "目前無指定行業別，請使用通用工作場所術語翻譯。";
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
