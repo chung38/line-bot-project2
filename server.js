@@ -886,13 +886,18 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
     console.error("admin log 寫入失敗:", e.message);
   }
 }
-
+const INDUSTRY_CONTEXT_MAP = {
+  "一般製造業": "目前工廠類型：一般製造業。翻譯時優先採用製造現場的專業術語，包含生產管理、品管、倉儲、ERP、MES等常用語彙。",
+  "畜牧業": "目前工廠類型：畜牧業。翻譯時優先使用畜牧、養殖、飼養、飼料、動物管理、獸醫、疫苗、消毒、雞舍/豬舍/牛棚、屠宰、出欄、批次等現場術語。",
+  "農業相關": "目前工廠類型：農業相關。翻譯時優先使用農作、耕種、播種、灌溉、施肥、農藥、採收、包裝、冷鏈、田間管理等現場術語。",
+  "食用菌菇類栽培業": "目前工廠類型：食用菌菇類栽培業。翻譯時優先使用菌包、太空包、接種、發菌、出菇、疏菇、採菇、冷房、培養室、覆土、滅菌、消毒等現場術語。"
+};
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
   const industryContext = industry
-    ? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`
-    : "目前為一般製造業工廠。";
+    ? (INDUSTRY_CONTEXT_MAP[industry] ?? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`)
+    : "目前無指定行業別，請使用通用工作場所術語翻譯。";
 
   return `
 你是台灣製造業與工廠現場的專業口譯員。
