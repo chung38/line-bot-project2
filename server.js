@@ -1048,11 +1048,14 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
 
     if (targetLang === "zh-TW") {
   const hasChinese = /[\u4e00-\u9fff]/.test(out);
-  const unchanged = out === text.trim();
-  const sourceLooksChinese =
-    detectLang(text) === "zh-TW" || isPureChineseMessage(text);
+  const unchanged = out.trim() === text.trim();
+  const sourceLooksChinese = detectLang(text) === "zh-TW" || isPureChineseMessage(text);
 
   if (!hasChinese || (!sourceLooksChinese && unchanged)) {
+    // ✅ 輸出與輸入完全相同，代表 GPT 判斷這段不需翻譯（人名/姓氏），直接接受
+    if (unchanged) {
+      return out;
+    }
     if (retry < 2) {
       const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
       return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
