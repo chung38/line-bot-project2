@@ -236,20 +236,27 @@ function extractMentionsFromLineMessage(message) {
   const segments = [];
 
   if (message.mentioned?.mentionees?.length) {
-    // LINE API 有提供精確位置，直接用，不做 regex fallback
-    const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
-    mentionees.forEach((m, i) => {
+    // 依原始位置由前往後排序，key 編號依此順序命名
+    const forwardSorted = [...message.mentioned.mentionees].sort((a, b) => a.index - b.index);
+
+    // 先建立 segments（key 依前→後順序，確保還原順序正確）
+    forwardSorted.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      const mentionText = m.type === "all" ? "@All" : masked.substr(m.index, m.length);
-      segments.push({ key, text: mentionText });  // ✅ 改 unshift → push
+      const mentionText = m.type === "all" ? "@All" : (message.text || "").substr(m.index, m.length);
+      segments.push({ key, text: mentionText });
+    });
+
+    // 替換時由後往前，避免替換後 index 偏移
+    [...forwardSorted].reverse().forEach((m, ri) => {
+      const i = forwardSorted.length - 1 - ri;
+      const key = `__MENTION_${i}__`;
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
 
-    // ✅ API 有資料就直接 return，不繼續跑 regex
     return { masked, segments };
   }
 
-  // 以下 regex fallback 只在 LINE API 沒有提供 mentionees 時才執行
+  // regex fallback（LINE API 沒有提供 mentionees 時才執行）
   const manualRegex = /@([^\s@，,。、:：;；!?！()[\]{}【】（）]+)/g;
   let idx = 0;
   let newMasked = "";
@@ -1046,16 +1053,19 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       .join("\n")
       .trim();
 
-    if (targetLang === "zh-TW") {
+if (targetLang === "zh-TW") {
   const hasChinese = /[\u4e00-\u9fff]/.test(out);
   const unchanged = out.trim() === text.trim();
-  const sourceLooksChinese = detectLang(text) === "zh-TW" || isPureChineseMessage(text);
+  const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
-  if (!hasChinese || (!sourceLooksChinese && unchanged)) {
-    // ✅ 輸出與輸入完全相同，代表 GPT 判斷這段不需翻譯（人名/姓氏），直接接受
-    if (unchanged) {
-      return out;
-    }
+  // GPT 判斷這段不需翻譯（人名、代號等），直接接受
+  if (unchanged) {
+    return out;
+  }
+
+  // 只有「原文含中文、但輸出沒有中文」才重試
+  // 避免純外語片段（泰文/英文）翻成中文後被誤判為異常
+  if (!hasChinese && sourceHasChinese) {
     if (retry < 2) {
       const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
       return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
