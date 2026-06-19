@@ -1156,6 +1156,13 @@ async function translateLineSegments(line, targetLang, gid, segments) {
 async function processTranslationInBackground(replyToken,gid,uid,masked,segments,rawLines,langSet,sourceLang,ownerUserId) {
   const allNeededLangs = new Set();
   const langOutputs = {};
+// ✅ 若整則訊息只有網址（無任何文字內容），直接跳過不翻譯
+const textOnly = masked
+  .replace(/__MENTION_\d+__/g, "")
+  .replace(/(https?:\/\/[^\s]+)/gi, "")
+  .trim();
+
+if (!textOnly) return;
 
   const mergedText = rawLines.join("\n");
   const normalizedMergedText = normalizeTextForLangDetect(mergedText);
