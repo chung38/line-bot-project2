@@ -1160,6 +1160,7 @@ async function processTranslationInBackground(replyToken,gid,uid,masked,segments
 const textOnly = masked
   .replace(/__MENTION_\d+__/g, "")
   .replace(/(https?:\/\/[^\s]+)/gi, "")
+  .replace(/\s+/g, "")   // ✅ 新增：去掉空白後再判斷
   .trim();
 
 if (!textOnly) return;
