@@ -158,7 +158,7 @@ function isSymbolOrNum(txt = "") {
 function normalizeTextForLangDetect(text = "") {
   return String(text)
     .replace(/__MENTION_\d+__/g, " ")
-    .replace(/@[^\s@，,。、:：;；!?！()（）\[\]{}【】]+/g, " ")
+    .replace(/@\S+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -1174,18 +1174,17 @@ if (!textOnly) return;
   const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
 
   const foreignLen = thaiLen + viCharLen + latinLen;
-  const isChineseDominant = detectLang(normalizedMergedText) === "zh-TW";
+const isChineseDominant = chineseLen > 0;
 
+if (!isChineseDominant) {
+  allNeededLangs.add("zh-TW");
+}
 
-  if (!isChineseDominant) {
-    allNeededLangs.add("zh-TW");
-  }
-
-  [...langSet].forEach(code => {
-    if (code === "zh-TW") return;
-    if (code === sourceLang) return;
-    allNeededLangs.add(code);
-  });
+[...langSet].forEach(code => {
+  if (code === "zh-TW") return;
+  if (!isChineseDominant && code === sourceLang) return; // 只有純外語才跳過
+  allNeededLangs.add(code);
+});
 
   const targetLangs = [...allNeededLangs];
   if (!targetLangs.length) return;
