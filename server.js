@@ -191,13 +191,15 @@ function detectLang(text) {
   }
 
   // 印尼文判斷（已加強）
-  if (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|data|pulang|izin|sakit|bos|iya|terima|kasih|makasih|selamat|cuti|lembur|barusan|sopir|supir|telp|telepon|makan|tidur|bangun|pergi|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|pengen|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/i.test(cleaned) ||
-    /\b(di|ke|me|ber|ter)\s*\w+\b/i.test(cleaned) ||
-    /\w+(nya|nya?|kan|lah|pun)\b/i.test(cleaned)
-  ) {
-    return 'id';
-  }
+if (
+  chineseLen === 0 &&  // 沒有中文
+  latinLen > 3 &&      // 有足夠拉丁字母
+  (
+    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|selamat|cuti|lembur|sudah|udah|belum|juga|tapi|saya|aku|kamu|bisa|harus|tolong|oke)\\b/i.test(cleaned) ||
+    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
+    // ← 移除 /\b(di|ke|me|ber|ter)\s*\w+\b/ 這條，太容易誤判英文
+  )
+) { return 'id'; }
 
   // 中文優先規則
   if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
@@ -230,7 +232,6 @@ function isPureChineseMessage(text = "") {
   return chineseLen >= 1 && chineseRatio >= 0.6 && foreignLen === 0
 ;
 }
-
 function extractMentionsFromLineMessage(message) {
   let masked = message.text || "";
   const segments = [];
@@ -252,7 +253,8 @@ function extractMentionsFromLineMessage(message) {
       const key = `__MENTION_${i}__`;
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
-
+    console.log("🔍 masked after replace:", masked);
+    console.log("🔍 segments:", segments);
     return { masked, segments };
   }
 
@@ -267,18 +269,14 @@ function extractMentionsFromLineMessage(message) {
     const mentionText = m[0];
     const key = `__MENTION_${idx}__`;
     segments.push({ key, text: mentionText });
-    newMasked += masked.slice(last, m.index) + key;
-    last = m.index + mentionText.length;
-    newMasked += " ";
-    if (masked[last] === " ") last++;
+newMasked += masked.slice(last, m.index) + key;
+last = m.index + mentionText.length;
     idx++;
   }
 
   newMasked += masked.slice(last);
   return { masked: newMasked, segments };
 }
-
-
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -975,9 +973,7 @@ ${industryContext}
 使用自然、簡單、容易理解的工作用語。
 避免法律、公文、學術或過度正式的文字。
 
-7. 不要翻譯成日常生活語言。
-
-8. 保留原文中的：
+7. 保留原文中的：
 
 - 產品型號
 - 批號
@@ -992,16 +988,16 @@ ${industryContext}
 - 日期
 - 時間
 
-9. 人名、暱稱、群組稱呼、員工代號可保留原樣。
+8. 人名、暱稱、群組稱呼、員工代號可保留原樣。
 
-10. 保留原本換行格式。
+9. 保留原本換行格式。
 
-11. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
+10. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
 
-12. 只輸出翻譯結果。
+11. 只輸出翻譯結果。
 
 ${forceStrict && targetLang === "zh-TW"
-  ? "13. 必須輸出繁體中文，不可直接照抄原文。"
+  ? "12. 必須輸出繁體中文，不可直接照抄原文。"
   : ""}
 
 請翻譯成：${langLabel}
@@ -1026,10 +1022,11 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       {
         model: "gpt-4.1-mini",
         temperature: 0.1,
+        max_tokens: 1000,
         messages: [
           {
             role: "system",
-            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱、翻譯時間副詞時需嚴格依照原文，不得自行推斷前後文改變時態。"
+            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。"
           },
           {
             role: "system",
@@ -1076,7 +1073,6 @@ if (targetLang === "zh-TW") {
   }
 }
 
-
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
@@ -1099,6 +1095,10 @@ if (targetLang === "zh-TW") {
 }
 
 async function translateLineSegments(line, targetLang, gid, segments) {
+    const lineWithoutMentions = line.replace(/__MENTION_\d+__/g, "").trim();
+  if (!lineWithoutMentions) {
+    return restoreMentions(line, segments);  // 直接還原，不翻譯
+  }
   const segs = [];
   let lastIndex = 0;
   const mentionRegex = /__MENTION_\d+__/g;
@@ -1128,26 +1128,30 @@ async function translateLineSegments(line, targetLang, gid, segments) {
     let urlMatch;
 
     while ((urlMatch = urlRegex.exec(seg.text)) !== null) {
-      const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
-      if (beforeUrl.trim()) {
-        if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
-          outLine += beforeUrl;
-        } else {
-          outLine += (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid)).trim();
-        }
-      }
-      outLine += urlMatch[0];
-      lastIdx = urlMatch.index + urlMatch[0].length;
+const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
+if (beforeUrl.trim()) {
+  const leadingSpace = beforeUrl.match(/^\s*/)[0];
+  const trailingSpace = beforeUrl.match(/\s*$/)[0];
+  if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl.trim())) {
+    outLine += beforeUrl;
+  } else {
+    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+  }
+}
+outLine += urlMatch[0];
+lastIdx = urlMatch.index + urlMatch[0].length;
     }
 
-    const afterLastUrl = seg.text.slice(lastIdx);
-    if (afterLastUrl.trim()) {
-      if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-        outLine += afterLastUrl;
-      } else {
-        outLine += (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid)).trim();
-      }
-    }
+const afterLastUrl = seg.text.slice(lastIdx);
+if (afterLastUrl.trim()) {
+  const leadingSpace = afterLastUrl.match(/^\s*/)[0];
+  const trailingSpace = afterLastUrl.match(/\s*$/)[0];
+  if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl.trim())) {
+    outLine += afterLastUrl;
+  } else {
+    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+  }
+}
   }
 
   return restoreMentions(outLine, segments);
@@ -1215,9 +1219,9 @@ if (!isChineseDominant) {
 
   let replyText = "";
   for (const code of targetLangs) {
-    const lines = (langOutputs[code] || []).filter(
-      line => line !== undefined && line !== null && line !== ""
-    );
+const lines = (langOutputs[code] || []).filter(
+  line => line !== undefined && line !== null
+);
     if (!lines.length) continue;
     replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
   }
@@ -1652,7 +1656,20 @@ adminRouter.delete("/groups/:gid/settings", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
+adminRouter.get("/groups-blocked", async (req, res) => {
+  try {
+    const snapshot = await db.collection("deletedGroups")
+      .orderBy("deletedAt", "desc")
+      .get();
+    const items = snapshot.docs.map(doc => ({
+      gid: doc.id,
+      ...doc.data()
+    }));
+    res.json({ success: true, items });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 // ✅ 後台手動解除封鎖（讓群組可以重新綁定）
 adminRouter.delete("/groups/:gid/blocked", async (req, res) => {
   try {
@@ -2055,7 +2072,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 });
 
 app.use("/admin", adminRouter);
-
+app.get("/ping", (req, res) => res.sendStatus(200));
 app.post(
   "/webhook",
   webhookLimiter,
@@ -2100,7 +2117,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+      
         return null;
       }
 
@@ -2141,7 +2158,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+       
         return null;
       }
 
@@ -2158,7 +2175,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        
         return null;
       }
 
@@ -2195,7 +2212,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        
         return null;
       }
 
@@ -2241,7 +2258,7 @@ async function handleEvent(event) {
     const useResult = await canUseGroup(gid);
     if (!useResult.ok) return null;
 
-    const rawLines = masked.split("\n").filter(l => l.trim());
+ const rawLines = masked.split("\n");
     if (!rawLines.length) return null;
 
     processTranslationInBackground(
