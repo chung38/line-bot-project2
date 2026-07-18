@@ -28,20 +28,35 @@ function getFiltered() {
 function renderSubList() {
   const fl = getFiltered();
   document.getElementById('listMeta').textContent = `${fl.length} 筆`;
-  document.getElementById('subscriptionList').innerHTML = fl.length
-    ? fl.map(s=>`<div class="item-card${s.userId===selectedUserId?' selected':''}">
-        <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.displayName||s.userId)}</div><div class="item-sub">${escapeHtml(s.userId)}</div></div>${statusBadge(s.status)}</div>
-        <div class="item-row"><span class="row-label">方案</span><div>${escapeHtml(s.plan||'—')}</div></div>
-        <div class="item-row"><span class="row-label">付款</span><div>${escapeHtml(s.lastPaymentStatus||'—')}</div></div>
-        <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.currentPeriodEnd)}</div></div>
-        <div class="item-row"><span class="row-label">群組上限</span><div>${s.maxGroups??'—'}</div></div>
-        <div class="item-row"><span class="row-label">月額度</span><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
-        <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
-          <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-config')">⚙️ 設定</button>
-          <button class="btn btn-secondary btn-sm" onclick="selectUser('${escapeHtml(s.userId)}','tab-manual')">🛠 調整</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(s.userId)}','${escapeHtml(s.displayName||s.userId)}')">🗑 刪除</button>
-        </div></div></div>`).join('')
-    : '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
+  const container = document.getElementById('subscriptionList');
+  if (!fl.length) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
+    return;
+  }
+  // fix: 不將 displayName 放進 onclick ，改用 data-userid 屬性 + addEventListener 防止 XSS
+  container.innerHTML = fl.map(s=>`<div class="item-card${s.userId===selectedUserId?' selected':''}" data-userid="${escapeHtml(s.userId)}">
+      <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.displayName||s.userId)}</div><div class="item-sub">${escapeHtml(s.userId)}</div></div>${statusBadge(s.status)}</div>
+      <div class="item-row"><span class="row-label">方案</span><div>${escapeHtml(s.plan||'—')}</div></div>
+      <div class="item-row"><span class="row-label">付款</span><div>${escapeHtml(s.lastPaymentStatus||'—')}</div></div>
+      <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.currentPeriodEnd)}</div></div>
+      <div class="item-row"><span class="row-label">群組上限</span><div>${s.maxGroups??'—'}</div></div>
+      <div class="item-row"><span class="row-label">月額度</span><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
+      <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
+        <button class="btn btn-secondary btn-sm" data-action="config" data-userid="${escapeHtml(s.userId)}">⚙️ 設定</button>
+        <button class="btn btn-secondary btn-sm" data-action="manual" data-userid="${escapeHtml(s.userId)}">🛠 調整</button>
+        <button class="btn btn-danger btn-sm" data-action="delete" data-userid="${escapeHtml(s.userId)}" data-name="${escapeHtml(s.displayName||s.userId)}">🗑 刪除</button>
+      </div></div></div>`).join('');
+
+  // 綁定事件，不使用 inline onclick
+  container.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userid;
+      const action = btn.dataset.action;
+      if (action === 'config')  selectUser(uid, 'tab-config');
+      if (action === 'manual')  selectUser(uid, 'tab-manual');
+      if (action === 'delete')  deleteUser(uid, btn.dataset.name);
+    });
+  });
 }
 
 function toLocalInput(v) {
@@ -56,7 +71,7 @@ async function deleteUser(userId, displayName) {
   if (!confirm(`確定要刪除「${label}」的授權資料？\n\n此操作不可復原。`)) return;
   try {
     await api(`/admin/subscriptions/${encodeURIComponent(userId)}`, { method: 'DELETE' });
-    toast(`✅ 已刪除 ${label} 的授權`);
+    toast(`✅ 已停用並清除 ${label} 的授權`);
     if (selectedUserId === userId) selectedUserId = null;
     loadAllSubs();
   } catch(e) { toast(`刪除失敗：${e.message}`, true); }
@@ -156,7 +171,7 @@ async function loadDefaults() {
     document.getElementById('manualDays').value         = df.manualDays??30;
     document.getElementById('manualMaxGroups').value    = df.manualMaxGroups??5;
     document.getElementById('manualMonthlyQuota').value = df.manualMonthlyQuota??3000;
-    document.getElementById('defaultsHint').textContent = '✅ 預設值已載入';
+    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入';
   } catch(e) { document.getElementById('defaultsHint').textContent=`讀取失敗：${e.message}`; }
 }
 
@@ -176,7 +191,7 @@ async function saveDefaults(e) {
       manualMaxGroups:   parseInt(document.getElementById('manualMaxGroups').value),
       manualMonthlyQuota:parseInt(document.getElementById('manualMonthlyQuota').value),
     })});
-    toast('✅ 預設值已儲存'); loadDefaults();
+    toast('✅ 預設値已儲存'); loadDefaults();
   } catch(e) { toast(`儲存失敗：${e.message}`, true); }
 }
 
