@@ -18,7 +18,9 @@ const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
   "OPENAI_API_KEY",
-  "FIREBASE_CONFIG"
+  "FIREBASE_CONFIG",
+  "ADMIN_USER",
+  "ADMIN_PASS"
 ];
 
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
@@ -162,12 +164,12 @@ function normalizeTextForLangDetect(text = "") {
     .replace(/\s+/g, " ")
     .trim();
 }
+
 function detectLang(text) {
   const cleaned = normalizeTextForLangDetect(text);
-  if (!cleaned) return 'en';
+  if (!cleaned) return "en";
 
-  // 去掉數字再算長度
-  const noNumCleaned = cleaned.replace(/[0-9]/g, '');
+  const noNumCleaned = cleaned.replace(/[0-9]/g, "");
   const totalLen = noNumCleaned.length || 1;
 
   const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
@@ -179,39 +181,34 @@ function detectLang(text) {
   const thaiRatio = thaiLen / totalLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
 
-  // 泰文判斷
-  if (thaiRatio > 0.2 || thaiLen >= 4) return 'th';
+  if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
 
-  // 越南文判斷
   if (
     /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
     viCharLen >= 2
   ) {
-    return 'vi';
+    return "vi";
   }
 
-  // 印尼文判斷（已加強）
-if (
-  chineseLen === 0 &&  // 沒有中文
-  latinLen > 3 &&      // 有足夠拉丁字母
-  (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|selamat|cuti|lembur|sudah|udah|belum|juga|tapi|saya|aku|kamu|bisa|harus|tolong|oke)\\b/i.test(cleaned) ||
-    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
-    // ← 移除 /\b(di|ke|me|ber|ter)\s*\w+\b/ 這條，太容易誤判英文
-  )
-) { return 'id'; }
+  const idKeywordHits = (
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/gi) || []
+  ).length;
 
-  // 中文優先規則
-  if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
-  if (chineseRatio >= 0.45 && chineseLen >= 1) return 'zh-TW';
+  const idSuffixHits = (
+    cleaned.match(/\b\w+(nya|kan|lah|pun)\b/gi) || []
+  ).length;
 
-  // 純符號或沒有拉丁字母時，當英文 fallback
-  if (latinLen === 0) return 'en';
+  if (chineseLen >= 1 && foreignLen === 0) return "zh-TW";
+  if (chineseRatio >= 0.45 && chineseLen >= 1) return "zh-TW";
 
-  // 有摻中文時偏向中文
-  if (chineseLen >= 1) return 'zh-TW';
+  if (idKeywordHits >= 2 || (idKeywordHits >= 1 && idSuffixHits >= 1)) {
+    return "id";
+  }
 
-  return 'en';
+  if (latinLen === 0) return "en";
+  if (chineseLen >= 1) return "zh-TW";
+
+  return "en";
 }
 
 
@@ -233,54 +230,70 @@ function isPureChineseMessage(text = "") {
 ;
 }
 function extractMentionsFromLineMessage(message) {
-  let masked = message.text || "";
+  const originalText = message.text || "";
+  let masked = originalText;
   const segments = [];
 
   if (message.mentioned?.mentionees?.length) {
-    // 依原始位置由前往後排序，key 編號依此順序命名
-    const forwardSorted = [...message.mentioned.mentionees].sort((a, b) => a.index - b.index);
+    // LINE 的 index 可能不包含 @ 符號，需自動對齊
+    const normalized = message.mentioned.mentionees
+      .map(m => {
+        // 如果 index 位置不是 @，往前找最近的 @
+        let start = m.index;
+        if (originalText[start] !== '@') {
+          const prev = originalText.lastIndexOf('@', start);
+          if (prev !== -1 && start - prev <= 2) start = prev;
+        }
+        // 結尾往前找到第一個空白或換行為止（避免多吃正文）
+        let end = m.index + m.length;
+        while (end > start + 1 && (originalText[end - 1] === ' ' || originalText[end - 1] === '\n')) {
+          end--;
+        }
+        const mentionText = m.type === "all"
+          ? "@All"
+          : (m.mentionText || originalText.slice(start, end));  // ✅ 優先用 LINE 原生 mentionText
+        return { ...m, start, end, mentionText };
+      })
+      .sort((a, b) => a.start - b.start);
 
-    // 先建立 segments（key 依前→後順序，確保還原順序正確）
-    forwardSorted.forEach((m, i) => {
-      const key = `__MENTION_${i}__`;
-      const mentionText = m.type === "all" ? "@All" : (message.text || "").substr(m.index, m.length);
-      segments.push({ key, text: mentionText });
+    normalized.forEach((m, i) => {
+      segments.push({ key: `__MENTION_${i}__`, text: m.mentionText });
     });
 
-    // 替換時由後往前，避免替換後 index 偏移
-    [...forwardSorted].reverse().forEach((m, ri) => {
-      const i = forwardSorted.length - 1 - ri;
+    // 由後往前替換，避免 index 偏移
+    [...normalized].reverse().forEach((m, ri) => {
+      const i = normalized.length - 1 - ri;
       const key = `__MENTION_${i}__`;
-      masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
+      masked = masked.slice(0, m.start) + key + masked.slice(m.end);
     });
-    console.log("🔍 masked after replace:", masked);
-    console.log("🔍 segments:", segments);
-    return { masked, segments };
+
+    console.log("🔍 masked after official replace:", masked);
+    console.log("🔍 segments:", JSON.stringify(segments));
+    return { masked, segments, hasOfficialMentionData: true };
   }
 
-  // regex fallback（LINE API 沒有提供 mentionees 時才執行）
-  const manualRegex = /@([^\s@，,。、:：;；!?！()[\]{}【】（）]+)/g;
-  let idx = 0;
-  let newMasked = "";
-  let last = 0;
-  let m;
 
-  while ((m = manualRegex.exec(masked)) !== null) {
-    const mentionText = m[0];
+  // fallback：只抓無空白 mention
+  const manualRegex = /@(?:all|[A-Za-z0-9_.-]+|[\u4e00-\u9fffA-Za-z0-9_.-]+|[\u0E00-\u0E7F.\-]+)/g;
+  let idx = 0, newMasked = "", last = 0, m;
+
+  while ((m = manualRegex.exec(originalText)) !== null) {
     const key = `__MENTION_${idx}__`;
-    segments.push({ key, text: mentionText });
-newMasked += masked.slice(last, m.index) + key;
-last = m.index + mentionText.length;
+    segments.push({ key, text: m[0] });
+    newMasked += originalText.slice(last, m.index) + key;
+    last = m.index + m[0].length;
     idx++;
   }
 
-  newMasked += masked.slice(last);
-  return { masked: newMasked, segments };
+  newMasked += originalText.slice(last);
+  console.log("🔍 masked after fallback:", newMasked);
+  console.log("🔍 segments:", JSON.stringify(segments));
+  return { masked: newMasked, segments, hasOfficialMentionData: false };
 }
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
-    restored = restored.replace(new RegExp(seg.key, "g"), `${seg.text} `);
+    restored = restored.replace(new RegExp(seg.key, "g"), seg.text);
   });
   return restored;
 }
@@ -774,14 +787,24 @@ async function getUserDisplayNameByUserId(userId) {
   }
 }
 
-async function safeReplyOrPush(replyToken, gid, text) {
+async function safeReply(replyToken, text) {
+  if (!replyToken) {
+    console.error("❌ 無 replyToken，略過回覆");
+    return false;
+  }
+
   try {
-    if (!replyToken) throw new Error("No replyToken");
-    await client.replyMessage(replyToken, { type: "text", text });
-  } catch {
-    if (gid) {
-      await client.pushMessage(gid, { type: "text", text });
-    }
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text
+    });
+    return true;
+  } catch (e) {
+    console.error(
+      "❌ LINE Reply 失敗，不改用 Push：",
+      e.response?.data || e.message
+    );
+    return false;
   }
 }
 
@@ -905,104 +928,32 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
-   const industryDoc = industry
+  const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
 
   const industryContext = industryDoc?.promptContext
     ? industryDoc.promptContext
     : industry
-      ? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`
-      : "目前無指定行業別，請使用通用工作場所術語翻譯。";
-  return `
-你是台灣製造業與工廠現場的專業口譯員。
+      ? `工廠類型：${industry}。優先使用此產業專業術語。`
+      : "無指定行業別，使用通用工廠術語。";
 
-你的工作是協助台灣主管、班長、領班、生管、品保、倉管與外籍移工進行日常溝通。
+  return `你是台灣製造業口譯員，協助主管與外籍移工溝通。
 
 ${industryContext}
 
-你熟悉：
-
-- 工廠生產管理
-- 製造現場用語
-- ERP
-- MES
-- 倉儲管理
-- 品質管理
-- 出勤管理
-- 台灣工廠常用術語
-
 翻譯規則：
-
-1. 先理解句子在工廠現場的真正意思，再翻譯。
-
-2. 優先使用製造業、工廠、倉儲、生產管理領域慣用術語。
-
-3. 若詞語具有多重意思，優先選擇台灣工廠最常見的專業用法；
-英文單一字母（如 A、B、C）若出現在建築、棟別、機台編號前後，
-請保留原字母不翻譯、不音譯。
-
-4. 以下類型詞語必須依照製造業語境理解：
-
-繳庫
-報工
-投料
-領料
-退料
-完工
-過帳
-入庫
-出庫
-工單
-製令
-批號
-料號
-機台
-換線
-停機
-補料
-重工
-待料
-異常單
-
-5. 若原文為工廠主管對員工下達指示，
-請翻譯成目標語言中自然且常見的工作現場指令語氣，
-不要翻譯成新聞、書籍或正式公文語氣。
-
-6. 翻譯給外籍移工閱讀時：
-使用自然、簡單、容易理解的工作用語。
-避免法律、公文、學術或過度正式的文字。
-
-7. 保留原文中的：
-
-- 產品型號
-- 批號
-- 料號
-- 工單號
-- ERP代碼
-- 機台編號
-- QR Code內容
-- 網址
-- Email
-- 數字
-- 日期
-- 時間
-
-8. 人名、暱稱、群組稱呼、員工代號可保留原樣。
-
-9. 保留原本換行格式。
-
-10. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
-
-11. 只輸出翻譯結果。
-
-${forceStrict && targetLang === "zh-TW"
-  ? "12. 必須輸出繁體中文，不可直接照抄原文。"
-  : ""}
-
-請翻譯成：${langLabel}
-`;
+1. 理解工廠語境後再翻譯，使用製造業慣用術語。
+2. 英文單一字母（如 A、B、C 棟/機台）保留原樣。
+3. 製造業術語（繳庫、報工、工單、批號、料號等）以工廠用語翻譯，勿白話化。
+4. 對外籍移工：使用自然、簡單的工作用語，避免正式文件語氣。
+5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間。
+6. 保留原本換行格式，只輸出翻譯結果。
+7. 必須忠實傳達原文語意，不可自行補充原文沒有的主詞、受詞、代詞、對象或人稱稱呼。
+${forceStrict && targetLang === "zh-TW" ? "8. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
+請翻譯成：${langLabel}`;
 }
+
 
 async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, customPrompt = "") {
   if (!text?.trim()) return text;
@@ -1026,7 +977,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
         messages: [
           {
             role: "system",
-            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。"
+            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。禁止腦補原文未出現的主詞、代詞、對象、人稱或語氣。"
           },
           {
             role: "system",
@@ -1040,7 +991,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       },
       {
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        timeout: 30000
+        timeout: 25000
       }
     );
 
@@ -1157,17 +1108,17 @@ if (afterLastUrl.trim()) {
   return restoreMentions(outLine, segments);
 }
 
-async function processTranslationInBackground(replyToken,gid,uid,masked,segments,rawLines,langSet,sourceLang,ownerUserId) {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false) {
   const allNeededLangs = new Set();
   const langOutputs = {};
-// ✅ 若整則訊息只有網址（無任何文字內容），直接跳過不翻譯
-const textOnly = masked
-  .replace(/__MENTION_\d+__/g, "")
-  .replace(/(https?:\/\/[^\s]+)/gi, "")
-  .replace(/\s+/g, "")   // ✅ 新增：去掉空白後再判斷
-  .trim();
 
-if (!textOnly) return;
+  const textOnly = masked
+    .replace(/__MENTION_\d+__/g, "")
+    .replace(/(https?:\/\/[^\s]+)/gi, "")
+    .replace(/\s+/g, "")
+    .trim();
+
+  if (!textOnly) return;
 
   const mergedText = rawLines.join("\n");
   const normalizedMergedText = normalizeTextForLangDetect(mergedText);
@@ -1177,59 +1128,93 @@ if (!textOnly) return;
   const viCharLen = (normalizedMergedText.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
 
+  const totalMeaningfulLen = normalizedMergedText.replace(/\s+/g, "").length || 1;
+  const chineseRatio = chineseLen / totalMeaningfulLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
-const isChineseDominant = chineseLen > 0;
+
+  const isChineseDominant =
+    (chineseLen >= 2 && chineseRatio >= 0.45) ||
+    (chineseLen >= 4 && foreignLen === 0);
 
 if (!isChineseDominant) {
   allNeededLangs.add("zh-TW");
 }
 
+/*
+  sourceLang 是目前訊息偵測出的原文語言。
+
+  - 中文為主：群組勾選的每個外文都要翻。
+    例如「明天請 @Pakat 06:30 上班」，
+    即使 @Pakat 是泰文姓名，也仍必須輸出泰文。
+
+  - 非中文為主：跳過原文語言，避免把泰文再翻泰文、
+    越南文再翻越南文或印尼文再翻印尼文。
+
+  hasOfficialMentionData 保留給 mention 的官方遮罩／還原流程使用，
+  不用它來決定是否跳過來源語言。
+*/
+const isForeignSource = ["en", "th", "vi", "id"].includes(sourceLang);
+
+const shouldSkipSourceLanguage =
+  isForeignSource &&
+  !isChineseDominant;
+
 [...langSet].forEach(code => {
   if (code === "zh-TW") return;
-  if (!isChineseDominant && code === sourceLang) return; // 只有純外語才跳過
+
+  if (shouldSkipSourceLanguage && code === sourceLang) {
+    return;
+  }
+
   allNeededLangs.add(code);
 });
 
   const targetLangs = [...allNeededLangs];
   if (!targetLangs.length) return;
 
-  targetLangs.forEach(code => {
-    langOutputs[code] = new Array(rawLines.length);
-  });
+  let translationTimedOut = false;
 
-  const tasks = [];
-  rawLines.forEach((line, lineIndex) => {
-    targetLangs.forEach(code => {
-      tasks.push(
-        translateLineSegments(line, code, gid, segments).then(result => {
-          langOutputs[code][lineIndex] = result;
-        })
-      );
-    });
+  const tasks = targetLangs.map(async code => {
+    try {
+      const result = await translateLineSegments(mergedText, code, gid, segments);
+      langOutputs[code] = result;
+    } catch (e) {
+      console.error(`❌ ${code} 翻譯失敗:`, e.message);
+      langOutputs[code] = "";
+    }
   });
 
   await Promise.race([
     Promise.allSettled(tasks),
     new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Translation timeout")), 25000)
+      setTimeout(() => {
+        translationTimedOut = true;
+        reject(new Error("Translation timeout"));
+      }, 28000)
     )
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
 
   let replyText = "";
+
   for (const code of targetLangs) {
-const lines = (langOutputs[code] || []).filter(
-  line => line !== undefined && line !== null
-);
-    if (!lines.length) continue;
-    replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
+    const result = langOutputs[code];
+    if (!result || !result.trim()) {
+      replyText += `${LANG_LABELS[code] || code}：\n（翻譯失敗或逾時）\n\n`;
+      continue;
+    }
+    replyText += `${LANG_LABELS[code] || code}：\n${result.trim()}\n\n`;
   }
 
   if (!replyText.trim()) return;
 
+  if (translationTimedOut) {
+    replyText = `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${replyText}`;
+  }
+
   const userName = await getGroupMemberDisplayName(gid, uid);
-  await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
+  await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
   await incrementMonthlyUsage(ownerUserId, 1, masked.length);
 }
 
@@ -1453,11 +1438,10 @@ const adminLimiter = rateLimit({
 });
 
 const adminAuth = basicAuth({
-  users: { [process.env.ADMIN_USER || "admin"]: process.env.ADMIN_PASS || "changeme" },
+  users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
   challenge: false,
   unauthorizedResponse: () => ({ success: false, error: "未登入或帳號密碼錯誤" })
 });
-
 app.use(express.static(path.join(__dirname, "public")));
 
 const adminRouter = express.Router();
@@ -2245,8 +2229,13 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
+    if (event.message?.mentioned) {
+      console.log("📌 RAW mentioned:", JSON.stringify(event.message.mentioned));
+      console.log("📌 RAW text length:", [...event.message.text].length);
+      console.log("📌 RAW text:", JSON.stringify(event.message.text));
+    }
 
-    const { masked, segments } = extractMentionsFromLineMessage(event.message);
+    const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(event.message);
     const normalizedForDetect = normalizeTextForLangDetect(masked);
 
     if (!normalizedForDetect.trim()) return null;
@@ -2263,7 +2252,7 @@ async function handleEvent(event) {
 
     processTranslationInBackground(
       replyToken, gid, uid, masked, segments, rawLines,
-      langSet, sourceLang, useResult.inviterUserId
+      langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData
     ).catch(e => console.error("背景翻譯失敗:", e));
   }
 
