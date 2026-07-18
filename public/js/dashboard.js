@@ -19,7 +19,7 @@ async function loadDashboard() {
   } catch(e) { toast(`讀取失敗：${e.message}`, true); }
 }
 
-// 喚醒 Render 伺服器
+// 喚醒 Render 伺服器（fix: 改用 api() 確保帶 Authorization header）
 async function wakeServer() {
   const btn = document.getElementById('wakeBtn');
   const status = document.getElementById('wakeStatus');
@@ -29,17 +29,11 @@ async function wakeServer() {
   status.textContent = '正在嘗試連線伺服器，請稍候…';
   const start = Date.now();
   try {
-    const res = await fetch('/admin/dashboard', {
-      headers: { Authorization: window.AdminCommon ? undefined : '' }
-    });
+    await api('/admin/dashboard');
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    if (res.ok) {
-      status.style.color = '#22c55e';
-      status.textContent = `✅ 伺服器已喚醒！回應時間：${elapsed} 秒`;
-      toast('✅ Render 伺服器已喚醒');
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    status.style.color = '#22c55e';
+    status.textContent = `✅ 伺服器已喚醒！回應時間：${elapsed} 秒`;
+    toast('✅ Render 伺服器已喚醒');
   } catch(e) {
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     status.style.color = '#ef4444';
