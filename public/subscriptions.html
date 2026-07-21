@@ -1,106 +1,208 @@
-<!DOCTYPE html>
-<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>授權管理 — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
-<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="/index.html"><span class="ni">📊</span>Dashboard</a>
-<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
-<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
-<a class="nav-link  active" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
-<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
-</nav></aside><div class="main">
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">授權管理</div><div class="topbar-sub">查詢與設定訂閱狀態</div></div></div></header>
-<div class="page"><div class="page-header"><h1>🔑 授權管理</h1><p>查詢與設定每位使用者的訂閱狀態</p></div>
-<div id="subTabs">
-<div class="tabs">
-  <button class="tab-btn active" data-tab="tab-list">📋 授權清單</button>
-  <button class="tab-btn" data-tab="tab-config">⚙️ 設定授權</button>
-  <button class="tab-btn" data-tab="tab-manual">🛠 手動操作</button>
-  <button class="tab-btn" data-tab="tab-defaults">📐 預設值</button>
-</div>
+const { api, toast, formatTime, escapeHtml, statusBadge } = window.AdminCommon;
+let allSubs=[], selectedUserId=null;
 
-<div id="tab-list" class="tab-panel active">
-  <div class="panel">
-    <div class="panel-header"><h2><span class="ph-icon">📊</span>統計</h2><button class="btn btn-ghost btn-sm" id="reloadAllBtn">🔄 重新整理</button></div>
-    <div class="stats-grid">
-      <div class="stat-card"><div class="stat-label">全部</div><div class="stat-value" id="statTotal">—</div></div>
-      <div class="stat-card"><div class="stat-label">TRIAL</div><div class="stat-value c-yellow" id="statTrial">—</div></div>
-      <div class="stat-card"><div class="stat-label">ACTIVE</div><div class="stat-value c-green" id="statActive">—</div></div>
-      <div class="stat-card"><div class="stat-label">MANUAL</div><div class="stat-value c-purple" id="statManual">—</div></div>
-      <div class="stat-card"><div class="stat-label">FAILED</div><div class="stat-value c-red" id="statFailed">—</div></div>
-      <div class="stat-card"><div class="stat-label">INACTIVE</div><div class="stat-value" id="statInactive">—</div></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-header"><h2><span class="ph-icon">👤</span>使用者清單</h2></div>
-    <div class="filter-bar">
-      <div class="search-wrap"><span class="search-icon">🔍</span><input id="searchInput" type="text" class="field search-field" placeholder="搜尋使用者名稱 / ID / 狀態"/></div>
-      <select id="statusFilter" class="field" style="width:160px"><option value="">全部狀態</option><option value="TRIAL">TRIAL</option><option value="ACTIVE">ACTIVE</option><option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option><option value="PAYMENT_FAILED">PAYMENT_FAILED</option><option value="INACTIVE">INACTIVE</option></select>
-      <span id="listMeta" class="filter-count">— 筆</span>
-    </div>
-    <div id="subscriptionList" class="card-grid"></div>
-  </div>
-</div>
+function updateStats(subs) {
+  const n = s => subs.filter(x=>x.status===s).length;
+  document.getElementById('statTotal').textContent    = subs.length;
+  document.getElementById('statTrial').textContent    = n('TRIAL');
+  document.getElementById('statActive').textContent   = n('ACTIVE');
+  document.getElementById('statManual').textContent   = n('MANUAL_ACTIVE');
+  document.getElementById('statFailed').textContent   = n('PAYMENT_FAILED');
+  document.getElementById('statInactive').textContent = n('INACTIVE');
+}
 
-<div id="tab-config" class="tab-panel">
-  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">⚙️</span>設定授權 — <span id="selectedUserText" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
-  <div id="selectedSummary" class="detail-grid" style="margin-bottom:16px"></div>
-  <form id="configForm" class="form-grid">
-    <input id="configUserId" type="hidden"/>
-    <div class="form-group"><label>狀態</label><select id="configStatus" class="field"><option value="TRIAL">TRIAL</option><option value="ACTIVE">ACTIVE</option><option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option><option value="PAYMENT_FAILED">PAYMENT_FAILED</option><option value="INACTIVE">INACTIVE</option></select></div>
-    <div class="form-group"><label>方案名稱</label><input id="configPlan" type="text" class="field" placeholder="monthly / yearly…"/></div>
-    <div class="form-group"><label>付款狀態</label><input id="configLastPaymentStatus" type="text" class="field" placeholder="paid / failed / —"/></div>
-    <div class="form-group"><label>試用到期</label><input id="configTrialEndsAt" type="datetime-local" class="field"/></div>
-    <div class="form-group"><label>方案到期</label><input id="configCurrentPeriodEnd" type="datetime-local" class="field"/></div>
-    <div class="form-group"><label>群組上限</label><input id="configMaxGroups" type="number" class="field" min="0" placeholder="e.g. 5"/></div>
-    <div class="form-group"><label>月額度</label><input id="configMonthlyQuota" type="number" class="field" min="0" placeholder="e.g. 3000"/></div>
-    <div class="form-group"><label>手動覆寫</label><select id="configManualOverride" class="field"><option value="NONE">NONE</option><option value="FORCE_ACTIVE">FORCE_ACTIVE</option><option value="FORCE_INACTIVE">FORCE_INACTIVE</option></select></div>
-    <div class="form-group"><label>覆寫原因</label><input id="configManualReason" type="text" class="field" placeholder="備注"/></div>
-    <div class="form-group full"><button type="submit" class="btn btn-primary">💾 儲存授權設定</button></div>
-  </form></div>
-</div>
+async function loadAllSubs() {
+  try { const d = await api('/admin/subscriptions'); allSubs = d.items||[]; updateStats(allSubs); renderSubList(); }
+  catch(e) { toast(`讀取失敗：${e.message}`, true); }
+}
 
-<div id="tab-manual" class="tab-panel">
-  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🛠</span>手動操作 — <span id="manualUserBadge" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
-  <input id="manualUserIdTarget" type="hidden"/>
-  <form id="manualForm" class="form-grid">
-    <div class="form-group"><label>操作類型</label><select id="manualAction" class="field"><option value="activate">啟用（MANUAL_ACTIVE）</option><option value="deactivate">停用（INACTIVE）</option><option value="reset_trial">重設試用</option><option value="extend">延長方案</option></select></div>
-    <div class="form-group"><label>方案名稱（選填）</label><input id="manualPlanInput" type="text" class="field" placeholder="manual / monthly…"/></div>
-    <div class="form-group"><label>天數（延長/試用）</label><input id="manualDaysInput" type="number" class="field" min="1" placeholder="e.g. 30"/></div>
-    <div class="form-group"><label>群組上限（選填）</label><input id="manualMaxGroupsInput" type="number" class="field" min="1" placeholder="e.g. 5"/></div>
-    <div class="form-group"><label>月額度（選填）</label><input id="manualMonthlyQuotaInput" type="number" class="field" min="1" placeholder="e.g. 3000"/></div>
-    <div class="form-group full"><label>原因 / 備注</label><input id="manualReasonInput" type="text" class="field" placeholder="例如：客服補償"/></div>
-    <div class="form-group full"><button type="submit" class="btn btn-primary">▶ 執行操作</button></div>
-  </form>
-  <hr/>
-  <div class="panel-header" style="margin-top:0"><h2><span class="ph-icon">🔄</span>重置月用量 — <span id="usageUserBadge" style="color:var(--blue);font-size:13px"></span></h2></div>
-  <input id="usageUserIdTarget" type="hidden"/>
-  <form id="usageForm" class="form-grid">
-    <div class="form-group"><label>月份（YYYY-MM）</label><input id="usageMonthKey" type="text" class="field" placeholder="2025-06"/></div>
-    <div class="form-group full"><button type="submit" class="btn btn-secondary">🔄 重置用量</button></div>
-  </form></div>
-</div>
+function getFiltered() {
+  const kw = document.getElementById('searchInput').value.trim().toLowerCase();
+  const sf = document.getElementById('statusFilter').value;
+  return allSubs.filter(s=>{
+    const ok = [s.userId,s.displayName,s.plan,s.status,s.lastPaymentStatus].join(' ').toLowerCase().includes(kw);
+    return ok && (!sf||s.status===sf);
+  });
+}
 
-<div id="tab-defaults" class="tab-panel">
-  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">📐</span>預設值管理</h2><button id="reloadDefaultsBtn" class="btn btn-ghost btn-sm">🔄 重新載入</button></div>
-  <span id="defaultsHint" class="form-hint" style="display:block;margin-bottom:12px"></span>
-  <form id="defaultsForm" class="form-grid">
-    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🔵 試用期預設</label></div>
-    <div class="form-group"><label>試用天數</label><input id="trialDays" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>試用群組上限</label><input id="trialMaxGroups" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>試用月額度</label><input id="trialMonthlyQuota" type="number" class="field" min="1"/></div>
-    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🟢 付費方案預設</label></div>
-    <div class="form-group"><label>方案名稱</label><input id="paidPlan" type="text" class="field" placeholder="monthly"/></div>
-    <div class="form-group"><label>購買月數</label><input id="paidMonths" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>群組上限</label><input id="paidMaxGroups" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>月額度</label><input id="paidMonthlyQuota" type="number" class="field" min="1"/></div>
-    <div class="form-group full"><label style="font-size:13px;font-weight:600;color:var(--text)">🟣 手動啟用預設</label></div>
-    <div class="form-group"><label>方案名稱</label><input id="manualPlan" type="text" class="field" placeholder="custom"/></div>
-    <div class="form-group"><label>啟用天數</label><input id="manualDays" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>群組上限</label><input id="manualMaxGroups" type="number" class="field" min="1"/></div>
-    <div class="form-group"><label>月額度</label><input id="manualMonthlyQuota" type="number" class="field" min="1"/></div>
-    <div class="form-group full"><button type="submit" class="btn btn-primary">💾 儲存預設值</button></div>
-  </form></div>
-</div>
-</div></div></div></div>
-<div id="toast" class="toast"></div>
-<script src="/js/common.js"></script><script src="/js/subscriptions.js"></script></body></html>
+function renderSubList() {
+  const fl = getFiltered();
+  document.getElementById('listMeta').textContent = `${fl.length} 筆`;
+  const container = document.getElementById('subscriptionList');
+  if (!fl.length) {
+    container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
+    return;
+  }
+  // fix: 不將 displayName 放進 onclick ，改用 data-userid 屬性 + addEventListener 防止 XSS
+  container.innerHTML = fl.map(s=>`<div class="item-card${s.userId===selectedUserId?' selected':''}" data-userid="${escapeHtml(s.userId)}">
+      <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.displayName||s.userId)}</div><div class="item-sub">${escapeHtml(s.userId)}</div></div>${statusBadge(s.status)}</div>
+      <div class="item-row"><span class="row-label">方案</span><div>${escapeHtml(s.plan||'—')}</div></div>
+      <div class="item-row"><span class="row-label">付款</span><div>${escapeHtml(s.lastPaymentStatus||'—')}</div></div>
+      <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.currentPeriodEnd)}</div></div>
+      <div class="item-row"><span class="row-label">群組上限</span><div>${s.maxGroups??'—'}</div></div>
+      <div class="item-row"><span class="row-label">月額度</span><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
+      <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
+        <button class="btn btn-secondary btn-sm" data-action="config" data-userid="${escapeHtml(s.userId)}">⚙️ 設定</button>
+        <button class="btn btn-secondary btn-sm" data-action="manual" data-userid="${escapeHtml(s.userId)}">🛠 調整</button>
+        <button class="btn btn-danger btn-sm" data-action="delete" data-userid="${escapeHtml(s.userId)}" data-name="${escapeHtml(s.displayName||s.userId)}">🗑 刪除</button>
+      </div></div></div>`).join('');
+
+  // 綁定事件，不使用 inline onclick
+  container.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userid;
+      const action = btn.dataset.action;
+      if (action === 'config')  selectUser(uid, 'tab-config');
+      if (action === 'manual')  selectUser(uid, 'tab-manual');
+      if (action === 'delete')  deleteUser(uid, btn.dataset.name);
+    });
+  });
+}
+
+function toLocalInput(v) {
+  if (!v) return '';
+  const d = new Date(v._seconds?v._seconds*1000:v.seconds?v.seconds*1000:v);
+  const p = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function deleteUser(userId, displayName) {
+  const label = displayName || userId;
+  if (!confirm(`確定要刪除「${label}」的授權資料？\n\n此操作不可復原。`)) return;
+  try {
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    toast(`✅ 已停用並清除 ${label} 的授權`);
+    if (selectedUserId === userId) selectedUserId = null;
+    loadAllSubs();
+  } catch(e) { toast(`刪除失敗：${e.message}`, true); }
+}
+
+function selectUser(userId, tab) {
+  selectedUserId = userId;
+  const s = allSubs.find(x=>x.userId===userId); if (!s) return;
+  const name = s.displayName || userId;
+  document.getElementById('selectedUserText').textContent = name;
+  document.getElementById('manualUserBadge').textContent  = name;
+  document.getElementById('usageUserBadge').textContent   = name;
+  document.getElementById('configUserId').value              = s.userId;
+  document.getElementById('configStatus').value              = s.status||'TRIAL';
+  document.getElementById('configPlan').value                = s.plan||'';
+  document.getElementById('configLastPaymentStatus').value   = s.lastPaymentStatus||'';
+  document.getElementById('configTrialEndsAt').value         = toLocalInput(s.trialEndsAt);
+  document.getElementById('configCurrentPeriodEnd').value    = toLocalInput(s.currentPeriodEnd);
+  document.getElementById('configMaxGroups').value           = s.maxGroups??'';
+  document.getElementById('configMonthlyQuota').value        = s.monthlyQuota??'';
+  document.getElementById('configManualOverride').value      = s.manualOverride||'NONE';
+  document.getElementById('configManualReason').value        = s.manualReason||'';
+  document.getElementById('selectedSummary').innerHTML = `
+    <div class="detail-item"><div class="detail-label">狀態</div><div>${statusBadge(s.status)}</div></div>
+    <div class="detail-item"><div class="detail-label">方案</div><div>${escapeHtml(s.plan||'—')}</div></div>
+    <div class="detail-item"><div class="detail-label">本月用量</div><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
+    <div class="detail-item"><div class="detail-label">手動覆寫</div><div>${escapeHtml(s.manualOverride||'NONE')}</div></div>`;
+  document.getElementById('manualUserIdTarget').value = userId;
+  document.getElementById('usageUserIdTarget').value  = userId;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active', p.id===tab));
+  window.scrollTo({ top:0, behavior:'smooth' });
+  renderSubList();
+}
+
+async function handleConfigSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('configUserId').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  try {
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/config`, { method:'PUT', body:JSON.stringify({
+      status:           document.getElementById('configStatus').value,
+      plan:             document.getElementById('configPlan').value.trim(),
+      lastPaymentStatus:document.getElementById('configLastPaymentStatus').value.trim(),
+      trialEndsAt:      document.getElementById('configTrialEndsAt').value||null,
+      currentPeriodEnd: document.getElementById('configCurrentPeriodEnd').value||null,
+      maxGroups:        parseInt(document.getElementById('configMaxGroups').value)||null,
+      monthlyQuota:     parseInt(document.getElementById('configMonthlyQuota').value)||null,
+      manualOverride:   document.getElementById('configManualOverride').value,
+      manualReason:     document.getElementById('configManualReason').value.trim(),
+    })});
+    toast('✅ 授權設定已儲存'); loadAllSubs();
+  } catch(e) { toast(`儲存失敗：${e.message}`, true); }
+}
+
+async function handleManualSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('manualUserIdTarget').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  try {
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/manual`, { method:'PUT', body:JSON.stringify({
+      action:       document.getElementById('manualAction').value,
+      plan:         document.getElementById('manualPlanInput').value.trim()||undefined,
+      days:         parseInt(document.getElementById('manualDaysInput').value)||undefined,
+      maxGroups:    parseInt(document.getElementById('manualMaxGroupsInput').value)||undefined,
+      monthlyQuota: parseInt(document.getElementById('manualMonthlyQuotaInput').value)||undefined,
+      reason:       document.getElementById('manualReasonInput').value.trim(),
+    })});
+    toast('✅ 操作已套用'); loadAllSubs();
+  } catch(e) { toast(`操作失敗：${e.message}`, true); }
+}
+
+async function handleUsageSubmit(e) {
+  e.preventDefault();
+  const userId = document.getElementById('usageUserIdTarget').value.trim();
+  const monthKey = document.getElementById('usageMonthKey').value.trim();
+  if (!userId) return toast('請先在清單選取使用者', true);
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return toast('月份格式錯誤，請輸入 YYYY-MM', true);
+  try {
+    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/reset-usage`, { method:'POST', body:JSON.stringify({ monthKey }) });
+    toast('✅ 用量已重置'); loadAllSubs();
+  } catch(e) { toast(`重置失敗：${e.message}`, true); }
+}
+
+async function loadDefaults() {
+  try {
+    const d = await api('/admin/subscription-defaults');
+    const df = d.defaults||{};
+    document.getElementById('trialDays').value          = df.trialDays??14;
+    document.getElementById('trialMaxGroups').value     = df.trialMaxGroups??2;
+    document.getElementById('trialMonthlyQuota').value  = df.trialMonthlyQuota??300;
+    document.getElementById('paidPlan').value           = df.paidPlan??'monthly';
+    document.getElementById('paidMonths').value         = df.paidMonths??1;
+    document.getElementById('paidMaxGroups').value      = df.paidMaxGroups??5;
+    document.getElementById('paidMonthlyQuota').value   = df.paidMonthlyQuota??3000;
+    document.getElementById('manualPlan').value         = df.manualPlan??'custom';
+    document.getElementById('manualDays').value         = df.manualDays??30;
+    document.getElementById('manualMaxGroups').value    = df.manualMaxGroups??5;
+    document.getElementById('manualMonthlyQuota').value = df.manualMonthlyQuota??3000;
+    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入';
+  } catch(e) { document.getElementById('defaultsHint').textContent=`讀取失敗：${e.message}`; }
+}
+
+async function saveDefaults(e) {
+  e.preventDefault();
+  try {
+    await api('/admin/subscription-defaults', { method:'PUT', body:JSON.stringify({
+      trialDays:         parseInt(document.getElementById('trialDays').value),
+      trialMaxGroups:    parseInt(document.getElementById('trialMaxGroups').value),
+      trialMonthlyQuota: parseInt(document.getElementById('trialMonthlyQuota').value),
+      paidPlan:          document.getElementById('paidPlan').value.trim(),
+      paidMonths:        parseInt(document.getElementById('paidMonths').value),
+      paidMaxGroups:     parseInt(document.getElementById('paidMaxGroups').value),
+      paidMonthlyQuota:  parseInt(document.getElementById('paidMonthlyQuota').value),
+      manualPlan:        document.getElementById('manualPlan').value.trim(),
+      manualDays:        parseInt(document.getElementById('manualDays').value),
+      manualMaxGroups:   parseInt(document.getElementById('manualMaxGroups').value),
+      manualMonthlyQuota:parseInt(document.getElementById('manualMonthlyQuota').value),
+    })});
+    toast('✅ 預設値已儲存'); loadDefaults();
+  } catch(e) { toast(`儲存失敗：${e.message}`, true); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadAllSubs(); loadDefaults();
+  document.getElementById('reloadAllBtn').addEventListener('click', loadAllSubs);
+  document.getElementById('searchInput').addEventListener('input', renderSubList);
+  document.getElementById('statusFilter').addEventListener('input', renderSubList);
+  document.getElementById('configForm').addEventListener('submit', handleConfigSubmit);
+  document.getElementById('manualForm').addEventListener('submit', handleManualSubmit);
+  document.getElementById('usageForm').addEventListener('submit', handleUsageSubmit);
+  document.getElementById('defaultsForm').addEventListener('submit', saveDefaults);
+  document.getElementById('reloadDefaultsBtn').addEventListener('click', loadDefaults);
+});
