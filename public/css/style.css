@@ -90,6 +90,10 @@ textarea.field{resize:vertical;min-height:80px}
 .btn-ghost:hover{background:var(--bg3);color:var(--text)}
 .btn-row{display:flex;flex-wrap:wrap;gap:8px}
 .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.filter-select {
+  width: auto;
+  min-width: 132px;
+}
 .search-wrap{position:relative;flex:1;min-width:200px}
 .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px;pointer-events:none}
 .search-field{padding-left:32px}
