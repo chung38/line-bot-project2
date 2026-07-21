@@ -1,6 +1,7 @@
 const { api, toast, escapeHtml } = window.AdminCommon;
 
 let groupItems = [];
+let blockedGroupItems = [];
 let industries = [];
 let editingGid = null;
 let selectedGids = new Set();
@@ -35,12 +36,24 @@ function renderIndustryOptions() {
     `<option value="">不指定</option>` +
     industries.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
 }
+function renderIndustryFilterOptions() {
+  const filter = document.getElementById("industryFilter");
+  if (!filter) return;
 
+  filter.innerHTML = `
+    <option value="">全部行業別</option>
+    <option value="__NONE__">未設定行業別</option>
+    ${industries.map(name =>
+      `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
+    ).join("")}
+  `;
+}
 async function loadConstants() {
   const data = await api("/admin/constants");
   industries = data.industries || [];
-  renderLanguageCheckboxes(data.SUPPORTED_LANGS || {});
-  renderIndustryOptions();
+renderLanguageCheckboxes(data.SUPPORTED_LANGS || {});
+renderIndustryOptions();
+renderIndustryFilterOptions();
 }
 
 async function loadGroups() {
@@ -53,25 +66,68 @@ async function loadGroups() {
   renderGroups();
 }
 
+async function loadBlockedGroups() {
+  try {
+    const data = await api("/admin/groups-blocked");
+    blockedGroupItems = data.items || [];
+  } catch (e) {
+    blockedGroupItems = [];
+  }
+  renderBlockedGroups();
+}
+
 function getFilteredGroups() {
   const keyword = document.getElementById("keywordInput").value.trim().toLowerCase();
+  const langFilter = document.getElementById("langFilter").value;
+  const industryFilter = document.getElementById("industryFilter").value;
+  const subscriptionFilter = document.getElementById("subscriptionFilter").value;
+  const usageFilter = document.getElementById("usageFilter").value;
 
-  return groupItems.filter(item =>
-    [
+  return groupItems.filter(item => {
+    const searchable = [
       item.gid,
       item.groupName,
       item.inviter,
       item.inviterName,
       item.industry,
       item.memberCount != null ? String(item.memberCount) : "",
-      ...(item.langs || [])
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(keyword)
-  );
-}
+      ...(item.langs || []),
+      item.subscription?.status,
+      item.subscription?.plan,
+    ].join(" ").toLowerCase();
 
+    const matchKeyword = !keyword || searchable.includes(keyword);
+
+    const langs = item.langs || [];
+    const matchLang =
+      !langFilter ||
+      (langFilter === "__NONE__" ? langs.length === 0 : langs.includes(langFilter));
+
+    const matchIndustry =
+      !industryFilter ||
+      (industryFilter === "__NONE__"
+        ? !item.industry
+        : item.industry === industryFilter);
+
+    const status = item.subscription?.status || "";
+    const matchSubscription =
+      !subscriptionFilter ||
+      (subscriptionFilter === "__NO_SUB__"
+        ? !item.subscription
+        : status === subscriptionFilter);
+
+    const quotaState = item.usage?.quotaState || "";
+    const matchUsage = !usageFilter || quotaState === usageFilter;
+
+    return (
+      matchKeyword &&
+      matchLang &&
+      matchIndustry &&
+      matchSubscription &&
+      matchUsage
+    );
+  });
+}
 function updateSelectedSummary(filtered) {
   document.getElementById("selectedSummary").textContent =
     `已選取 ${selectedGids.size} 筆，目前列表 ${filtered.length} 筆`;
@@ -136,7 +192,49 @@ function renderGroups() {
           <span class="label">行業別</span>
           <div>${item.industry ? escapeHtml(item.industry) : `<span class="muted">未設定</span>`}</div>
         </div>
+<div class="group-row">
+  <span class="label">訂閱</span>
+  <div>
+    ${
+      item.subscription
+        ? `
+          <span class="badge ${
+            item.subscription.status === "ACTIVE" ? "badge-green" :
+            item.subscription.status === "TRIAL" ? "badge-blue" :
+            item.subscription.status === "MANUAL_ACTIVE" ? "badge-purple" :
+            item.subscription.status === "PAYMENT_FAILED" ? "badge-red" :
+            "badge-gray"
+          }">
+            ${escapeHtml(item.subscription.status)}
+          </span>
+          <span class="muted">${escapeHtml(item.subscription.plan || "—")}</span>
+        `
+        : `<span class="muted">未綁定訂閱</span>`
+    }
+  </div>
+</div>
 
+<div class="group-row">
+  <span class="label">本月用量</span>
+  <div>
+    ${
+      !item.subscription
+        ? `<span class="muted">—</span>`
+        : item.subscription.monthlyQuota <= 0
+          ? `<span class="badge badge-blue">${item.usage?.translationCount || 0} 次／無限制</span>`
+          : `
+            <span class="badge ${
+              item.usage?.quotaState === "EXHAUSTED" ? "badge-red" :
+              item.usage?.quotaState === "WARNING" ? "badge-yellow" :
+              "badge-green"
+            }">
+              ${item.usage?.translationCount || 0} / ${item.subscription.monthlyQuota} 次
+              （${item.usage?.usagePercent || 0}%）
+            </span>
+          `
+    }
+  </div>
+</div>
         <div class="group-row">
           <span class="label">操作</span>
           <div class="inline-actions">
@@ -150,6 +248,38 @@ function renderGroups() {
 
   document.getElementById("groupList").innerHTML = html;
   updateSelectedSummary(filtered);
+}
+
+function renderBlockedGroups() {
+  const el = document.getElementById("blockedGroupList");
+  if (!el) return;
+
+  const html = blockedGroupItems.length
+    ? blockedGroupItems.map(item => {
+        const deletedAt = item.deletedAt?._seconds
+          ? new Date(item.deletedAt._seconds * 1000).toLocaleString("zh-TW")
+          : "未知";
+        return `
+          <div class="group-card" style="border-left: 3px solid #ef4444;">
+            <div class="group-card-head">
+              <div>
+                <div class="group-title" style="color:#ef4444;">⛔ 已封鎖</div>
+                <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
+              </div>
+              <div class="group-actions">
+                <button onclick="restoreGroup('${escapeHtml(item.gid)}')" class="btn-primary">♻️ 恢復群組</button>
+              </div>
+            </div>
+            <div class="group-row">
+              <span class="label">刪除時間</span>
+              <div>${escapeHtml(deletedAt)}</div>
+            </div>
+          </div>
+        `;
+      }).join("")
+    : `<div class="empty">目前沒有被刪除的群組</div>`;
+
+  el.innerHTML = html;
 }
 
 function fillForm(item) {
@@ -187,7 +317,7 @@ async function saveGroupSettings(e) {
 }
 
 async function deleteGroupSettings(gid) {
-  if (!confirm(`確定刪除 ${gid} 的整組設定？`)) return;
+  if (!confirm(`確定刪除 ${gid} 的整組設定？刪除後群組會進入封鎖清單，可從下方「已刪除群組」恢復。`)) return;
 
   try {
     await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
@@ -197,8 +327,23 @@ async function deleteGroupSettings(gid) {
     toast("已刪除群組設定");
     if (editingGid === gid) resetForm();
     await loadGroups();
+    await loadBlockedGroups();
   } catch (e) {
     toast(`刪除失敗：${e.message}`, true);
+  }
+}
+
+async function restoreGroup(gid) {
+  if (!confirm(`確定要恢復群組 ${gid} 嗎？\n這會解除封鎖，讓群組可重新綁定，但不會還原原本設定。`)) return;
+
+  try {
+    await api(`/admin/groups/${encodeURIComponent(gid)}/blocked`, {
+      method: "DELETE"
+    });
+    toast("✅ 已解除封鎖，群組可重新綁定");
+    await loadBlockedGroups();
+  } catch (e) {
+    toast(`恢復失敗：${e.message}`, true);
   }
 }
 
@@ -248,6 +393,7 @@ async function batchDeleteSelectedGroups() {
   }
 
   await loadGroups();
+  await loadBlockedGroups();
 
   if (failed === 0) {
     toast(`批次刪除完成，共 ${success} 筆`);
@@ -262,6 +408,7 @@ window.editGroup = gid => {
 };
 
 window.deleteGroupSettings = deleteGroupSettings;
+window.restoreGroup = restoreGroup;
 window.sendMenuToGroup = sendMenuToGroup;
 window.toggleGroupSelection = toggleGroupSelection;
 
@@ -282,6 +429,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("resetBtn").addEventListener("click", resetForm);
   document.getElementById("keywordInput").addEventListener("input", renderGroups);
+  ["langFilter", "industryFilter", "subscriptionFilter", "usageFilter"]
+  .forEach(id => {
+    document.getElementById(id).addEventListener("change", renderGroups);
+  });
   document.getElementById("selectAllBtn").addEventListener("click", selectAllFilteredGroups);
   document.getElementById("clearSelectedBtn").addEventListener("click", clearSelectedGroups);
   document.getElementById("batchDeleteBtn").addEventListener("click", batchDeleteSelectedGroups);
@@ -289,6 +440,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadConstants();
     await loadGroups();
+    await loadBlockedGroups();
   } catch (e) {
     toast(`初始化失敗：${e.message}`, true);
   }
