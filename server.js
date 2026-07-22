@@ -1000,17 +1000,21 @@ async function saveIndustryForGroup(gid) {
   }
 }
 
-// ✅ Step 3 (deleteGroupSettings): 退群時寫入 deletedGroups
 async function deleteGroupSettings(gid) {
   await Promise.allSettled([
     db.collection("groupLanguages").doc(gid).delete(),
     db.collection("groupInviters").doc(gid).delete(),
     db.collection("groupIndustries").doc(gid).delete(),
+
+    // 新增：移除該群組的「24 小時群組上限提醒」紀錄
+    db.collection("groupLimitNotices").doc(gid).delete(),
+
     // 寫入封鎖清單，防止重新自動建立
     db.collection("deletedGroups").doc(gid).set({
       deletedAt: admin.firestore.FieldValue.serverTimestamp()
     })
   ]);
+
   groupLang.delete(gid);
   groupInviter.delete(gid);
   groupIndustry.delete(gid);
