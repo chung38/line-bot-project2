@@ -772,12 +772,39 @@ async function ensureInviterIfMissing(gid, uid) {
     return { ok: false, message: "缺少 gid 或 uid" };
   }
 
-  // 機器人曾退出或被踢出的群組，不重建設定
+  // 群組曾被 Bot 離開／踢出後，預設維持封鎖。
+  // 但若目前要重新設定的人是「有效付費訂閱」帳號，則自動解除封鎖。
   if (deletedGroups.has(gid)) {
-    return { ok: false, code: "GROUP_DELETED", message: "此群組已停用翻譯服務。" };
+    const sub = await getSubscriptionByUserId(uid);
+    const now = new Date();
+    const currentPeriodEnd = toDateSafe(sub?.currentPeriodEnd);
+
+    const isPaidAndActive =
+      sub?.status === SUBSCRIPTION_STATUS.ACTIVE &&
+      currentPeriodEnd &&
+      currentPeriodEnd >= now &&
+      sub?.manualOverride !== MANUAL_OVERRIDE.FORCE_INACTIVE;
+
+    if (!isPaidAndActive) {
+      return {
+        ok: false,
+        code: "GROUP_DELETED",
+        message: "此群組已停用翻譯服務。請由有效付費帳號重新設定，或聯絡客服。"
+      };
+    }
+
+    // 有效付費帳號：自動解除封鎖，讓此群可重新綁定
+    await Promise.all([
+      db.collection("deletedGroups").doc(gid).delete(),
+      db.collection("groupLimitNotices").doc(gid).delete()
+    ]);
+
+    deletedGroups.delete(gid);
+
+    console.log(`✅ 已付費帳號自動解除群組封鎖：${gid} / ${uid}`);
   }
 
-  let inviter = groupInviter.get(gid);
+  const inviter = groupInviter.get(gid);
   if (inviter) {
     return { ok: true, inviter, alreadyBound: true };
   }
@@ -788,6 +815,7 @@ async function ensureInviterIfMissing(gid, uid) {
   }
 
   groupInviter.set(gid, uid);
+
   await saveInviterForGroup(gid, {
     boundAt: admin.firestore.FieldValue.serverTimestamp(),
     createdBy: uid,
