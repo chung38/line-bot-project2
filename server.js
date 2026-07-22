@@ -880,6 +880,40 @@ async function safeReplyOrPush(replyToken, gid, text) {
     return false;
   }
 }
+const GROUP_LIMIT_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function notifyGroupLimitOncePerDay(replyToken, gid, message) {
+  if (!gid || !message) return false;
+
+  const ref = db.collection("groupLimitNotices").doc(gid);
+  const snap = await ref.get();
+  const lastNotifiedAt = toDateSafe(snap.exists ? snap.data()?.lastNotifiedAt : null);
+  const now = new Date();
+
+  // 上次通知距今未滿 24 小時：不再重複通知
+  if (
+    lastNotifiedAt &&
+    now.getTime() - lastNotifiedAt.getTime() < GROUP_LIMIT_NOTICE_INTERVAL_MS
+  ) {
+    return false;
+  }
+
+  const sent = await safeReplyOrPush(replyToken, gid, message);
+
+  // 只有 LINE 實際送出成功，才記錄通知時間
+  if (sent) {
+    await ref.set(
+      {
+        lastNotifiedAt: now,
+        lastMessage: message,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  return sent;
+}
 async function loadLang() {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => {
@@ -2491,6 +2525,21 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
+    // 一般訊息也必須先確認此群組是否已綁定授權者。
+    // 若是新加入的第 3 群，ensureInviterIfMissing 會回傳 BIND_GROUP_LIMIT。
+const ensureRes = await ensureInviterIfMissing(gid, uid);
+
+if (!ensureRes.ok) {
+  if (ensureRes.code === "BIND_GROUP_LIMIT") {
+    await notifyGroupLimitOncePerDay(
+      replyToken,
+      gid,
+      `⚠️ ${ensureRes.message}`
+    );
+  }
+
+  return null;
+}
     if (event.message?.mentioned) {
       console.log("📌 RAW mentioned:", JSON.stringify(event.message.mentioned));
       console.log("📌 RAW text length:", [...event.message.text].length);
