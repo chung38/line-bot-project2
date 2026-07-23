@@ -304,7 +304,8 @@ function extractMentionsFromLineMessage(message) {
 
   // LINE 未附 mentioned 資料時，只保護 @All。
   // 不用可包含空白的 @名稱規則，避免吃掉 @All 後面的整句文字。
-  const manualRegex = /@all\b/giu;
+  const manualRegex = /@(?:all|[\p{L}\p{M}\p{N}._-]+)/giu;
+
 
   let idx = 0;
   let newMasked = "";
@@ -781,39 +782,12 @@ async function ensureInviterIfMissing(gid, uid) {
     return { ok: false, message: "缺少 gid 或 uid" };
   }
 
-  // 群組曾被 Bot 離開／踢出後，預設維持封鎖。
-  // 但若目前要重新設定的人是「有效付費訂閱」帳號，則自動解除封鎖。
+  // 機器人曾退出或被踢出的群組，不重建設定
   if (deletedGroups.has(gid)) {
-    const sub = await getSubscriptionByUserId(uid);
-    const now = new Date();
-    const currentPeriodEnd = toDateSafe(sub?.currentPeriodEnd);
-
-    const isPaidAndActive =
-      sub?.status === SUBSCRIPTION_STATUS.ACTIVE &&
-      currentPeriodEnd &&
-      currentPeriodEnd >= now &&
-      sub?.manualOverride !== MANUAL_OVERRIDE.FORCE_INACTIVE;
-
-    if (!isPaidAndActive) {
-      return {
-        ok: false,
-        code: "GROUP_DELETED",
-        message: "此群組已停用翻譯服務。請由有效付費帳號重新設定，或聯絡客服。"
-      };
-    }
-
-    // 有效付費帳號：自動解除封鎖，讓此群可重新綁定
-    await Promise.all([
-      db.collection("deletedGroups").doc(gid).delete(),
-      db.collection("groupLimitNotices").doc(gid).delete()
-    ]);
-
-    deletedGroups.delete(gid);
-
-    console.log(`✅ 已付費帳號自動解除群組封鎖：${gid} / ${uid}`);
+    return { ok: false, code: "GROUP_DELETED", message: "此群組已停用翻譯服務。" };
   }
 
-  const inviter = groupInviter.get(gid);
+  let inviter = groupInviter.get(gid);
   if (inviter) {
     return { ok: true, inviter, alreadyBound: true };
   }
@@ -824,7 +798,6 @@ async function ensureInviterIfMissing(gid, uid) {
   }
 
   groupInviter.set(gid, uid);
-
   await saveInviterForGroup(gid, {
     boundAt: admin.firestore.FieldValue.serverTimestamp(),
     createdBy: uid,
@@ -917,40 +890,6 @@ async function safeReplyOrPush(replyToken, gid, text) {
     return false;
   }
 }
-const GROUP_LIMIT_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
-
-async function notifyGroupLimitOncePerDay(replyToken, gid, message) {
-  if (!gid || !message) return false;
-
-  const ref = db.collection("groupLimitNotices").doc(gid);
-  const snap = await ref.get();
-  const lastNotifiedAt = toDateSafe(snap.exists ? snap.data()?.lastNotifiedAt : null);
-  const now = new Date();
-
-  // 上次通知距今未滿 24 小時：不再重複通知
-  if (
-    lastNotifiedAt &&
-    now.getTime() - lastNotifiedAt.getTime() < GROUP_LIMIT_NOTICE_INTERVAL_MS
-  ) {
-    return false;
-  }
-
-  const sent = await safeReplyOrPush(replyToken, gid, message);
-
-  // 只有 LINE 實際送出成功，才記錄通知時間
-  if (sent) {
-    await ref.set(
-      {
-        lastNotifiedAt: now,
-        lastMessage: message,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-  }
-
-  return sent;
-}
 async function loadLang() {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => {
@@ -1037,21 +976,17 @@ async function saveIndustryForGroup(gid) {
   }
 }
 
+// ✅ Step 3 (deleteGroupSettings): 退群時寫入 deletedGroups
 async function deleteGroupSettings(gid) {
   await Promise.allSettled([
     db.collection("groupLanguages").doc(gid).delete(),
     db.collection("groupInviters").doc(gid).delete(),
     db.collection("groupIndustries").doc(gid).delete(),
-
-    // 新增：移除該群組的「24 小時群組上限提醒」紀錄
-    db.collection("groupLimitNotices").doc(gid).delete(),
-
     // 寫入封鎖清單，防止重新自動建立
     db.collection("deletedGroups").doc(gid).set({
       deletedAt: admin.firestore.FieldValue.serverTimestamp()
     })
   ]);
-
   groupLang.delete(gid);
   groupInviter.delete(gid);
   groupIndustry.delete(gid);
@@ -2566,21 +2501,6 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
-    // 一般訊息也必須先確認此群組是否已綁定授權者。
-    // 若是新加入的第 3 群，ensureInviterIfMissing 會回傳 BIND_GROUP_LIMIT。
-const ensureRes = await ensureInviterIfMissing(gid, uid);
-
-if (!ensureRes.ok) {
-  if (ensureRes.code === "BIND_GROUP_LIMIT") {
-    await notifyGroupLimitOncePerDay(
-      replyToken,
-      gid,
-      `⚠️ ${ensureRes.message}`
-    );
-  }
-
-  return null;
-}
     if (event.message?.mentioned) {
       console.log("📌 RAW mentioned:", JSON.stringify(event.message.mentioned));
       console.log("📌 RAW text length:", [...event.message.text].length);
