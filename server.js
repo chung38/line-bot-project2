@@ -157,18 +157,10 @@ function isOnlyEmojiOrWhitespace(txt = "") {
 function isSymbolOrNum(txt = "") {
   return /^[\d\s.,!?，。？！、:：；"'"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
-function normalizeTextForLangDetect(text = "") {
-  return String(text)
-    .replace(/__MENTION_\d+__/g, " ")
-
-    // 處理 LINE 沒提供 mentioned 資料的情況：
-    // 例如「@Hoàn Trương Hữu 二樓燈泡」
-    // 偵測語言時排除 @姓名，但遇到中文正文就停止移除。
-    .replace(
-      /@[\p{L}\p{M}\p{N}._-]+(?:\s+[^\s\u4e00-\u9fff]+)*/gu,
-      " "
-    )
-
+function normalizeTextForLangDetect(text) {
+  return String(text ?? "")
+    .replace(/__MENTION_\d+__/g, "")
+    .replace(/https?:\/\/\S+/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -240,104 +232,75 @@ function isPureChineseMessage(text = "") {
 }
 
 function extractMentionsFromLineMessage(message) {
-  const originalText = message.text || "";
-  let masked = originalText;
-  const segments = [];
+  const originalText = String(message?.text ?? "");
+  const mentionees = message?.mention?.mentionees;
 
-  // LINE 有提供官方 mention 資料時，優先採用
-  if (message.mentioned?.mentionees?.length) {
-    const normalized = message.mentioned.mentionees
-      .map(m => {
-        let start = m.index;
-
-        // LINE 的 index 有時不含 @，向前校正至 @ 的位置
-        if (originalText[start] !== "@") {
-          const prev = originalText.lastIndexOf("@", start);
-          if (prev !== -1 && start - prev <= 2) start = prev;
-        }
-
-        let end = m.index + m.length;
-
-        // 避免 LINE 的 mention 長度帶到尾端空白／換行
-        while (
-          end > start + 1 &&
-          (originalText[end - 1] === " " || originalText[end - 1] === "\n")
-        ) {
-          end--;
-        }
-
-        const mentionText = m.type === "all"
-          ? "@All"
-          : (m.mentionText || originalText.slice(start, end));
-
-        return { ...m, start, end, mentionText };
-      })
-      .sort((a, b) => a.start - b.start);
-
-    normalized.forEach((m, i) => {
-      segments.push({
-        key: `__MENTION_${i}__`,
-        text: m.mentionText
-      });
-    });
-
-    // 由後往前替換，避免字串長度變動導致 index 位移
-    [...normalized].reverse().forEach((m, reverseIndex) => {
-      const i = normalized.length - 1 - reverseIndex;
-      const key = `__MENTION_${i}__`;
-
-      masked =
-        masked.slice(0, m.start) +
-        key +
-        masked.slice(m.end);
-    });
-
-    console.log("🔍 masked after official replace:", masked);
-    console.log("🔍 segments:", JSON.stringify(segments));
-
+  if (!Array.isArray(mentionees) || mentionees.length === 0) {
     return {
-      masked,
-      segments,
-      hasOfficialMentionData: true
+      masked: originalText,
+      segments: [],
+      hasOfficialMentionData: false,
     };
   }
 
-  // LINE 未附 mentioned 資料時，只保護 @All。
-  // 不用可包含空白的 @名稱規則，避免吃掉 @All 後面的整句文字。
-  const manualRegex = /@(?:all|[\p{L}\p{M}\p{N}._-]+)/giu;
+  const normalized = mentionees
+    .map((m) => {
+      const start = Number(m.index);
+      const length = Number(m.length);
+      const end = start + length;
 
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(length) ||
+        start < 0 ||
+        length <= 0 ||
+        end > originalText.length
+      ) {
+        return null;
+      }
 
-  let idx = 0;
-  let newMasked = "";
-  let last = 0;
-  let match;
+      return {
+        ...m,
+        start,
+        end,
+        mentionText: originalText.slice(start, end),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start);
 
-  while ((match = manualRegex.exec(originalText)) !== null) {
-    const key = `__MENTION_${idx}__`;
-
-    segments.push({
-      key,
-      text: "@All"
-    });
-
-    newMasked += originalText.slice(last, match.index) + key;
-    last = match.index + match[0].length;
-    idx++;
+  if (normalized.length === 0) {
+    console.warn("Invalid LINE mention metadata:", JSON.stringify(mentionees));
+    return {
+      masked: originalText,
+      segments: [],
+      hasOfficialMentionData: false,
+    };
   }
 
-  newMasked += originalText.slice(last);
+  let masked = originalText;
+  const segments = normalized.map((m, i) => ({
+    key: `__MENTION_${i}__`,
+    text: m.mentionText,
+    index: m.start,
+  }));
 
-  console.log("🔍 masked after fallback:", newMasked);
-  console.log("🔍 segments:", JSON.stringify(segments));
+  for (let i = normalized.length - 1; i >= 0; i--) {
+    const m = normalized[i];
+    const key = `__MENTION_${i}__`;
+    masked = masked.slice(0, m.start) + key + masked.slice(m.end);
+  }
+
+  console.log("RAW official mention:", JSON.stringify(message.mention));
+  console.log("masked after official replace:", masked);
+  console.log("segments:", JSON.stringify(segments));
 
   return {
-    masked: newMasked,
+    masked,
     segments,
-    hasOfficialMentionData: false
+    hasOfficialMentionData: true,
   };
 }
-
-
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -1200,7 +1163,10 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
     .replace(/\s+/g, "")
     .trim();
 
-  if (!textOnly) return;
+  if (!textOnly) {
+  console.log("Skip mention-only or URL-only message");
+  return;
+}
 
   const mergedText = rawLines.join("\n");
   const normalizedMergedText = normalizeTextForLangDetect(mergedText);
@@ -2501,11 +2467,9 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
-    if (event.message?.mentioned) {
-      console.log("📌 RAW mentioned:", JSON.stringify(event.message.mentioned));
-      console.log("📌 RAW text length:", [...event.message.text].length);
-      console.log("📌 RAW text:", JSON.stringify(event.message.text));
-    }
+if (event.message?.mention) {
+  console.log("RAW official mention:", JSON.stringify(event.message.mention));
+}
 
     const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(event.message);
     const normalizedForDetect = normalizeTextForLangDetect(masked);
