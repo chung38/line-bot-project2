@@ -12,7 +12,28 @@
 <div class="page"><div class="page-header"><h1>📊 Dashboard</h1><p>系統總覽：群組、行業與最近操作一覽</p></div>
 
 <div id="statsCards" class="stats-grid" style="margin-bottom:16px"></div>
+<div class="panel" style="margin-bottom:16px">
+  <div class="panel-header">
+    <h2><span class="ph-icon">📊</span>本月用量與訂閱</h2>
+    <span id="monthKeyLabel" class="badge badge-gray"></span>
+  </div>
+  <div id="usageCards" class="stats-grid"></div>
+</div>
 
+<div class="panel" style="margin-bottom:16px">
+  <div class="panel-header">
+    <h2><span class="ph-icon">⚠️</span>配額警示</h2>
+  </div>
+  <div id="quotaAlerts" class="detail-grid"></div>
+</div>
+
+<div class="panel" style="margin-bottom:16px">
+  <div class="panel-header">
+    <h2><span class="ph-icon">⏳</span>7 日內到期</h2>
+    <span id="expiringSoonCount" class="badge badge-gray">0 筆</span>
+  </div>
+  <div id="expiringSoon"></div>
+</div>
 <!-- 喚醒伺服器 -->
 <div class="panel" style="margin-bottom:16px">
   <div class="panel-header">
