@@ -27,6 +27,14 @@
   </div>
 
   <script>
+    const LANG_LABELS = {
+      "zh-TW": "中文",
+      "en": "英文",
+      "th": "泰文",
+      "vi": "越南文",
+      "id": "印尼文"
+    };
+
     async function loadProfile() {
       const res = await fetch('/api/member/me');
       if (res.status === 401) { window.location.href = '/member-login.html'; return; }
@@ -51,6 +59,22 @@
       }
     };
 
+    function buildLangCheckboxes(gid, currentLangs) {
+      return Object.entries(LANG_LABELS).map(([code, label]) => `
+        <label class="lang-checkbox">
+          <input
+            type="checkbox"
+            value="${code}"
+            data-gid="${gid}"
+            class="lang-check-${gid}"
+            ${currentLangs.includes(code) ? 'checked' : ''}
+            onchange="onLangChange('${gid}')"
+          />
+          ${label}
+        </label>
+      `).join('');
+    }
+
     async function loadGroups() {
       const res = await fetch('/api/member/groups');
       const data = await res.json();
@@ -63,17 +87,15 @@
 
       document.getElementById('groups').innerHTML = groups.map(g => `
         <div class="group-card">
-          <p>群組名稱：${g.groupName || g.gid}</p>
-          語言：
-          <select onchange="updateGroup('${g.gid}', this.value, document.getElementById('industry_${g.gid}').value)">
-            <option value="zh-TW" ${g.langs?.includes('zh-TW') ? 'selected' : ''}>中文</option>
-            <option value="en" ${g.langs?.includes('en') ? 'selected' : ''}>英文</option>
-            <option value="th" ${g.langs?.includes('th') ? 'selected' : ''}>泰文</option>
-            <option value="vi" ${g.langs?.includes('vi') ? 'selected' : ''}>越南文</option>
-            <option value="id" ${g.langs?.includes('id') ? 'selected' : ''}>印尼文</option>
-          </select>
-          行業：
-          <select id="industry_${g.gid}" onchange="updateGroup('${g.gid}', document.querySelector('[onchange*=\\'${g.gid}\\']').value, this.value)">
+          <p><strong>群組名稱：</strong>${g.groupName || g.gid}</p>
+
+          <p><strong>翻譯語言（可多選）：</strong></p>
+          <div class="lang-checkbox-group">
+            ${buildLangCheckboxes(g.gid, g.langs || [])}
+          </div>
+
+          <p><strong>行業類別：</strong></p>
+          <select id="industry_${g.gid}" onchange="updateGroup('${g.gid}')">
             <option value="" ${!g.industry ? 'selected' : ''}>未指定</option>
             ${(g.industryOptions || []).map(ind =>
               `<option value="${ind}" ${g.industry === ind ? 'selected' : ''}>${ind}</option>`
@@ -83,13 +105,20 @@
       `).join('');
     }
 
-    async function updateGroup(gid, lang, industry) {
+    function onLangChange(gid) {
+      updateGroup(gid);
+    }
+
+    async function updateGroup(gid) {
+      const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
+      const langs = [...checkboxes].filter(cb => cb.checked).map(cb => cb.value);
+      const industry = document.getElementById(`industry_${gid}`).value;
+
       await fetch(`/api/member/groups/${gid}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lang, industry })
+        body: JSON.stringify({ langs, industry })
       });
-      loadGroups();
     }
 
     document.getElementById('logout').onclick = async () => {
