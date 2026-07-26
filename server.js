@@ -78,10 +78,12 @@ function makeLinkCode() {
   return crypto.randomBytes(5).toString("hex").toUpperCase();
 }
 
-async function updateGroupLangAndIndustry(gid, lang, industry) {
-  const set = new Set();
-  if (lang) set.add(lang);
-  groupLang.set(gid, set);
+async function updateGroupLangAndIndustry(gid, langs, industry) {
+  const validLangs = Array.isArray(langs)
+    ? langs.filter(code => Object.keys(SUPPORTED_LANGS).includes(code))
+    : [];
+
+  groupLang.set(gid, new Set(validLangs));
 
   if (industry) groupIndustry.set(gid, industry);
   else groupIndustry.delete(gid);
