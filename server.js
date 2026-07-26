@@ -2510,7 +2510,67 @@ async function handleEvent(event) {
   const gid = event.source?.groupId || null;
   const uid = event.source?.userId || null;
   const replyToken = event.replyToken || null;
+if (event.type === "message" && event.message?.type === "text" && event.source?.type === "user") {
+    const text = event.message.text.trim();
+    const match = text.match(/^綁定\s+([A-F0-9]{10})$/i);
 
+    if (match) {
+      const code = match[1].toUpperCase();
+      const lineUserId = uid;
+      const codeRef = db.collection("lineLinkCodes").doc(code);
+
+      try {
+        await db.runTransaction(async (transaction) => {
+          const codeSnap = await transaction.get(codeRef);
+          if (!codeSnap.exists) throw new Error("INVALID_CODE");
+
+          const codeData = codeSnap.data();
+          const now = admin.firestore.Timestamp.now();
+
+          if (codeData.usedAt) throw new Error("USED_CODE");
+          if (codeData.expiresAt.toMillis() < now.toMillis()) throw new Error("EXPIRED_CODE");
+
+          const lineUserRef = db.collection("lineUsers").doc(lineUserId);
+          const lineUserSnap = await transaction.get(lineUserRef);
+          if (lineUserSnap.exists && lineUserSnap.data().firebaseUid !== codeData.firebaseUid) {
+            throw new Error("LINE_ALREADY_LINKED");
+          }
+
+          const userRef = db.collection("memberUsers").doc(codeData.firebaseUid);
+
+          transaction.set(userRef, {
+            lineUserId,
+            lineLinked: true,
+            lineLinkedAt: now,
+            updatedAt: now
+          }, { merge: true });
+
+          transaction.set(lineUserRef, {
+            firebaseUid: codeData.firebaseUid,
+            linkedAt: now
+          });
+
+          transaction.update(codeRef, {
+            usedAt: now,
+            usedByLineUserId: lineUserId
+          });
+        });
+
+        await ensureSubscriptionDoc(lineUserId);
+
+        await safeReply(replyToken, "✅ 綁定成功！請回到會員頁面重新整理，即可查看群組與方案設定。");
+      } catch (error) {
+        const messages = {
+          INVALID_CODE: "❌ 找不到此綁定碼，請回會員頁面重新產生。",
+          USED_CODE: "❌ 此綁定碼已使用過，請回會員頁面重新產生。",
+          EXPIRED_CODE: "❌ 此綁定碼已逾時，請回會員頁面重新產生。",
+          LINE_ALREADY_LINKED: "❌ 此 LINE 帳號已綁定其他會員帳戶。"
+        };
+        await safeReply(replyToken, messages[error.message] || "❌ 綁定失敗，請稍後再試。");
+      }
+      return null;
+    }
+  }
   if (event.type === "leave" && gid) {
     await deleteGroupSettings(gid);
     return null;
