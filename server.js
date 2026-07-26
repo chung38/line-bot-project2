@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import session from "express-session";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
