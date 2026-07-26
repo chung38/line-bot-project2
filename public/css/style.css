@@ -148,3 +148,23 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0}
   .stats-grid{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:600px){.page{padding:12px}.topbar{padding:0 14px}.card-grid{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.tab-btn{padding:6px 10px;font-size:12px}}
+.lang-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3, 12px);
+  margin-bottom: var(--space-4, 16px);
+}
+
+.lang-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.group-card {
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
