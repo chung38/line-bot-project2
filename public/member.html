@@ -10,23 +10,39 @@
   <div class="member-page">
     <h1>會員中心</h1>
 
-    <section id="profile"></section>
-
-    <section>
-      <h2>綁定 LINE 帳號</h2>
-      <button id="genCode">產生綁定碼</button>
-      <p id="codeResult"></p>
+    <section id="loginSection" style="display:none;">
+      <p>請輸入 Email，我們會寄送登入連結給您。</p>
+      <input id="email" type="email" placeholder="請輸入 Email" />
+      <button id="sendLink">寄送登入連結</button>
+      <p id="loginMsg"></p>
     </section>
 
-    <section>
-      <h2>我的群組</h2>
-      <div id="groups"></div>
-    </section>
+    <section id="memberSection" style="display:none;">
+      <section id="profile"></section>
 
-    <button id="logout">登出</button>
+      <section>
+        <h2>綁定 LINE 帳號</h2>
+        <button id="genCode">產生綁定碼</button>
+        <p id="codeResult"></p>
+      </section>
+
+      <section>
+        <h2>我的群組</h2>
+        <div id="groups"></div>
+      </section>
+
+      <button id="logout">登出</button>
+    </section>
   </div>
 
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
   <script>
+    firebase.initializeApp({
+      apiKey: "__FIREBASE_WEB_API_KEY__",
+      authDomain: "__FIREBASE_AUTH_DOMAIN__"
+    });
+
     const LANG_LABELS = {
       "zh-TW": "中文",
       "en": "英文",
@@ -35,11 +51,70 @@
       "id": "印尼文"
     };
 
-    async function loadProfile() {
-      const res = await fetch('/api/member/me');
-      if (res.status === 401) { window.location.href = '/member-login.html'; return; }
-      const data = await res.json();
+    async function init() {
+      // 情境 A：使用者從信箱連結點回來，尚未完成登入
+      if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
+        let email = window.localStorage.getItem('emailForSignIn');
+        if (!email) email = window.prompt('請再次輸入您的 Email 以完成登入');
 
+        try {
+          const result = await firebase.auth().signInWithEmailLink(email, window.location.href);
+          window.localStorage.removeItem('emailForSignIn');
+          const idToken = await result.user.getIdToken();
+
+          await fetch('/api/member/session-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken })
+          });
+
+          // 清掉網址上的登入連結參數，避免重複觸發
+          window.history.replaceState({}, document.title, '/member.html');
+        } catch (e) {
+          document.getElementById('loginMsg').innerText = '登入失敗：' + e.message;
+        }
+      }
+
+      // 情境 B：檢查目前是否已有登入 session
+      const res = await fetch('/api/member/me');
+      if (res.status === 401) {
+        showLogin();
+      } else {
+        showMember();
+        const data = await res.json();
+        renderProfile(data);
+        loadGroups();
+      }
+    }
+
+    function showLogin() {
+      document.getElementById('loginSection').style.display = 'block';
+      document.getElementById('memberSection').style.display = 'none';
+    }
+
+    function showMember() {
+      document.getElementById('loginSection').style.display = 'none';
+      document.getElementById('memberSection').style.display = 'block';
+    }
+
+    document.getElementById('sendLink').onclick = async () => {
+      const email = document.getElementById('email').value.trim();
+      const msg = document.getElementById('loginMsg');
+      if (!email) { msg.innerText = '請輸入 Email'; return; }
+
+      try {
+        await firebase.auth().sendSignInLinkToEmail(email, {
+          url: window.location.origin + '/member.html',
+          handleCodeInApp: true
+        });
+        window.localStorage.setItem('emailForSignIn', email);
+        msg.innerText = '登入連結已寄出，請至信箱查看（含垃圾信件夾）。';
+      } catch (e) {
+        msg.innerText = '寄送失敗：' + e.message;
+      }
+    };
+
+    function renderProfile(data) {
       document.getElementById('profile').innerHTML = `
         <p>Email：${data.email || ''}</p>
         <p>LINE 綁定狀態：${data.lineLinked ? '✅ 已綁定' : '❌ 尚未綁定'}</p>
@@ -65,10 +140,9 @@
           <input
             type="checkbox"
             value="${code}"
-            data-gid="${gid}"
             class="lang-check-${gid}"
             ${currentLangs.includes(code) ? 'checked' : ''}
-            onchange="onLangChange('${gid}')"
+            onchange="updateGroup('${gid}')"
           />
           ${label}
         </label>
@@ -88,12 +162,10 @@
       document.getElementById('groups').innerHTML = groups.map(g => `
         <div class="group-card">
           <p><strong>群組名稱：</strong>${g.groupName || g.gid}</p>
-
           <p><strong>翻譯語言（可多選）：</strong></p>
           <div class="lang-checkbox-group">
             ${buildLangCheckboxes(g.gid, g.langs || [])}
           </div>
-
           <p><strong>行業類別：</strong></p>
           <select id="industry_${g.gid}" onchange="updateGroup('${g.gid}')">
             <option value="" ${!g.industry ? 'selected' : ''}>未指定</option>
@@ -103,10 +175,6 @@
           </select>
         </div>
       `).join('');
-    }
-
-    function onLangChange(gid) {
-      updateGroup(gid);
     }
 
     async function updateGroup(gid) {
@@ -123,11 +191,10 @@
 
     document.getElementById('logout').onclick = async () => {
       await fetch('/api/member/logout', { method: 'POST' });
-      window.location.href = '/member-login.html';
+      window.location.reload();
     };
 
-    loadProfile();
-    loadGroups();
+    init();
   </script>
 </body>
 </html>
