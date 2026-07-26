@@ -17,7 +17,8 @@
     "express-basic-auth": "^1.2.1",
     "express-rate-limit": "^7.3.0",
     "firebase-admin": "^12.1.0",
-    "lru-cache": "^10.2.1"
+    "lru-cache": "^10.2.1",
+    "express-session": "*"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
