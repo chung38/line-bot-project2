@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>會員登入</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="login-box">
+    <h1>會員登入</h1>
+    <p>輸入 Email，我們會寄送登入連結給您。</p>
+    <input id="email" type="email" placeholder="請輸入 Email" />
+    <button id="sendLink">寄送登入連結</button>
+    <p id="msg"></p>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "__FIREBASE_WEB_API_KEY__",
+      authDomain: "__FIREBASE_AUTH_DOMAIN__"
+    });
+
+    document.getElementById('sendLink').onclick = async () => {
+      const email = document.getElementById('email').value.trim();
+      const msg = document.getElementById('msg');
+      if (!email) { msg.innerText = '請輸入 Email'; return; }
+
+      try {
+        await firebase.auth().sendSignInLinkToEmail(email, {
+          url: window.location.origin + '/member-finish-signin.html',
+          handleCodeInApp: true
+        });
+        window.localStorage.setItem('emailForSignIn', email);
+        msg.innerText = '登入連結已寄出，請至信箱查看（含垃圾信件夾）。';
+      } catch (e) {
+        msg.innerText = '寄送失敗：' + e.message;
+      }
+    };
+  </script>
+</body>
+</html>
