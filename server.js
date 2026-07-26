@@ -53,7 +53,43 @@ const lineConfig = {
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 const client = new Client(lineConfig);
+app.use(session({
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  }
+}));
+app.use(express.json({ limit: "1mb" }));
 
+function requireMemberSession(req, res, next) {
+  if (!req.session?.firebaseUid) {
+    return res.status(401).json({ error: "未登入" });
+  }
+  next();
+}
+
+function makeLinkCode() {
+  return crypto.randomBytes(5).toString("hex").toUpperCase();
+}
+
+async function updateGroupLangAndIndustry(gid, lang, industry) {
+  const set = new Set();
+  if (lang) set.add(lang);
+  groupLang.set(gid, set);
+
+  if (industry) groupIndustry.set(gid, industry);
+  else groupIndustry.delete(gid);
+
+  await Promise.all([
+    saveLangForGroup(gid),
+    saveIndustryForGroup(gid)
+  ]);
+}
 const translationCache = new LRUCache({
   max: 800,
   ttl: 24 * 60 * 60 * 1000
@@ -2302,7 +2338,154 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+app.post("/api/member/session-login", async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ error: "idToken 必填" });
 
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const firebaseUid = decoded.uid;
+    const email = decoded.email || "";
+
+    await db.collection("memberUsers").doc(firebaseUid).set({
+      email,
+      lineUserId: null,
+      lineLinked: false,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    req.session.firebaseUid = firebaseUid;
+    req.session.email = email;
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("session-login 失敗:", e.message);
+    res.status(401).json({ error: "驗證失敗" });
+  }
+});
+
+app.post("/api/member/logout", (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
+app.post("/api/member/line-link-code", requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const email = req.session.email || "";
+
+    const code = makeLinkCode();
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + 10 * 60 * 1000);
+
+    await db.collection("lineLinkCodes").doc(code).set({
+      firebaseUid,
+      email,
+      expiresAt,
+      createdAt: now,
+      usedAt: null,
+      usedByLineUserId: null
+    });
+
+    res.json({
+      code,
+      expiresAt: expiresAt.toDate().toISOString(),
+      instruction: `請到 LINE 官方帳號傳送：綁定 ${code}`
+    });
+  } catch (e) {
+    console.error("產生綁定碼失敗:", e.message);
+    res.status(500).json({ error: "無法產生綁定碼" });
+  }
+});
+
+app.get("/api/member/me", requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
+    const user = userDoc.exists ? userDoc.data() : {};
+
+    let subscription = null;
+    let usage = null;
+
+    if (user.lineUserId) {
+      subscription = await getSubscriptionByUserId(user.lineUserId);
+      usage = await getMonthlyUsage(user.lineUserId);
+    }
+
+    res.json({ ...user, subscription, usage });
+  } catch (e) {
+    console.error("GET /api/member/me:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/member/groups", requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
+    const user = userDoc.exists ? userDoc.data() : {};
+
+    if (!user.lineUserId) {
+      return res.json({ groups: [] });
+    }
+
+    const boundGroups = await getBoundGroupsByInviter(user.lineUserId);
+    await loadIndustryMaster();
+    const industryOptions = getEnabledIndustryNames();
+
+    const groups = await Promise.all(
+      boundGroups.map(async (g) => {
+        let groupName = null;
+        try {
+          const summary = await client.getGroupSummary(g.gid);
+          groupName = summary?.groupName || null;
+        } catch {}
+
+        return {
+          gid: g.gid,
+          groupName,
+          langs: [...(groupLang.get(g.gid) || new Set())],
+          industry: groupIndustry.get(g.gid) || null,
+          industryOptions
+        };
+      })
+    );
+
+    res.json({ groups });
+  } catch (e) {
+    console.error("GET /api/member/groups:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const { gid } = req.params;
+    const { lang, industry } = req.body;
+
+    const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
+    const user = userDoc.exists ? userDoc.data() : {};
+
+    if (!user.lineUserId || groupInviter.get(gid) !== user.lineUserId) {
+      return res.status(403).json({ error: "無權限修改此群組" });
+    }
+
+    if (industry) {
+      await loadIndustryMaster();
+      if (!isValidIndustry(industry)) {
+        return res.status(400).json({ error: "無效的行業別" });
+      }
+    }
+
+    await updateGroupLangAndIndustry(gid, lang, industry);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("PUT /api/member/groups/:gid:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 app.use("/admin", adminRouter);
 app.get("/ping", (req, res) => res.sendStatus(200));
 app.post(
