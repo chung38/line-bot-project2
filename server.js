@@ -971,31 +971,41 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 }
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
+  // 取得目標語言名稱
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
+  // 取得產業／工作類型專用設定
   const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
 
-  const industryContext = industryDoc?.promptContext
-    ? industryDoc.promptContext
-    : industry
-      ? `工廠類型：${industry}。優先使用此產業專業術語。`
-      : "無指定行業別，使用通用工廠術語。";
+  // 建立工作情境
+  const industryContext =
+    industryDoc?.promptContext ||
+    (industry
+      ? `工作類型：${industry}。優先使用此工作領域的專業術語及自然用語。`
+      : "未指定工作類型，請根據原文語境選擇適當的日常或工作用語。");
 
-  return `你是台灣製造業口譯員，協助主管與外籍移工溝通。
+  // 繁體中文嚴格模式
+  const strictRule =
+    forceStrict && targetLang === "zh-TW"
+      ? "8. 必須輸出符合台灣用語習慣的繁體中文，不可直接照抄原文。"
+      : "";
+
+  return `你是台灣的專業多語口譯員，協助主管、雇主、外籍工作者及家庭成員進行日常生活與工作溝通。
 
 ${industryContext}
 
 翻譯規則：
-1. 理解工廠語境後再翻譯，使用製造業慣用術語。
-2. 英文單一字母（如 A、B、C 棟/機台）保留原樣。
-3. 製造業術語（繳庫、報工、工單、批號、料號等）以工廠用語翻譯，勿白話化。
-4. 對外籍移工：使用自然、簡單的工作用語，避免正式文件語氣。
-5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間。
-6. 保留原本換行格式，只輸出翻譯結果。
-7. 必須忠實傳達原文語意，不可自行補充原文沒有的主詞、受詞、代詞、對象或人稱稱呼。
-${forceStrict && targetLang === "zh-TW" ? "8. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
+1. 先理解原文的實際情境，再進行自然、準確的翻譯。
+2. 若涉及特定工作領域，優先使用該領域常用的專業術語；若為日常生活對話，使用自然、簡單、容易理解的口語表達。
+3. 對外籍工作者使用自然、簡單、清楚的工作或生活用語，避免不必要的正式、公文式語氣。
+4. 專有名詞、姓名、地名、公司名稱、棟別、房間號碼、床號、機台代號及英文單一字母代號（如 A、B、C）原則上保留原樣。
+5. 型號、批號、料號、工單號、ERP 代碼、URL、Email、數字、日期及時間均須保留，不得任意修改。
+6. 保留原文的換行格式，只輸出翻譯結果，不提供額外說明。
+7. 忠實傳達原文語意，不得自行增加、刪除或改變原文未明確表達的主詞、受詞、代詞、對象、人稱或其他重要資訊。
+${strictRule}
+
 請翻譯成：${langLabel}`;
 }
 
