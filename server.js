@@ -2465,7 +2465,7 @@ app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid } = req.params;
-    const { lang, industry } = req.body;
+    const { langs, industry } = req.body;
 
     const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
     const user = userDoc.exists ? userDoc.data() : {};
@@ -2481,7 +2481,7 @@ app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
       }
     }
 
-    await updateGroupLangAndIndustry(gid, lang, industry);
+    await updateGroupLangAndIndustry(gid, langs, industry);
 
     res.json({ ok: true });
   } catch (e) {
