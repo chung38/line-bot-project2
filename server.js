@@ -1541,7 +1541,12 @@ const adminAuth = basicAuth({
 });
 app.use("/admin", adminAuth, express.static(path.join(__dirname, "public", "admin")));
 app.use(express.static(path.join(__dirname, "public")));
-
+app.get("/api/member/config", (req, res) => {
+  res.json({
+    apiKey: process.env.FIREBASE_WEB_API_KEY,
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN
+  });
+});
 const adminRouter = express.Router();
 adminRouter.use(adminLimiter);
 adminRouter.use(adminAuth);
