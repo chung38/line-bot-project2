@@ -12,6 +12,7 @@ import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
 import crypto from "node:crypto";
+import { FirestoreStore } from "firestore-store";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
