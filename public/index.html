@@ -1,61 +1,303 @@
 <!DOCTYPE html>
-<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>Dashboard — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
-<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link  active" href="/index.html"><span class="ni">📊</span>Dashboard</a>
-<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
-<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
-<a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
-<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
-</nav></aside><div class="main">
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">Dashboard</div><div class="topbar-sub">系統總覽</div></div></div><div class="auth-box"><input id="authUser" type="text" class="field" placeholder="帳號"/><input id="authPass" type="password" class="field" placeholder="密碼"/><button class="btn btn-primary btn-sm" id="saveAuthBtn">儲存登入</button></div></header>
-<div class="page"><div class="page-header"><h1>📊 Dashboard</h1><p>系統總覽：群組、行業與最近操作一覽</p></div>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="description"
+    content="TransXAI 協助雇主、外籍工作者與團隊在 LINE 群組中進行即時多語言溝通。"
+  />
+  <title>TransXAI｜讓群組溝通，不再卡在語言</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
 
-<div id="statsCards" class="stats-grid" style="margin-bottom:16px"></div>
-<div class="panel" style="margin-bottom:16px">
-  <div class="panel-header">
-    <h2><span class="ph-icon">📊</span>本月用量與訂閱</h2>
-    <span id="monthKeyLabel" class="badge badge-gray"></span>
-  </div>
-  <div id="usageCards" class="stats-grid"></div>
-</div>
+<body class="home-body">
+  <a class="home-skip-link" href="#main-content">跳至主要內容</a>
 
-<div class="panel" style="margin-bottom:16px">
-  <div class="panel-header">
-    <h2><span class="ph-icon">⚠️</span>配額警示</h2>
-  </div>
-  <div id="quotaAlerts" class="detail-grid"></div>
-</div>
+  <header class="home-header">
+    <a class="home-brand" href="/" aria-label="TransXAI 首頁">
+      <span class="home-logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none">
+          <path
+            d="M6 8.5C6 6.57 7.57 5 9.5 5h13C24.43 5 26 6.57 26 8.5v10C26 20.43 24.43 22 22.5 22H16l-5 5v-5H9.5C7.57 22 6 20.43 6 18.5v-10Z"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M11 13h10M11 17h6"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </svg>
+      </span>
 
-<div class="panel" style="margin-bottom:16px">
-  <div class="panel-header">
-    <h2><span class="ph-icon">⏳</span>7 日內到期</h2>
-    <span id="expiringSoonCount" class="badge badge-gray">0 筆</span>
-  </div>
-  <div id="expiringSoon"></div>
-</div>
-<!-- 喚醒伺服器 -->
-<div class="panel" style="margin-bottom:16px">
-  <div class="panel-header">
-    <h2><span class="ph-icon">🚀</span>Render 伺服器</h2>
-    <button class="btn btn-primary btn-sm" id="wakeBtn" onclick="wakeServer()">⚡ 喚醒伺服器</button>
-  </div>
-  <div id="wakeStatus" style="padding:8px 0;color:var(--text-muted,#888);font-size:13px">點擊按鈕喚醒 Render 伺服器，避免閒置休眠。</div>
-</div>
+      <span>
+        <strong>TransXAI</strong>
+        <small>LINE Translation Service</small>
+      </span>
+    </a>
 
-<!-- !查詢 -->
-<div class="panel" style="margin-bottom:16px">
-  <div class="panel-header">
-    <h2><span class="ph-icon">🔍</span>查詢授權使用者</h2>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-bottom:8px">
-    <input id="queryUserId" type="text" class="field" placeholder="輸入 LINE userId（U開頭）" style="flex:1;min-width:220px"/>
-    <button class="btn btn-primary btn-sm" onclick="queryUser()">🔍 查詢</button>
-  </div>
-  <div id="queryResult"></div>
-</div>
+    <nav class="home-nav" aria-label="主選單">
+      <a href="#features">服務功能</a>
+      <a href="#steps">使用方式</a>
+      <a href="#audience">適用對象</a>
+    </nav>
 
-<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🌐</span>語言使用統計</h2><button class="btn btn-ghost btn-sm" onclick="loadDashboard()">🔄 重新整理</button></div><div id="langUsage" class="tag-wrap"><span class="badge badge-gray">載入中…</span></div></div>
-<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🕐</span>最近操作紀錄</h2></div><div id="recentLogs"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">尚無資料</div></div></div></div></div></div></div>
-<div id="toast" class="toast"></div>
-<script src="/js/common.js"></script><script src="/js/dashboard.js"></script></body></html>
+    <a class="home-member-link" href="/member.html">會員中心</a>
+  </header>
+
+  <main id="main-content">
+    <section class="home-hero">
+      <div class="home-hero-copy">
+        <p class="home-eyebrow">
+          <span></span>
+          MULTILINGUAL LINE COMMUNICATION
+        </p>
+
+        <h1>
+          讓每一句重要訊息，
+          <em>都被正確理解。</em>
+        </h1>
+
+        <p class="home-hero-description">
+          TransXAI 是專為 LINE 群組打造的多語翻譯服務，協助雇主、管理者與外籍工作者在工作與生活中自然溝通。
+        </p>
+
+        <div class="home-hero-actions">
+          <a class="home-btn home-btn-primary" href="/member.html">
+            開始使用
+            <span aria-hidden="true">→</span>
+          </a>
+
+          <a
+            class="home-btn home-btn-secondary"
+            href="https://line.me/R/ti/p/@YOUR_LINE_ID"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            加入 LINE 官方帳號
+          </a>
+        </div>
+
+        <p class="home-hero-note">
+          免密碼登入 · LINE 群組管理 · 多語言即時翻譯
+        </p>
+      </div>
+
+      <div class="home-hero-visual" aria-label="多語言訊息翻譯示意">
+        <div class="home-visual-topline">
+          <span class="home-live-dot"></span>
+          GROUP TRANSLATION ACTIVE
+          <span>LIVE</span>
+        </div>
+
+        <div class="home-chat-shell">
+          <div class="home-chat-head">
+            <div class="home-chat-group-avatar">T</div>
+            <div>
+              <strong>工作群組</strong>
+              <small>5 種語言已啟用</small>
+            </div>
+            <span class="home-chat-more">•••</span>
+          </div>
+
+          <div class="home-chat-content">
+            <div class="home-message home-message-source">
+              <span class="home-message-name">管理員</span>
+              <p>明天早上 8 點，請大家準時到工作區集合。</p>
+              <time>08:43</time>
+            </div>
+
+            <div class="home-translation-block">
+              <div class="home-translation-label">
+                <span>TRANSLATED</span>
+                <span>TH</span>
+              </div>
+              <p>พรุ่งนี้เวลา 8 โมงเช้า กรุณามารวมตัวที่พื้นที่ทำงานตรงเวลา</p>
+            </div>
+
+            <div class="home-translation-block home-translation-block-muted">
+              <div class="home-translation-label">
+                <span>TRANSLATED</span>
+                <span>VI</span>
+              </div>
+              <p>Ngày mai lúc 8 giờ sáng, vui lòng tập trung tại khu vực làm việc đúng giờ.</p>
+            </div>
+
+            <div class="home-chat-status">
+              <span class="home-live-dot"></span>
+              已同步翻譯為 4 種語言
+            </div>
+          </div>
+        </div>
+
+        <div class="home-visual-stat">
+          <strong>5</strong>
+          <span>支援語言</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="home-trust">
+      <p>專為跨語言工作與生活溝通設計</p>
+      <div>
+        <span>繁體中文</span>
+        <span>English</span>
+        <span>ภาษาไทย</span>
+        <span>Tiếng Việt</span>
+        <span>Bahasa Indonesia</span>
+      </div>
+    </section>
+
+    <section id="features" class="home-section">
+      <div class="home-section-heading">
+        <p class="home-eyebrow">WHAT IT DOES</p>
+        <h2>在原本的 LINE 群組，<br />完成更清楚的溝通。</h2>
+        <p>
+          不必改變團隊的使用習慣。邀請 Bot 加入群組後，即可依成員需求接收翻譯訊息。
+        </p>
+      </div>
+
+      <div class="home-feature-layout">
+        <article class="home-feature home-feature-large">
+          <div class="home-feature-number">01</div>
+          <h3>群組即時翻譯</h3>
+          <p>
+            訊息發送後自動轉換為群組所需語言，讓重要工作安排、生活提醒與日常對話可以被即時理解。
+          </p>
+          <div class="home-feature-lines" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </article>
+
+        <article class="home-feature">
+          <div class="home-feature-number">02</div>
+          <h3>多語言接收設定</h3>
+          <p>
+            可選擇繁體中文、英文、泰文、越南文與印尼文，依群組成員需求彈性調整。
+          </p>
+        </article>
+
+        <article class="home-feature">
+          <div class="home-feature-number">03</div>
+          <h3>行業語境翻譯</h3>
+          <p>
+            依照工作情境選擇行業類別，讓翻譯更貼近日常工作現場的實際用語。
+          </p>
+        </article>
+
+        <article class="home-feature">
+          <div class="home-feature-number">04</div>
+          <h3>會員中心管理</h3>
+          <p>
+            從會員中心查看 LINE 綁定、方案狀態、本月用量與每個群組的翻譯設定。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section id="steps" class="home-section home-steps-section">
+      <div class="home-section-heading">
+        <p class="home-eyebrow">GET STARTED</p>
+        <h2>三個步驟，開始跨語言溝通。</h2>
+      </div>
+
+      <ol class="home-steps">
+        <li>
+          <span class="home-step-index">01</span>
+          <div>
+            <h3>加入官方帳號</h3>
+            <p>在 LINE 將 TransXAI 官方帳號加入好友，開啟一對一聊天視窗。</p>
+          </div>
+        </li>
+
+        <li>
+          <span class="home-step-index">02</span>
+          <div>
+            <h3>邀請 Bot 進入群組</h3>
+            <p>將 Bot 加入需要翻譯的工作或生活群組，並完成語言設定。</p>
+          </div>
+        </li>
+
+        <li>
+          <span class="home-step-index">03</span>
+          <div>
+            <h3>登入會員中心管理</h3>
+            <p>綁定 LINE 帳號後，可管理群組語言、行業類別與服務方案。</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section id="audience" class="home-section home-audience-section">
+      <div class="home-audience-copy">
+        <p class="home-eyebrow">BUILT FOR PEOPLE</p>
+        <h2>每個需要互相理解的團隊。</h2>
+        <p>
+          從工廠現場、照護服務到家庭生活，TransXAI 協助不同語言背景的人在同一個群組中自然溝通。
+        </p>
+      </div>
+
+      <div class="home-audience-list">
+        <div>
+          <span>01</span>
+          <strong>雇主與管理者</strong>
+          <p>清楚傳達工作安排與重要提醒。</p>
+        </div>
+        <div>
+          <span>02</span>
+          <strong>外籍工作者</strong>
+          <p>降低語言隔閡，掌握工作與生活訊息。</p>
+        </div>
+        <div>
+          <span>03</span>
+          <strong>仲介與服務人員</strong>
+          <p>提升跨語溝通效率與服務品質。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="home-final-cta">
+      <p class="home-eyebrow">READY WHEN YOU ARE</p>
+      <h2>從下一則訊息開始，<br />讓溝通更沒有距離。</h2>
+      <a class="home-btn home-btn-primary" href="/member.html">
+        前往會員中心
+        <span aria-hidden="true">→</span>
+      </a>
+    </section>
+  </main>
+
+  <footer class="home-footer">
+    <a class="home-brand" href="/" aria-label="TransXAI 首頁">
+      <span class="home-logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none">
+          <path
+            d="M6 8.5C6 6.57 7.57 5 9.5 5h13C24.43 5 26 6.57 26 8.5v10C26 20.43 24.43 22 22.5 22H16l-5 5v-5H9.5C7.57 22 6 20.43 6 18.5v-10Z"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M11 13h10M11 17h6"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </svg>
+      </span>
+      <span>
+        <strong>TransXAI</strong>
+        <small>LINE Translation Service</small>
+      </span>
+    </a>
+
+    <p>© 2026 TransXAI. All rights reserved.</p>
+
+    <a href="/member.html">會員中心</a>
+  </footer>
+</body>
+</html>
