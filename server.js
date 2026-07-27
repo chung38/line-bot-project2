@@ -56,6 +56,10 @@ const lineConfig = {
 };
 const client = new Client(lineConfig);
 app.use(session({
+  store: new FirestoreStore({
+    database: db,
+    collection: "sessions"
+  }),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
