@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>操作紀錄 — LINE BOT 管理台</title><link rel="stylesheet" href="/css/style.css"/></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="/index.html"><span class="ni">📊</span>Dashboard</a>
+<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
+<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
+<a class="nav-link" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
+<a class="nav-link  active" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
+</nav></aside><div class="main">
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">操作紀錄</div><div class="topbar-sub">查看所有管理員操作歷程</div></div></div></header>
+<div class="page"><div class="page-header"><h1>📋 操作紀錄</h1><p>查看所有管理員的操作歷程</p></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🔍</span>搜尋</h2><button class="btn btn-ghost btn-sm" onclick="loadLogs()">🔄 重新整理</button></div>
+<div class="filter-bar"><div class="search-wrap"><span class="search-icon">🔍</span><input id="logKeyword" type="text" class="field search-field" placeholder="搜尋操作類型 / 詳細 / 操作者"/></div><span id="logCount" class="filter-count">— 筆</span></div></div>
+<div class="panel"><div class="panel-header"><h2><span class="ph-icon">🕐</span>操作紀錄</h2></div><div id="logList"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">尚無資料</div></div></div></div></div></div></div>
+<div id="toast" class="toast"></div>
+<script src="/js/common.js"></script><script src="/js/logs.js"></script></body></html>
