@@ -3,92 +3,140 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>會員中心</title>
+<title>會員中心 | TransXAI</title>
 <link rel="stylesheet" href="/style.css" />
 </head>
-<body>
-  <div class="member-shell">
-    <aside class="member-sidebar">
-      <div class="member-brand">
-        <div class="member-brand-icon">🌐</div>
-        <div>
-          <div class="member-brand-title">TransXAI</div>
-          <div class="member-brand-sub">Member Console</div>
-        </div>
-      </div>
 
-      <nav class="member-nav">
-        <a href="#overview" class="member-nav-link active">總覽</a>
-        <a href="#binding" class="member-nav-link">LINE 綁定</a>
-        <a href="#groups" class="member-nav-link">群組設定</a>
+<body class="member-v2-body">
+  <div class="member-v2-app">
+    <aside class="member-v2-sidebar">
+      <a class="member-v2-brand" href="#overview" aria-label="TransXAI 會員中心">
+        <span class="member-v2-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none">
+            <path d="M6 8.5C6 6.57 7.57 5 9.5 5h13C24.43 5 26 6.57 26 8.5v10C26 20.43 24.43 22 22.5 22H16l-5 5v-5H9.5C7.57 22 6 20.43 6 18.5v-10Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+            <path d="M11 13h10M11 17h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span>
+          <strong>TransXAI</strong>
+          <small>會員中心</small>
+        </span>
+      </a>
+
+      <nav class="member-v2-nav" aria-label="會員中心導覽">
+        <a class="member-v2-nav-link active" href="#overview">
+          <span>總覽</span>
+        </a>
+        <a class="member-v2-nav-link" href="#binding">
+          <span>LINE 綁定</span>
+        </a>
+        <a class="member-v2-nav-link" href="#groups">
+          <span>群組設定</span>
+        </a>
       </nav>
 
-      <div class="member-sidebar-foot">
-        <div class="member-foot-box">
-          <div class="member-foot-label">系統狀態</div>
-          <div class="member-foot-value">Online</div>
+      <div class="member-v2-side-bottom">
+        <div class="member-v2-status">
+          <span class="member-v2-status-dot"></span>
+          系統正常運作中
         </div>
+        <p>TransXAI Translation Service</p>
       </div>
     </aside>
 
-    <main class="member-main">
-      <header class="member-topbar">
+    <main class="member-v2-main">
+      <header class="member-v2-header">
         <div>
-          <div class="member-topbar-title">會員中心</div>
-          <div class="member-topbar-sub">管理 LINE 綁定、群組語言與行業設定</div>
+          <p class="member-v2-eyebrow">ACCOUNT SETTINGS</p>
+          <h1>會員中心</h1>
         </div>
-        <button id="logout" class="btn btn-ghost member-logout" style="display:none;">登出</button>
+
+        <button id="logout" class="member-v2-logout" style="display:none;">
+          登出
+        </button>
       </header>
 
-      <div class="member-content">
-        <section id="loginSection" class="member-auth-wrap" style="display:none;">
-          <div class="member-auth-card">
-            <div class="member-auth-badge">PASSWORDLESS LOGIN</div>
-            <h1>登入會員中心</h1>
-            <p>輸入 Email，我們會寄送一次性登入連結到您的信箱。</p>
+      <div class="member-v2-content">
+        <!-- 未登入畫面 -->
+        <section id="loginSection" class="member-v2-login-wrap" style="display:none;">
+          <div class="member-v2-login-card">
+            <div class="member-v2-login-icon">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M4 7.5 12 13l8-5.5M5.5 5h13A1.5 1.5 0 0 1 20 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-11A1.5 1.5 0 0 1 5.5 5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              </svg>
+            </div>
 
-            <div class="member-auth-form">
-              <label for="email">Email</label>
-              <input id="email" class="field member-field" type="email" placeholder="you@example.com" />
-              <button id="sendLink" class="btn btn-primary member-auth-btn">寄送登入連結</button>
-              <p id="loginMsg" class="member-message"></p>
+            <p class="member-v2-eyebrow">PASSWORDLESS ACCESS</p>
+            <h2>登入你的帳戶</h2>
+            <p class="member-v2-login-desc">
+              輸入 Email，我們會寄送安全登入連結至你的信箱。
+            </p>
+
+            <div class="member-v2-form">
+              <label for="email">Email 地址</label>
+              <input
+                id="email"
+                type="email"
+                class="member-v2-input"
+                placeholder="name@example.com"
+                autocomplete="email"
+              />
+              <button id="sendLink" class="member-v2-primary-btn">
+                寄送登入連結
+                <span aria-hidden="true">→</span>
+              </button>
+              <p id="loginMsg" class="member-v2-message"></p>
             </div>
           </div>
         </section>
 
+        <!-- 已登入畫面 -->
         <section id="memberSection" style="display:none;">
-          <section id="overview" class="panel member-panel">
-            <div class="panel-header">
-              <h2><span class="ph-icon">📊</span> 帳號總覽</h2>
-            </div>
-            <div class="member-stats" id="profileStats"></div>
-            <div id="profile" class="member-profile-grid"></div>
-          </section>
-
-          <section id="binding" class="panel member-panel">
-            <div class="panel-header">
-              <h2><span class="ph-icon">🔗</span> LINE 帳號綁定</h2>
-            </div>
-
-            <div class="member-bind-card">
-              <div class="member-bind-text">
-                <div class="member-bind-title">產生專屬綁定碼</div>
-                <p>點擊按鈕後，請到 LINE 官方帳號的一對一聊天視窗傳送「綁定 XXXXXXXXXX」。</p>
-              </div>
-              <div class="member-bind-actions">
-                <button id="genCode" class="btn btn-primary">產生綁定碼</button>
+          <section id="overview" class="member-v2-section">
+            <div class="member-v2-section-head">
+              <div>
+                <p class="member-v2-eyebrow">OVERVIEW</p>
+                <h2>帳戶概覽</h2>
               </div>
             </div>
 
-            <div id="codeResult" class="member-code-box"></div>
+            <div id="profileStats" class="member-v2-metrics"></div>
+            <div id="profile" class="member-v2-profile"></div>
           </section>
 
-          <section id="groups" class="panel member-panel">
-            <div class="panel-header">
-              <h2><span class="ph-icon">🧩</span> 群組設定</h2>
+          <section id="binding" class="member-v2-section">
+            <div class="member-v2-section-head">
+              <div>
+                <p class="member-v2-eyebrow">CONNECTION</p>
+                <h2>LINE 帳號綁定</h2>
+              </div>
             </div>
-            <div id="groupsMeta" class="member-groups-meta"></div>
-            <div id="groups" class="member-groups-grid"></div>
+
+            <div class="member-v2-bind-row">
+              <div>
+                <h3>連結你的 LINE 帳號</h3>
+                <p>
+                  產生綁定碼後，請前往 LINE 官方帳號的一對一聊天室，傳送該綁定指令。
+                </p>
+              </div>
+              <button id="genCode" class="member-v2-primary-btn member-v2-code-btn">
+                產生綁定碼
+              </button>
+            </div>
+
+            <div id="codeResult" class="member-v2-code-result"></div>
+          </section>
+
+          <section id="groups" class="member-v2-section">
+            <div class="member-v2-section-head member-v2-group-heading">
+              <div>
+                <p class="member-v2-eyebrow">WORKSPACES</p>
+                <h2>群組設定</h2>
+              </div>
+              <div id="groupsMeta"></div>
+            </div>
+
+            <div id="groups" class="member-v2-groups"></div>
           </section>
         </section>
       </div>
@@ -97,57 +145,28 @@
 
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
   <script>
     firebase.initializeApp({
-      apiKey: "__FIREBASE_WEB_API_KEY__",
-      authDomain: "__FIREBASE_AUTH_DOMAIN__"
+      apiKey: "YOUR_FIREBASE_WEB_API_KEY",
+      authDomain: "YOUR_FIREBASE_AUTH_DOMAIN"
     });
 
     const LANG_LABELS = {
-      "zh-TW": "繁中",
+      "zh-TW": "繁體中文",
       "en": "英文",
       "th": "泰文",
-      "vi": "越文",
+      "vi": "越南文",
       "id": "印尼文"
     };
 
-    let cachedProfile = null;
-
-    async function init() {
-      if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
-        let email = window.localStorage.getItem("emailForSignIn");
-        if (!email) email = window.prompt("請再次輸入您的 Email 以完成登入");
-
-        try {
-          const result = await firebase.auth().signInWithEmailLink(email, window.location.href);
-          window.localStorage.removeItem("emailForSignIn");
-          const idToken = await result.user.getIdToken();
-
-          await fetch("/api/member/session-login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ idToken })
-          });
-
-          window.history.replaceState({}, document.title, "/member.html");
-        } catch (e) {
-          showLogin();
-          setLoginMessage("登入失敗：" + e.message, true);
-          return;
-        }
-      }
-
-      const res = await fetch("/api/member/me");
-      if (res.status === 401) {
-        showLogin();
-        return;
-      }
-
-      const data = await res.json();
-      cachedProfile = data;
-      showMember();
-      renderProfile(data);
-      await loadGroups();
+    function escapeHtml(value = "") {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
     }
 
     function showLogin() {
@@ -162,74 +181,384 @@
       document.getElementById("logout").style.display = "inline-flex";
     }
 
-    function setLoginMessage(message, isError = false) {
-      const el = document.getElementById("loginMsg");
-      el.textContent = message || "";
-      el.className = isError ? "member-message error" : "member-message";
+    function setLoginMessage(message = "", isError = false) {
+      const target = document.getElementById("loginMsg");
+      target.textContent = message;
+      target.className = isError
+        ? "member-v2-message member-v2-message-error"
+        : "member-v2-message";
     }
 
-    function getStatusBadge(status) {
-      const map = {
-        TRIAL: '<span class="badge badge-yellow">試用中</span>',
-        ACTIVE: '<span class="badge badge-green">已啟用</span>',
-        MANUAL_ACTIVE: '<span class="badge badge-blue">手動啟用</span>',
-        INACTIVE: '<span class="badge badge-gray">未啟用</span>',
-        PAYMENT_FAILED: '<span class="badge badge-red">付款失敗</span>'
+    function subscriptionLabel(status) {
+      const labels = {
+        TRIAL: "試用中",
+        ACTIVE: "使用中",
+        MANUAL_ACTIVE: "手動啟用",
+        INACTIVE: "未啟用",
+        PAYMENT_FAILED: "付款失敗"
       };
-      return map[status] || '<span class="badge badge-gray">未設定</span>';
+      return labels[status] || "尚未設定";
+    }
+
+    function subscriptionClass(status) {
+      const map = {
+        TRIAL: "warning",
+        ACTIVE: "success",
+        MANUAL_ACTIVE: "info",
+        INACTIVE: "neutral",
+        PAYMENT_FAILED: "danger"
+      };
+      return map[status] || "neutral";
     }
 
     function renderProfile(data) {
+      const isLinked = Boolean(data.lineLinked);
       const used = Number(data.usage?.translationCount ?? 0);
-      const quotaRaw = Number(data.subscription?.monthlyQuota ?? 0);
-      const quotaText = quotaRaw > 0 ? quotaRaw : "無限制";
-      const lineLinked = data.lineLinked ? "已綁定" : "未綁定";
+      const quota = Number(data.subscription?.monthlyQuota ?? 0);
+      const quotaText = quota > 0 ? quota.toLocaleString() : "無限制";
+      const status = data.subscription?.status || "INACTIVE";
+      const plan = data.subscription?.plan || "—";
 
       document.getElementById("profileStats").innerHTML = `
-        <div class="stat-card">
-          <div class="stat-label">LINE 狀態</div>
-          <div class="stat-value c-green">${data.lineLinked ? "ON" : "OFF"}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">方案狀態</div>
-          <div class="stat-value c-blue">${data.subscription?.status || "NONE"}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">本月用量</div>
-          <div class="stat-value c-purple">${used}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">月額度</div>
-          <div class="stat-value c-yellow">${quotaText}</div>
-        </div>
+        <article class="member-v2-metric">
+          <p>LINE 連線</p>
+          <strong>${isLinked ? "已綁定" : "未綁定"}</strong>
+          <span class="member-v2-metric-note ${isLinked ? "positive" : ""}">
+            <i></i>${isLinked ? "帳號已連結" : "等待綁定"}
+          </span>
+        </article>
+
+        <article class="member-v2-metric">
+          <p>目前方案</p>
+          <strong>${escapeHtml(subscriptionLabel(status))}</strong>
+          <span class="member-v2-metric-note">${escapeHtml(plan)}</span>
+        </article>
+
+        <article class="member-v2-metric">
+          <p>本月翻譯</p>
+          <strong>${used.toLocaleString()}</strong>
+          <span class="member-v2-metric-note">已使用次數</span>
+        </article>
+
+        <article class="member-v2-metric">
+          <p>每月額度</p>
+          <strong>${quotaText}</strong>
+          <span class="member-v2-metric-note">方案可用額度</span>
+        </article>
       `;
 
       document.getElementById("profile").innerHTML = `
-        <div class="member-info-card">
-          <div class="member-info-label">登入 Email</div>
-          <div class="member-info-value">${data.email || "-"}</div>
+        <div class="member-v2-detail-row">
+          <span>Email</span>
+          <strong>${escapeHtml(data.email || "—")}</strong>
         </div>
-        <div class="member-info-card">
-          <div class="member-info-label">LINE 綁定</div>
-          <div class="member-info-value">${lineLinked}</div>
+        <div class="member-v2-detail-row">
+          <span>LINE 狀態</span>
+          <strong>
+            <span class="member-v2-status-badge ${isLinked ? "success" : "neutral"}">
+              ${isLinked ? "已綁定" : "未綁定"}
+            </span>
+          </strong>
         </div>
-        <div class="member-info-card">
-          <div class="member-info-label">方案資訊</div>
-          <div class="member-info-value">${getStatusBadge(data.subscription?.status)} <span class="member-inline-note">${data.subscription?.plan || ""}</span></div>
+        <div class="member-v2-detail-row">
+          <span>訂閱狀態</span>
+          <strong>
+            <span class="member-v2-status-badge ${subscriptionClass(status)}">
+              ${escapeHtml(subscriptionLabel(status))}
+            </span>
+          </strong>
         </div>
-        <div class="member-info-card">
-          <div class="member-info-label">本月翻譯次數</div>
-          <div class="member-info-value">${used} / ${quotaText}</div>
+        <div class="member-v2-detail-row">
+          <span>本月使用量</span>
+          <strong>${used.toLocaleString()} / ${quotaText}</strong>
         </div>
       `;
     }
 
-    document.getElementById("sendLink").onclick = async () => {
+    async function init() {
+      if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
+        let email = window.localStorage.getItem("emailForSignIn");
+
+        if (!email) {
+          email = window.prompt("請再次輸入您的 Email 以完成登入");
+        }
+
+        if (!email) {
+          showLogin();
+          setLoginMessage("需要 Email 才能完成登入。", true);
+          return;
+        }
+
+        try {
+          const result = await firebase.auth().signInWithEmailLink(email, window.location.href);
+          window.localStorage.removeItem("emailForSignIn");
+
+          const idToken = await result.user.getIdToken();
+
+          const response = await fetch("/api/member/session-login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken })
+          });
+
+          if (!response.ok) {
+            throw new Error("伺服器登入驗證失敗");
+          }
+
+          window.history.replaceState({}, document.title, "/member.html");
+        } catch (error) {
+          showLogin();
+          setLoginMessage("登入失敗：" + error.message, true);
+          return;
+        }
+      }
+
+      try {
+        const response = await fetch("/api/member/me");
+
+        if (response.status === 401) {
+          showLogin();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error("無法讀取會員資料");
+        }
+
+        const data = await response.json();
+        showMember();
+        renderProfile(data);
+        await loadGroups();
+      } catch (error) {
+        showLogin();
+        setLoginMessage("系統暫時無法連線，請稍後再試。", true);
+      }
+    }
+
+    document.getElementById("sendLink").addEventListener("click", async () => {
       const email = document.getElementById("email").value.trim();
+
       if (!email) {
-        setLoginMessage("請先輸入 Email", true);
+        setLoginMessage("請輸入 Email 地址。", true);
         return;
       }
 
       try {
-        await firebase.auth().sendSignInLinkToEmail(emai
+        await firebase.auth().sendSignInLinkToEmail(email, {
+          url: window.location.origin + "/member.html",
+          handleCodeInApp: true
+        });
+
+        window.localStorage.setItem("emailForSignIn", email);
+        setLoginMessage("登入連結已寄出，請查看你的信箱與垃圾郵件匣。");
+      } catch (error) {
+        setLoginMessage("寄送失敗：" + error.message, true);
+      }
+    });
+
+    document.getElementById("email").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        document.getElementById("sendLink").click();
+      }
+    });
+
+    document.getElementById("genCode").addEventListener("click", async () => {
+      const button = document.getElementById("genCode");
+      const resultBox = document.getElementById("codeResult");
+
+      button.disabled = true;
+      button.textContent = "產生中...";
+
+      try {
+        const response = await fetch("/api/member/line-link-code", {
+          method: "POST"
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "無法產生綁定碼");
+        }
+
+        const instruction = String(data.instruction || "");
+        const bindingCode = instruction.replace(/^.*綁定\s*/i, "").trim();
+
+        resultBox.className = "member-v2-code-result show";
+        resultBox.innerHTML = `
+          <div class="member-v2-code-result-head">
+            <div>
+              <p>請在 LINE 官方帳號私訊傳送</p>
+              <strong>綁定指令</strong>
+            </div>
+            <button class="member-v2-copy-btn" onclick="copyBindingCode('${escapeHtml(bindingCode)}')">
+              複製
+            </button>
+          </div>
+          <div class="member-v2-command">${escapeHtml(instruction)}</div>
+          <p>綁定碼有效時間為 10 分鐘。請勿在群組聊天室傳送。</p>
+        `;
+      } catch (error) {
+        resultBox.className = "member-v2-code-result show error";
+        resultBox.textContent = error.message || "產生綁定碼失敗";
+      } finally {
+        button.disabled = false;
+        button.textContent = "產生綁定碼";
+      }
+    });
+
+    async function copyBindingCode(code) {
+      try {
+        await navigator.clipboard.writeText(`綁定 ${code}`);
+        const copyButton = document.querySelector(".member-v2-copy-btn");
+        if (copyButton) {
+          copyButton.textContent = "已複製";
+          setTimeout(() => {
+            copyButton.textContent = "複製";
+          }, 1600);
+        }
+      } catch {
+        window.prompt("請手動複製此綁定指令：", `綁定 ${code}`);
+      }
+    }
+
+    function buildLangCheckboxes(gid, selectedLangs = []) {
+      return Object.entries(LANG_LABELS).map(([code, label]) => `
+        <label class="member-v2-lang-option">
+          <input
+            type="checkbox"
+            class="lang-check-${gid}"
+            value="${code}"
+            ${selectedLangs.includes(code) ? "checked" : ""}
+            onchange="updateGroup('${gid}')"
+          />
+          <span>${label}</span>
+        </label>
+      `).join("");
+    }
+
+    async function loadGroups() {
+      const response = await fetch("/api/member/groups");
+
+      if (!response.ok) {
+        throw new Error("無法讀取群組資料");
+      }
+
+      const data = await response.json();
+      const groups = data.groups || [];
+
+      document.getElementById("groupsMeta").innerHTML = `
+        <span class="member-v2-count">${groups.length} 個群組</span>
+      `;
+
+      if (groups.length === 0) {
+        document.getElementById("groups").innerHTML = `
+          <div class="member-v2-empty">
+            <div class="member-v2-empty-symbol">—</div>
+            <h3>尚未有可管理的群組</h3>
+            <p>完成 LINE 帳號綁定後，使用該 LINE 帳號建立或綁定的群組會顯示在這裡。</p>
+          </div>
+        `;
+        return;
+      }
+
+      document.getElementById("groups").innerHTML = groups.map((group) => `
+        <article class="member-v2-group-card">
+          <div class="member-v2-group-card-head">
+            <div>
+              <h3>${escapeHtml(group.groupName || "未命名群組")}</h3>
+              <p>${escapeHtml(group.gid)}</p>
+            </div>
+            <span class="member-v2-status-badge success">已連線</span>
+          </div>
+
+          <div class="member-v2-setting-block">
+            <div class="member-v2-setting-label">
+              <span>翻譯語言</span>
+              <small>可多選</small>
+            </div>
+            <div class="member-v2-language-list">
+              ${buildLangCheckboxes(group.gid, group.langs || [])}
+            </div>
+          </div>
+
+          <div class="member-v2-setting-block">
+            <div class="member-v2-setting-label">
+              <span>行業類別</span>
+            </div>
+            <select
+              id="industry_${group.gid}"
+              class="member-v2-select"
+              onchange="updateGroup('${group.gid}')"
+            >
+              <option value="" ${!group.industry ? "selected" : ""}>未指定行業</option>
+              ${(group.industryOptions || []).map((industry) => `
+                <option value="${escapeHtml(industry)}" ${group.industry === industry ? "selected" : ""}>
+                  ${escapeHtml(industry)}
+                </option>
+              `).join("")}
+            </select>
+          </div>
+
+          <div id="save_${group.gid}" class="member-v2-save-state"></div>
+        </article>
+      `).join("");
+    }
+
+    async function updateGroup(gid) {
+      const saveState = document.getElementById(`save_${gid}`);
+      const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
+      const langs = [...checkboxes]
+        .filter((checkbox) => checkbox.checked)
+        .map((checkbox) => checkbox.value);
+
+      const industry = document.getElementById(`industry_${gid}`).value;
+
+      saveState.className = "member-v2-save-state saving";
+      saveState.textContent = "儲存中...";
+
+      try {
+        const response = await fetch(`/api/member/groups/${gid}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ langs, industry })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(data.error || "更新失敗");
+        }
+
+        saveState.className = "member-v2-save-state saved";
+        saveState.textContent = "已儲存";
+
+        setTimeout(() => {
+          if (saveState.textContent === "已儲存") {
+            saveState.textContent = "";
+            saveState.className = "member-v2-save-state";
+          }
+        }, 2200);
+      } catch (error) {
+        saveState.className = "member-v2-save-state failed";
+        saveState.textContent = error.message || "儲存失敗";
+      }
+    }
+
+    document.getElementById("logout").addEventListener("click", async () => {
+      await fetch("/api/member/logout", { method: "POST" });
+      window.location.reload();
+    });
+
+    document.querySelectorAll(".member-v2-nav-link").forEach((link) => {
+      link.addEventListener("click", () => {
+        document.querySelectorAll(".member-v2-nav-link").forEach((item) => {
+          item.classList.remove("active");
+        });
+        link.classList.add("active");
+      });
+    });
+
+    init();
+  </script>
+</body>
+</html>
