@@ -12,7 +12,7 @@ import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
 import crypto from "node:crypto";
-import { FirestoreStore } from "firestore-store";
+import { FirestoreStore } from "@google-cloud/connect-firestore";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -57,8 +57,8 @@ const lineConfig = {
 const client = new Client(lineConfig);
 app.use(session({
   store: new FirestoreStore({
-    database: db,
-    collection: "sessions"
+    dataset: db,
+    kind: "sessions"
   }),
   secret: process.env.SESSION_SECRET,
   resave: false,
