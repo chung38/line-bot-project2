@@ -147,11 +147,14 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
   <script>
-    firebase.initializeApp({
-      apiKey: "YOUR_FIREBASE_WEB_API_KEY",
-      authDomain: "YOUR_FIREBASE_AUTH_DOMAIN"
-    });
-
+async function initFirebase() {
+  const res = await fetch("/api/member/config");
+  const config = await res.json();
+  firebase.initializeApp({
+    apiKey: config.apiKey,
+    authDomain: config.authDomain
+  });
+}
     const LANG_LABELS = {
       "zh-TW": "繁體中文",
       "en": "英文",
@@ -558,7 +561,24 @@
       });
     });
 
-    init();
+  async function initFirebase() {
+  const res = await fetch("/api/member/config");
+  const config = await res.json();
+  firebase.initializeApp({
+    apiKey: config.apiKey,
+    authDomain: config.authDomain
+  });
+}
+
+(async function bootstrap() {
+  try {
+    await initFirebase();
+    await init();
+  } catch (error) {
+    showLogin();
+    setLoginMessage("系統設定載入失敗，請稍後再試", true);
+  }
+})();
   </script>
 </body>
 </html>
