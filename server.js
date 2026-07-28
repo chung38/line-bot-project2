@@ -46,7 +46,31 @@ try {
   console.error("❌ Firebase 初始化失敗:", e);
   process.exit(1);
 }
+setInterval(async () => {
+  try {
+    const snapshot = await db.collection("sessions").get();
+    const now = Date.now();
+    const batch = db.batch();
+    let count = 0;
 
+    snapshot.forEach(doc => {
+      const raw = doc.data();
+      const dataField = raw.data ? JSON.parse(raw.data) : raw;
+      const expires = dataField?.cookie?.expires;
+      if (expires && new Date(expires).getTime() < now) {
+        batch.delete(doc.ref);
+        count++;
+      }
+    });
+
+    if (count > 0) {
+      await batch.commit();
+      console.log(`🧹 清除了 ${count} 筆過期 session`);
+    }
+  } catch (e) {
+    console.error("清除過期 session 失敗:", e.message);
+  }
+}, 24 * 60 * 60 * 1000); // 每 24 小時執行一次
 const app = express();
 app.set("trust proxy", 1);
 
