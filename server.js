@@ -2376,7 +2376,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-app.post("/api/member/session-login", async (req, res) => {
+app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const { idToken } = req.body;
     if (!idToken) return res.status(400).json({ error: "idToken 必填" });
@@ -2496,7 +2496,7 @@ app.get("/api/member/groups", requireMemberSession, async (req, res) => {
   }
 });
 
-app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
+app.put("/api/member/groups/:gid", express.json({ limit: "1mb" }), requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid } = req.params;
