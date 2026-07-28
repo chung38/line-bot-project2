@@ -94,7 +94,6 @@ app.use(session({
     maxAge: 7 * 24 * 60 * 60 * 1000
   }
 }));
-app.use(express.json({ limit: "1mb" }));
 
 function requireMemberSession(req, res, next) {
   if (!req.session?.firebaseUid) {
