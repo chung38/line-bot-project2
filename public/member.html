@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>會員中心 | 譯xAI</title>
+<title>會員中心 | TransXAI</title>
 <link rel="stylesheet" href="/css/style.css" />
 </head>
 
 <body class="member-v2-body">
   <div class="member-v2-app">
-    <aside class="member-v2-sidebar">譯xAI
-      <a class="member-v2-brand" href="#overview" aria-label=" 會員中心">
+    <aside class="member-v2-sidebar">
+      <a class="member-v2-brand" href="/" aria-label="TransXAI 首頁">
         <span class="member-v2-logo" aria-hidden="true">
           <svg viewBox="0 0 32 32" fill="none">
             <path d="M6 8.5C6 6.57 7.57 5 9.5 5h13C24.43 5 26 6.57 26 8.5v10C26 20.43 24.43 22 22.5 22H16l-5 5v-5H9.5C7.57 22 6 20.43 6 18.5v-10Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
@@ -18,7 +18,7 @@
           </svg>
         </span>
         <span>
-          <strong>譯xAI</strong>
+          <strong>TransXAI</strong>
           <small>會員中心</small>
         </span>
       </a>
@@ -40,7 +40,7 @@
           <span class="member-v2-status-dot"></span>
           系統正常運作中
         </div>
-        <p>譯XAI Translation Service</p>
+        <p>TransXAI Translation Service</p>
       </div>
     </aside>
 
@@ -147,14 +147,11 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
   <script>
-async function initFirebase() {
-  const res = await fetch("/api/member/config");
-  const config = await res.json();
-  firebase.initializeApp({
-    apiKey: config.apiKey,
-    authDomain: config.authDomain
-  });
-}
+    firebase.initializeApp({
+      apiKey: "YOUR_FIREBASE_WEB_API_KEY",
+      authDomain: "YOUR_FIREBASE_AUTH_DOMAIN"
+    });
+
     const LANG_LABELS = {
       "zh-TW": "繁體中文",
       "en": "英文",
@@ -221,6 +218,10 @@ async function initFirebase() {
       const quotaText = quota > 0 ? quota.toLocaleString() : "無限制";
       const status = data.subscription?.status || "INACTIVE";
       const plan = data.subscription?.plan || "—";
+      const expiresAt = data.subscription?.expiresAt ? new Date(data.subscription.expiresAt) : null;
+      const expiresText = expiresAt
+        ? expiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
+        : "—";
 
       document.getElementById("profileStats").innerHTML = `
         <article class="member-v2-metric">
@@ -234,7 +235,7 @@ async function initFirebase() {
         <article class="member-v2-metric">
           <p>目前方案</p>
           <strong>${escapeHtml(subscriptionLabel(status))}</strong>
-          <span class="member-v2-metric-note">${escapeHtml(plan)}</span>
+          <span class="member-v2-metric-note">${expiresAt ? `使用期限至 ${expiresText}` : escapeHtml(plan)}</span>
         </article>
 
         <article class="member-v2-metric">
@@ -274,6 +275,10 @@ async function initFirebase() {
         <div class="member-v2-detail-row">
           <span>本月使用量</span>
           <strong>${used.toLocaleString()} / ${quotaText}</strong>
+        </div>
+        <div class="member-v2-detail-row">
+          <span>使用期限</span>
+          <strong>${expiresText}</strong>
         </div>
       `;
     }
@@ -561,24 +566,7 @@ async function initFirebase() {
       });
     });
 
-  async function initFirebase() {
-  const res = await fetch("/api/member/config");
-  const config = await res.json();
-  firebase.initializeApp({
-    apiKey: config.apiKey,
-    authDomain: config.authDomain
-  });
-}
-
-(async function bootstrap() {
-  try {
-    await initFirebase();
-    await init();
-  } catch (error) {
-    showLogin();
-    setLoginMessage("系統設定載入失敗，請稍後再試", true);
-  }
-})();
+    init();
   </script>
 </body>
 </html>
