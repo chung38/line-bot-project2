@@ -2592,7 +2592,6 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
   }
 
   if (event.type === "join" && gid) {
-    await sendMenu(gid);
     return null;
   }
 
