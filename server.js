@@ -12,7 +12,6 @@ import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
 import crypto from "node:crypto";
-import { FirestoreStore } from "@google-cloud/connect-firestore";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -46,31 +45,7 @@ try {
   console.error("❌ Firebase 初始化失敗:", e);
   process.exit(1);
 }
-setInterval(async () => {
-  try {
-    const snapshot = await db.collection("sessions").get();
-    const now = Date.now();
-    const batch = db.batch();
-    let count = 0;
 
-    snapshot.forEach(doc => {
-      const raw = doc.data();
-      const dataField = raw.data ? JSON.parse(raw.data) : raw;
-      const expires = dataField?.cookie?.expires;
-      if (expires && new Date(expires).getTime() < now) {
-        batch.delete(doc.ref);
-        count++;
-      }
-    });
-
-    if (count > 0) {
-      await batch.commit();
-      console.log(`🧹 清除了 ${count} 筆過期 session`);
-    }
-  } catch (e) {
-    console.error("清除過期 session 失敗:", e.message);
-  }
-}, 24 * 60 * 60 * 1000); // 每 24 小時執行一次
 const app = express();
 app.set("trust proxy", 1);
 
@@ -80,10 +55,6 @@ const lineConfig = {
 };
 const client = new Client(lineConfig);
 app.use(session({
-  store: new FirestoreStore({
-    dataset: db,
-    kind: "sessions"
-  }),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -94,6 +65,7 @@ app.use(session({
     maxAge: 7 * 24 * 60 * 60 * 1000
   }
 }));
+app.use(express.json({ limit: "1mb" }));
 
 function requireMemberSession(req, res, next) {
   if (!req.session?.firebaseUid) {
@@ -1569,12 +1541,7 @@ const adminAuth = basicAuth({
 });
 app.use("/admin", adminAuth, express.static(path.join(__dirname, "public", "admin")));
 app.use(express.static(path.join(__dirname, "public")));
-app.get("/api/member/config", (req, res) => {
-  res.json({
-    apiKey: process.env.FIREBASE_WEB_API_KEY,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN
-  });
-});
+
 const adminRouter = express.Router();
 adminRouter.use(adminLimiter);
 adminRouter.use(adminAuth);
@@ -2375,7 +2342,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req, res) => {
+app.post("/api/member/session-login", async (req, res) => {
   try {
     const { idToken } = req.body;
     if (!idToken) return res.status(400).json({ error: "idToken 必填" });
@@ -2447,6 +2414,18 @@ app.get("/api/member/me", requireMemberSession, async (req, res) => {
     if (user.lineUserId) {
       subscription = await getSubscriptionByUserId(user.lineUserId);
       usage = await getMonthlyUsage(user.lineUserId);
+
+      if (subscription) {
+        const status = normalizeSubscriptionStatus(subscription.status);
+        const expiresAt = status === SUBSCRIPTION_STATUS.TRIAL
+          ? toDateSafe(subscription.trialEndsAt)
+          : toDateSafe(subscription.currentPeriodEnd);
+
+        subscription = {
+          ...subscription,
+          expiresAt: expiresAt ? expiresAt.toISOString() : null,
+        };
+      }
     }
 
     res.json({ ...user, subscription, usage });
@@ -2495,7 +2474,7 @@ app.get("/api/member/groups", requireMemberSession, async (req, res) => {
   }
 });
 
-app.put("/api/member/groups/:gid", express.json({ limit: "1mb" }), requireMemberSession, async (req, res) => {
+app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid } = req.params;
