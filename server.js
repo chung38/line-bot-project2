@@ -49,12 +49,72 @@ try {
 const app = express();
 app.set("trust proxy", 1);
 
+class FirestoreSessionStore extends session.Store {
+  constructor(firestoreDb, collectionName = "expressSessions") {
+    super();
+    this.collection = firestoreDb.collection(collectionName);
+  }
+
+  async get(sid, cb) {
+    try {
+      const doc = await this.collection.doc(sid).get();
+      if (!doc.exists) return cb(null, null);
+
+      const { expires, data } = doc.data();
+      if (expires && expires.toMillis() <= Date.now()) {
+        await this.collection.doc(sid).delete().catch(() => {});
+        return cb(null, null);
+      }
+
+      cb(null, JSON.parse(data));
+    } catch (e) {
+      cb(e);
+    }
+  }
+
+  async set(sid, sessionData, cb) {
+    try {
+      const maxAge = sessionData.cookie?.maxAge ?? 24 * 60 * 60 * 1000;
+      const expires = admin.firestore.Timestamp.fromMillis(Date.now() + maxAge);
+      await this.collection.doc(sid).set({
+        data: JSON.stringify(sessionData),
+        expires,
+      });
+      cb?.(null);
+    } catch (e) {
+      cb?.(e);
+    }
+  }
+
+  async destroy(sid, cb) {
+    try {
+      await this.collection.doc(sid).delete();
+      cb?.(null);
+    } catch (e) {
+      cb?.(e);
+    }
+  }
+
+  async touch(sid, sessionData, cb) {
+    try {
+      const maxAge = sessionData.cookie?.maxAge ?? 24 * 60 * 60 * 1000;
+      const expires = admin.firestore.Timestamp.fromMillis(Date.now() + maxAge);
+      await this.collection.doc(sid).update({ expires });
+      cb?.(null);
+    } catch (e) {
+      // If the doc doesn't exist yet (e.g. race with set), ignore.
+      cb?.(null);
+    }
+  }
+}
+
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 const client = new Client(lineConfig);
 app.use(session({
+  store: new FirestoreSessionStore(db),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
