@@ -2402,30 +2402,41 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-app.post("/api/member/session-login", async (req, res) => {
+app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: "idToken 必填" });
+    if (!idToken) return res.status(400).json({ error: "缺少 idToken" });
 
     const decoded = await admin.auth().verifyIdToken(idToken);
     const firebaseUid = decoded.uid;
-    const email = decoded.email || "";
+    const email = decoded.email;
 
-    await db.collection("memberUsers").doc(firebaseUid).set({
-      email,
-      lineUserId: null,
-      lineLinked: false,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    const ref = db.collection("memberUsers").doc(firebaseUid);
+    const snap = await ref.get();
+
+    if (!snap.exists) {
+      // 只有第一次建立會員文件時才初始化 LINE 綁定欄位
+      await ref.set({
+        email,
+        lineUserId: null,
+        lineLinked: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } else {
+      // 之後每次登入只更新 email/時間，絕不動 lineUserId / lineLinked
+      await ref.set({
+        email,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    }
 
     req.session.firebaseUid = firebaseUid;
     req.session.email = email;
-
     res.json({ ok: true });
   } catch (e) {
-    console.error("session-login 失敗:", e.message);
-    res.status(401).json({ error: "驗證失敗" });
+    console.error("session-login 失敗", e.message);
+    res.status(401).json({ error: "登入驗證失敗" });
   }
 });
 
