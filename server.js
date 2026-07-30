@@ -2665,7 +2665,7 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
   }
 
   if (event.type === "join" && gid) {
-    await safeReplyOrPush(replyToken, gid, "👋 感謝邀請！請由邀請人輸入「!設定」完成綁定，即可開始使用翻譯服務。");
+    await safeReplyOrPush(replyToken, gid, "👋 感謝邀請！請由邀請人輸入「!啟動」完成綁定，即可開始使用翻譯服務。");
     return null;
   }
 
@@ -2767,6 +2767,21 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
 
   if (event.type === "message" && event.message?.type === "text" && gid && uid) {
     const rawText = event.message.text || "";
+
+    if (rawText.trim() === "!啟動") {
+      const ensureRes = await ensureInviterIfMissing(gid, uid);
+      if (!ensureRes.ok) {
+        await safeReplyOrPush(replyToken, gid, ensureRes.message);
+        return null;
+      }
+
+      if (ensureRes.alreadyBound) {
+        return null;
+      }
+
+      await safeReplyOrPush(replyToken, gid, "✅ 綁定完成！之後可在會員中心管理此群組，或輸入「!設定」開啟語言與行業別設定。");
+      return null;
+    }
 
     if (rawText.trim() === "!設定") {
       const ensureRes = await ensureInviterIfMissing(gid, uid);
