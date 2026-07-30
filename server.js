@@ -125,7 +125,10 @@ app.use(session({
     maxAge: 7 * 24 * 60 * 60 * 1000
   }
 }));
-app.use(express.json({ limit: "1mb" }));
+app.use((req, res, next) => {
+  if (req.path === "/webhook") return next();
+  express.json({ limit: "1mb" })(req, res, next);
+});
 
 function requireMemberSession(req, res, next) {
   if (!req.session?.firebaseUid) {
@@ -1070,66 +1073,52 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 }
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
+  // 取得目標語言名稱
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
+  // 取得產業／工作類型專用設定
   const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
 
+  // 建立工作情境
   const industryContext =
     industryDoc?.promptContext ||
     (industry
-      ? `工作類型：${industry}。使用此領域常用、清楚的術語。`
-      : "");
+      ? `工作類型：${industry}。優先使用此工作領域的專業術語及自然用語。`
+      : "未指定工作類型，請根據原文語境選擇適當的日常或工作用語。");
 
-  const zhRule =
+  // 繁體中文嚴格模式
+  const strictRule =
     forceStrict && targetLang === "zh-TW"
-      ? `
-繁體中文要求：
-- 使用符合台灣用語習慣的繁體中文。
-- 可以自然表達，但不可為了通順而改變原意。
-- 人稱或指涉不明時，不可自行翻成「我自己」、「你自己」或「他自己」。
-- 不可直接照抄外語原文。`
+      ? "8. 必須輸出符合台灣用語習慣的繁體中文，不可直接照抄原文。"
       : "";
 
-  return `
-你是專業即時翻譯引擎。將原文翻譯成「${langLabel}」。
-
-規則：
-1. 只輸出譯文；不得解釋、摘要、加標題、前後綴、註解或語言名稱。
-2. 忠實保留原意；不得新增、刪除、猜測或改變原文事實。
-3. 必須正確保留誰在說話、對誰說、誰做事、對誰做、誰受益或誰負責；不得翻錯主詞、受詞、人稱、代詞、對象或否定語意。
-4. 房間號碼、床號、機台代號、型號、批號、料號、工單號、ERP 代碼、英文單一字母代號、數字、日期、時間、URL、Email 與 @提及 placeholder 必須保留原樣。
-5. 保留原文換行格式；工作內容使用適合該領域、自然且讓外籍工作者容易理解的用語。
+  return `你是台灣的專業多語口譯員，協助主管、雇主、外籍工作者及家庭成員進行日常生活與工作溝通。
 
 ${industryContext}
-${zhRule}
-`.trim();
+
+翻譯規則：
+1. 先理解原文的實際情境，再進行自然、準確的翻譯。
+2. 若涉及特定工作領域，優先使用該領域常用的專業術語；若為日常生活對話，使用自然、簡單、容易理解的口語表達。
+3. 對外籍工作者使用自然、簡單、清楚的工作或生活用語，避免不必要的正式、公文式語氣。
+4. 專有名詞、姓名、地名、公司名稱、棟別、房間號碼、床號、機台代號及英文單一字母代號（如 A、B、C）原則上保留原樣。
+5. 型號、批號、料號、工單號、ERP 代碼、URL、Email、數字、日期及時間均須保留，不得任意修改。
+6. 保留原文的換行格式，只輸出翻譯結果，不提供額外說明。
+7. 忠實傳達原文語意，不得自行增加、刪除或改變原文未明確表達的主詞、受詞、代詞、對象、人稱或其他重要資訊。
+${strictRule}
+
+請翻譯成：${langLabel}`;
 }
 
-async function translateWithChatGPT(
-  text,
-  targetLang,
-  gid = null,
-  retry = 0,
-  customPrompt = ""
-) {
+
+async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, customPrompt = "") {
   if (!text?.trim()) return text;
   if (isOnlyEmojiOrWhitespace(text)) return text;
 
   const industry = gid ? groupIndustry.get(gid) : null;
-
-  // 所有翻譯為繁中的訊息，都直接啟用繁中嚴格規則
-  const systemPrompt =
-    customPrompt ||
-    buildTranslationPrompt(
-      targetLang,
-      industry,
-      targetLang === "zh-TW"
-    );
-
-  const cacheKey =
-    `group_${gid}:${targetLang}:${text}:${industry || ""}:${systemPrompt}`;
+  const systemPrompt = customPrompt || buildTranslationPrompt(targetLang, industry);
+  const cacheKey = `group_${gid}:${targetLang}:${text}:${industry || ""}:${systemPrompt}`;
 
   if (translationCache.has(cacheKey)) {
     return translationCache.get(cacheKey);
@@ -1140,9 +1129,13 @@ async function translateWithChatGPT(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4.1-mini",
-        temperature: 0,
+        temperature: 0.1,
         max_tokens: 1000,
         messages: [
+          {
+            role: "system",
+            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。禁止腦補原文未出現的主詞、代詞、對象、人稱或語氣。"
+          },
           {
             role: "system",
             content: systemPrompt
@@ -1154,15 +1147,12 @@ async function translateWithChatGPT(
         ]
       },
       {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        },
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
         timeout: 25000
       }
     );
 
-    let out =
-      res.data?.choices?.[0]?.message?.content?.trim() || "";
+    let out = res.data?.choices?.[0]?.message?.content?.trim() || "";
 
     out = out
       .split("\n")
@@ -1170,51 +1160,32 @@ async function translateWithChatGPT(
       .join("\n")
       .trim();
 
-    // 繁中翻譯基本檢查
-    if (targetLang === "zh-TW") {
-      const hasChinese = /[\u4e00-\u9fff]/.test(out);
-      const unchanged = out.trim() === text.trim();
-      const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
+if (targetLang === "zh-TW") {
+  const hasChinese = /[\u4e00-\u9fff]/.test(out);
+  const unchanged = out.trim() === text.trim();
+  const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
-      // 人名、型號、代碼等可能本來就不需要翻譯
-      if (unchanged) {
-        translationCache.set(cacheKey, out);
-        return out;
-      }
+  // GPT 判斷這段不需翻譯（人名、代號等），直接接受
+  if (unchanged) {
+    return out;
+  }
 
-      // 原文已有中文，但結果完全沒有中文，才視為異常並重試
-      if (!hasChinese && sourceHasChinese) {
-        if (retry < 2) {
-          const strongPrompt = buildTranslationPrompt(
-            "zh-TW",
-            industry,
-            true
-          );
-
-          return translateWithChatGPT(
-            text,
-            targetLang,
-            gid,
-            retry + 1,
-            strongPrompt
-          );
-        }
-
-        out = "（翻譯異常，請稍後再試）";
-      }
+  // 只有「原文含中文、但輸出沒有中文」才重試
+  // 避免純外語片段（泰文/英文）翻成中文後被誤判為異常
+  if (!hasChinese && sourceHasChinese) {
+    if (retry < 2) {
+      const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
     }
+    out = "（翻譯異常，請稍後再試）";
+  }
+}
 
     translationCache.set(cacheKey, out);
     return out;
-
   } catch (e) {
-    const errMsg =
-      e.response?.data?.error?.message || e.message;
-
-    console.error(
-      `❌ [${SUPPORTED_LANGS[targetLang] || targetLang}] 翻譯失敗:`,
-      errMsg
-    );
+    const errMsg = e.response?.data?.error?.message || e.message;
+    console.error(`❌ [${SUPPORTED_LANGS[targetLang] || targetLang}] 翻譯失敗:`, errMsg);
 
     const isRetryable =
       e.code === "ECONNABORTED" ||
@@ -1222,20 +1193,9 @@ async function translateWithChatGPT(
       [429, 500, 502, 503].includes(e.response?.status);
 
     if (isRetryable && retry < 2) {
-      const delay = Math.min(
-        1000 * Math.pow(2, retry),
-        5000
-      );
-
-      await new Promise(resolve => setTimeout(resolve, delay));
-
-      return translateWithChatGPT(
-        text,
-        targetLang,
-        gid,
-        retry + 1,
-        customPrompt
-      );
+      const delay = Math.min(1000 * Math.pow(2, retry), 5000);
+      await new Promise(r => setTimeout(r, delay));
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
 
     return `[${text.substring(0, 20)}...翻譯失敗]`;
@@ -2445,21 +2405,20 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req, res) => {
+app.post("/api/member/session-login", async (req, res) => {
   try {
     const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: "缺少 idToken" });
+    if (!idToken) return res.status(400).json({ error: "idToken 必填" });
 
     const decoded = await admin.auth().verifyIdToken(idToken);
     const firebaseUid = decoded.uid;
-    const email = decoded.email;
+    const email = decoded.email || "";
 
-    const ref = db.collection("memberUsers").doc(firebaseUid);
-    const snap = await ref.get();
+    const userRef = db.collection("memberUsers").doc(firebaseUid);
+    const userSnap = await userRef.get();
 
-    if (!snap.exists) {
-      // 只有第一次建立會員文件時才初始化 LINE 綁定欄位
-      await ref.set({
+    if (!userSnap.exists) {
+      await userRef.set({
         email,
         lineUserId: null,
         lineLinked: false,
@@ -2467,8 +2426,7 @@ app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
     } else {
-      // 之後每次登入只更新 email/時間，絕不動 lineUserId / lineLinked
-      await ref.set({
+      await userRef.set({
         email,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
@@ -2476,10 +2434,11 @@ app.post("/api/member/session-login", express.json({ limit: "1mb" }), async (req
 
     req.session.firebaseUid = firebaseUid;
     req.session.email = email;
+
     res.json({ ok: true });
   } catch (e) {
-    console.error("session-login 失敗", e.message);
-    res.status(401).json({ error: "登入驗證失敗" });
+    console.error("session-login 失敗:", e.message);
+    res.status(401).json({ error: "驗證失敗" });
   }
 });
 
