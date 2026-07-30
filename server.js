@@ -2665,6 +2665,7 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
   }
 
   if (event.type === "join" && gid) {
+    await safeReplyOrPush(replyToken, gid, "👋 感謝邀請！請由邀請人輸入「!設定」完成綁定，即可開始使用翻譯服務。");
     return null;
   }
 
