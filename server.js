@@ -2779,7 +2779,7 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
         return null;
       }
 
-      await safeReplyOrPush(replyToken, gid, "✅ 綁定完成！之後可在會員中心管理此群組，或輸入「!設定」開啟語言與行業別設定。");
+      await safeReplyOrPush(replyToken, gid, "✅ 綁定完成！之後可在會員中心管理此群組。");
       return null;
     }
 
