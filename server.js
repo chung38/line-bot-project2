@@ -1602,7 +1602,7 @@ const adminAuth = basicAuth({
   challenge: false,
   unauthorizedResponse: () => ({ success: false, error: "未登入或帳號密碼錯誤" })
 });
-app.use("/admin", adminAuth, express.static(path.join(__dirname, "public", "admin")));
+app.use("/admin", express.static(path.join(__dirname, "public", "admin")));
 app.use(express.static(path.join(__dirname, "public")));
 
 const adminRouter = express.Router();
