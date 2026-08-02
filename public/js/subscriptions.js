@@ -1,5 +1,5 @@
 const { api, toast, formatTime, escapeHtml, statusBadge } = window.AdminCommon;
-let allSubs=[], selectedUserId=null;
+let allSubs=[], selectedGid=null;
 
 function updateStats(subs) {
   const n = s => subs.filter(x=>x.status===s).length;
@@ -20,7 +20,7 @@ function getFiltered() {
   const kw = document.getElementById('searchInput').value.trim().toLowerCase();
   const sf = document.getElementById('statusFilter').value;
   return allSubs.filter(s=>{
-    const ok = [s.userId,s.displayName,s.plan,s.status,s.lastPaymentStatus].join(' ').toLowerCase().includes(kw);
+    const ok = [s.gid,s.groupName,s.userId,s.inviterName,s.plan,s.status,s.lastPaymentStatus].join(' ').toLowerCase().includes(kw);
     return ok && (!sf||s.status===sf);
   });
 }
@@ -33,28 +33,26 @@ function renderSubList() {
     container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔑</div><div class="empty-title">沒有符合的授權</div></div>';
     return;
   }
-  // fix: 不將 displayName 放進 onclick ，改用 data-userid 屬性 + addEventListener 防止 XSS
-  container.innerHTML = fl.map(s=>`<div class="item-card${s.userId===selectedUserId?' selected':''}" data-userid="${escapeHtml(s.userId)}">
-      <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.displayName||s.userId)}</div><div class="item-sub">${escapeHtml(s.userId)}</div></div>${statusBadge(s.status)}</div>
+  container.innerHTML = fl.map(s=>`<div class="item-card${s.gid===selectedGid?' selected':''}" data-gid="${escapeHtml(s.gid)}">
+      <div class="item-card-head"><div><div class="item-title">${escapeHtml(s.groupName||s.gid)}</div><div class="item-sub">${escapeHtml(s.gid)}</div></div>${statusBadge(s.status)}</div>
+      <div class="item-row"><span class="row-label">授權者</span><div>${escapeHtml(s.inviterName||s.userId||'—')}</div></div>
       <div class="item-row"><span class="row-label">方案</span><div>${escapeHtml(s.plan||'—')}</div></div>
       <div class="item-row"><span class="row-label">付款</span><div>${escapeHtml(s.lastPaymentStatus||'—')}</div></div>
-      <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.currentPeriodEnd)}</div></div>
-      <div class="item-row"><span class="row-label">群組上限</span><div>${s.maxGroups??'—'}</div></div>
+      <div class="item-row"><span class="row-label">到期</span><div>${formatTime(s.status==='TRIAL' ? s.trialEndsAt : s.currentPeriodEnd)}</div></div>
       <div class="item-row"><span class="row-label">月額度</span><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
       <div class="item-row"><span class="row-label">操作</span><div class="btn-row">
-        <button class="btn btn-secondary btn-sm" data-action="config" data-userid="${escapeHtml(s.userId)}">⚙️ 設定</button>
-        <button class="btn btn-secondary btn-sm" data-action="manual" data-userid="${escapeHtml(s.userId)}">🛠 調整</button>
-        <button class="btn btn-danger btn-sm" data-action="delete" data-userid="${escapeHtml(s.userId)}" data-name="${escapeHtml(s.displayName||s.userId)}">🗑 刪除</button>
+        <button class="btn btn-secondary btn-sm" data-action="config" data-gid="${escapeHtml(s.gid)}">⚙️ 設定</button>
+        <button class="btn btn-secondary btn-sm" data-action="manual" data-gid="${escapeHtml(s.gid)}">🛠 調整</button>
+        <button class="btn btn-danger btn-sm" data-action="delete" data-gid="${escapeHtml(s.gid)}" data-name="${escapeHtml(s.groupName||s.gid)}">🗑 刪除</button>
       </div></div></div>`).join('');
 
-  // 綁定事件，不使用 inline onclick
   container.querySelectorAll('button[data-action]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const uid = btn.dataset.userid;
+      const gid = btn.dataset.gid;
       const action = btn.dataset.action;
-      if (action === 'config')  selectUser(uid, 'tab-config');
-      if (action === 'manual')  selectUser(uid, 'tab-manual');
-      if (action === 'delete')  deleteUser(uid, btn.dataset.name);
+      if (action === 'config')  selectGroup(gid, 'tab-config');
+      if (action === 'manual')  selectGroup(gid, 'tab-manual');
+      if (action === 'delete')  deleteGroup(gid, btn.dataset.name);
     });
   });
 }
@@ -66,41 +64,42 @@ function toLocalInput(v) {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-async function deleteUser(userId, displayName) {
-  const label = displayName || userId;
+async function deleteGroup(gid, groupName) {
+  const label = groupName || gid;
   if (!confirm(`確定要刪除「${label}」的授權資料？\n\n此操作不可復原。`)) return;
   try {
-    await api(`/admin/subscriptions/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    await api(`/admin/subscriptions/${encodeURIComponent(gid)}`, { method: 'DELETE' });
     toast(`✅ 已停用並清除 ${label} 的授權`);
-    if (selectedUserId === userId) selectedUserId = null;
+    if (selectedGid === gid) selectedGid = null;
     loadAllSubs();
   } catch(e) { toast(`刪除失敗：${e.message}`, true); }
 }
 
-function selectUser(userId, tab) {
-  selectedUserId = userId;
-  const s = allSubs.find(x=>x.userId===userId); if (!s) return;
-  const name = s.displayName || userId;
+function selectGroup(gid, tab) {
+  selectedGid = gid;
+  const s = allSubs.find(x=>x.gid===gid); if (!s) return;
+  const name = s.groupName || gid;
   document.getElementById('selectedUserText').textContent = name;
   document.getElementById('manualUserBadge').textContent  = name;
   document.getElementById('usageUserBadge').textContent   = name;
-  document.getElementById('configUserId').value              = s.userId;
+  document.getElementById('configUserId').value              = s.gid;
   document.getElementById('configStatus').value              = s.status||'TRIAL';
   document.getElementById('configPlan').value                = s.plan||'';
   document.getElementById('configLastPaymentStatus').value   = s.lastPaymentStatus||'';
   document.getElementById('configTrialEndsAt').value         = toLocalInput(s.trialEndsAt);
   document.getElementById('configCurrentPeriodEnd').value    = toLocalInput(s.currentPeriodEnd);
-  document.getElementById('configMaxGroups').value           = s.maxGroups??'';
   document.getElementById('configMonthlyQuota').value        = s.monthlyQuota??'';
   document.getElementById('configManualOverride').value      = s.manualOverride||'NONE';
   document.getElementById('configManualReason').value        = s.manualReason||'';
   document.getElementById('selectedSummary').innerHTML = `
+    <div class="detail-item"><div class="detail-label">群組</div><div>${escapeHtml(s.groupName||s.gid)}</div></div>
+    <div class="detail-item"><div class="detail-label">授權者</div><div>${escapeHtml(s.inviterName||s.userId||'—')}</div></div>
     <div class="detail-item"><div class="detail-label">狀態</div><div>${statusBadge(s.status)}</div></div>
     <div class="detail-item"><div class="detail-label">方案</div><div>${escapeHtml(s.plan||'—')}</div></div>
     <div class="detail-item"><div class="detail-label">本月用量</div><div>${s.usageThisMonth??0} / ${s.monthlyQuota??'—'}</div></div>
     <div class="detail-item"><div class="detail-label">手動覆寫</div><div>${escapeHtml(s.manualOverride||'NONE')}</div></div>`;
-  document.getElementById('manualUserIdTarget').value = userId;
-  document.getElementById('usageUserIdTarget').value  = userId;
+  document.getElementById('manualUserIdTarget').value = gid;
+  document.getElementById('usageUserIdTarget').value  = gid;
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active', p.id===tab));
   window.scrollTo({ top:0, behavior:'smooth' });
@@ -109,16 +108,15 @@ function selectUser(userId, tab) {
 
 async function handleConfigSubmit(e) {
   e.preventDefault();
-  const userId = document.getElementById('configUserId').value.trim();
-  if (!userId) return toast('請先在清單選取使用者', true);
+  const gid = document.getElementById('configUserId').value.trim();
+  if (!gid) return toast('請先在清單選取群組', true);
   try {
-    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/config`, { method:'PUT', body:JSON.stringify({
+    await api(`/admin/subscriptions/${encodeURIComponent(gid)}/config`, { method:'PUT', body:JSON.stringify({
       status:           document.getElementById('configStatus').value,
       plan:             document.getElementById('configPlan').value.trim(),
       lastPaymentStatus:document.getElementById('configLastPaymentStatus').value.trim(),
       trialEndsAt:      document.getElementById('configTrialEndsAt').value||null,
       currentPeriodEnd: document.getElementById('configCurrentPeriodEnd').value||null,
-      maxGroups:        parseInt(document.getElementById('configMaxGroups').value)||null,
       monthlyQuota:     parseInt(document.getElementById('configMonthlyQuota').value)||null,
       manualOverride:   document.getElementById('configManualOverride').value,
       manualReason:     document.getElementById('configManualReason').value.trim(),
@@ -129,14 +127,13 @@ async function handleConfigSubmit(e) {
 
 async function handleManualSubmit(e) {
   e.preventDefault();
-  const userId = document.getElementById('manualUserIdTarget').value.trim();
-  if (!userId) return toast('請先在清單選取使用者', true);
+  const gid = document.getElementById('manualUserIdTarget').value.trim();
+  if (!gid) return toast('請先在清單選取群組', true);
   try {
-    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/manual`, { method:'PUT', body:JSON.stringify({
+    await api(`/admin/subscriptions/${encodeURIComponent(gid)}/manual`, { method:'PUT', body:JSON.stringify({
       action:       document.getElementById('manualAction').value,
       plan:         document.getElementById('manualPlanInput').value.trim()||undefined,
       days:         parseInt(document.getElementById('manualDaysInput').value)||undefined,
-      maxGroups:    parseInt(document.getElementById('manualMaxGroupsInput').value)||undefined,
       monthlyQuota: parseInt(document.getElementById('manualMonthlyQuotaInput').value)||undefined,
       reason:       document.getElementById('manualReasonInput').value.trim(),
     })});
@@ -146,12 +143,12 @@ async function handleManualSubmit(e) {
 
 async function handleUsageSubmit(e) {
   e.preventDefault();
-  const userId = document.getElementById('usageUserIdTarget').value.trim();
+  const gid = document.getElementById('usageUserIdTarget').value.trim();
   const monthKey = document.getElementById('usageMonthKey').value.trim();
-  if (!userId) return toast('請先在清單選取使用者', true);
+  if (!gid) return toast('請先在清單選取群組', true);
   if (!/^\d{4}-\d{2}$/.test(monthKey)) return toast('月份格式錯誤，請輸入 YYYY-MM', true);
   try {
-    await api(`/admin/subscriptions/${encodeURIComponent(userId)}/reset-usage`, { method:'POST', body:JSON.stringify({ monthKey }) });
+    await api(`/admin/subscriptions/${encodeURIComponent(gid)}/reset-usage`, { method:'POST', body:JSON.stringify({ monthKey }) });
     toast('✅ 用量已重置'); loadAllSubs();
   } catch(e) { toast(`重置失敗：${e.message}`, true); }
 }
@@ -171,7 +168,7 @@ async function loadDefaults() {
     document.getElementById('manualDays').value         = df.manualDays??30;
     document.getElementById('manualMaxGroups').value    = df.manualMaxGroups??5;
     document.getElementById('manualMonthlyQuota').value = df.manualMonthlyQuota??3000;
-    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入';
+    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入（每個群組加入時各自套用一次，之後不會互相影響）';
   } catch(e) { document.getElementById('defaultsHint').textContent=`讀取失敗：${e.message}`; }
 }
 
