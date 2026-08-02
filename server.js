@@ -1022,6 +1022,22 @@ async function saveIndustryForGroup(gid) {
 }
 
 // ✅ Step 3 (deleteGroupSettings): 退群時寫入 deletedGroups
+// 機器人被踢出／離開群組時的清理：只清掉語言/行業/邀請人綁定，
+// 「不」動到 groupSubscriptions（試用期/付費期限持續有效），也「不」加入永久封鎖清單。
+// 這樣如果之前額度或期限已到期，退出重加也一樣是到期狀態，除非付費續約才會恢復可用。
+async function leaveGroupCleanup(gid) {
+  await Promise.allSettled([
+    db.collection("groupLanguages").doc(gid).delete(),
+    db.collection("groupInviters").doc(gid).delete(),
+    db.collection("groupIndustries").doc(gid).delete(),
+  ]);
+  groupLang.delete(gid);
+  groupInviter.delete(gid);
+  groupIndustry.delete(gid);
+}
+
+// 後台手動「刪除群組設定」才會走到這裡，屬於管理員主動封鎖，
+// 會加入 deletedGroups 永久封鎖清單，需要管理員手動解除封鎖才能重新綁定。
 async function deleteGroupSettings(gid) {
   await Promise.allSettled([
     db.collection("groupLanguages").doc(gid).delete(),
@@ -2706,7 +2722,7 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
     }
   }
   if (event.type === "leave" && gid) {
-    await deleteGroupSettings(gid);
+    await leaveGroupCleanup(gid);
     return null;
   }
 
