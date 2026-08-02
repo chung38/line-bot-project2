@@ -213,14 +213,14 @@
 
     function renderProfile(data) {
       const isLinked = Boolean(data.lineLinked);
-      const used = Number(data.usage?.translationCount ?? 0);
-      const quota = Number(data.subscription?.monthlyQuota ?? 0);
-      const quotaText = quota > 0 ? quota.toLocaleString() : "無限制";
-      const status = data.subscription?.status || "INACTIVE";
-      const plan = data.subscription?.plan || "—";
-      const expiresAt = data.subscription?.expiresAt ? new Date(data.subscription.expiresAt) : null;
-      const expiresText = expiresAt
-        ? expiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
+      const summary = data.summary || {};
+      const groupCount = Number(summary.groupCount ?? 0);
+      const used = Number(summary.usedTotal ?? 0);
+      const quota = Number(summary.quotaTotal ?? 0);
+      const quotaText = groupCount === 0 ? "—" : (quota > 0 ? quota.toLocaleString() : "無限制");
+      const nearestExpiresAt = summary.nearestExpiresAt ? new Date(summary.nearestExpiresAt) : null;
+      const expiresText = nearestExpiresAt
+        ? nearestExpiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
         : "—";
 
       document.getElementById("profileStats").innerHTML = `
@@ -233,21 +233,21 @@
         </article>
 
         <article class="member-v2-metric">
-          <p>目前方案</p>
-          <strong>${escapeHtml(subscriptionLabel(status))}</strong>
-          <span class="member-v2-metric-note">${expiresAt ? `使用期限至 ${expiresText}` : escapeHtml(plan)}</span>
+          <p>管理群組數</p>
+          <strong>${groupCount}</strong>
+          <span class="member-v2-metric-note">各群組期限與額度各自獨立</span>
         </article>
 
         <article class="member-v2-metric">
-          <p>本月翻譯</p>
+          <p>本月翻譯（全部群組）</p>
           <strong>${used.toLocaleString()}</strong>
-          <span class="member-v2-metric-note">已使用次數</span>
+          <span class="member-v2-metric-note">已使用次數加總</span>
         </article>
 
         <article class="member-v2-metric">
-          <p>每月額度</p>
-          <strong>${quotaText}</strong>
-          <span class="member-v2-metric-note">方案可用額度</span>
+          <p>最近到期</p>
+          <strong>${expiresText}</strong>
+          <span class="member-v2-metric-note">詳見下方各群組期限</span>
         </article>
       `;
 
@@ -265,20 +265,12 @@
           </strong>
         </div>
         <div class="member-v2-detail-row">
-          <span>訂閱狀態</span>
-          <strong>
-            <span class="member-v2-status-badge ${subscriptionClass(status)}">
-              ${escapeHtml(subscriptionLabel(status))}
-            </span>
-          </strong>
+          <span>管理群組數</span>
+          <strong>${groupCount}</strong>
         </div>
         <div class="member-v2-detail-row">
-          <span>本月使用量</span>
+          <span>本月使用量（全部群組加總）</span>
           <strong>${used.toLocaleString()} / ${quotaText}</strong>
-        </div>
-        <div class="member-v2-detail-row">
-          <span>使用期限</span>
-          <strong>${expiresText}</strong>
         </div>
       `;
     }
@@ -469,14 +461,33 @@
         return;
       }
 
-      document.getElementById("groups").innerHTML = groups.map((group) => `
+      document.getElementById("groups").innerHTML = groups.map((group) => {
+        const sub = group.subscription;
+        const status = sub?.status || "INACTIVE";
+        const expiresAt = sub?.expiresAt ? new Date(sub.expiresAt) : null;
+        const expiresText = expiresAt
+          ? expiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
+          : "—";
+        const quotaText = sub ? (sub.quota > 0 ? sub.quota.toLocaleString() : "無限制") : "—";
+        const usedText = sub ? Number(sub.used || 0).toLocaleString() : "—";
+
+        return `
         <article class="member-v2-group-card">
           <div class="member-v2-group-card-head">
             <div>
               <h3>${escapeHtml(group.groupName || "未命名群組")}</h3>
               <p>${escapeHtml(group.gid)}</p>
             </div>
-            <span class="member-v2-status-badge success">已連線</span>
+            <span class="member-v2-status-badge ${subscriptionClass(status)}">${escapeHtml(subscriptionLabel(status))}</span>
+          </div>
+
+          <div class="member-v2-detail-row">
+            <span>使用期限</span>
+            <strong>${expiresText}</strong>
+          </div>
+          <div class="member-v2-detail-row">
+            <span>本月使用量</span>
+            <strong>${usedText} / ${quotaText}</strong>
           </div>
 
           <div class="member-v2-setting-block">
@@ -509,7 +520,8 @@
 
           <div id="save_${group.gid}" class="member-v2-save-state"></div>
         </article>
-      `).join("");
+      `;
+      }).join("");
     }
 
     async function updateGroup(gid) {
