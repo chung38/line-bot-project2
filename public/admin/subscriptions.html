@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>授權管理 — LINE BOT 管理台</title><link rel="stylesheet" href="../css/style.css"/></head>
-<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="../admin/index.html"><span class="ni">📊</span>Dashboard</a>
-<a class="nav-link" href="../admin/groups.html"><span class="ni">👥</span>群組設定</a>
-<a class="nav-link" href="../admin/industries.html"><span class="ni">🏭</span>行業主檔</a>
-<a class="nav-link  active" href="../admin/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
-<a class="nav-link" href="../admin/logs.html"><span class="ni">📋</span>操作紀錄</a>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-icon">🤖</div><div class="brand-text">LINE BOT<br><small>管理台</small></div></div><nav class="nav"><div class="nav-section">選單</div><a class="nav-link" href="/index.html"><span class="ni">📊</span>Dashboard</a>
+<a class="nav-link" href="/groups.html"><span class="ni">👥</span>群組設定</a>
+<a class="nav-link" href="/industries.html"><span class="ni">🏭</span>行業主檔</a>
+<a class="nav-link  active" href="/subscriptions.html"><span class="ni">🔑</span>授權管理</a>
+<a class="nav-link" href="/logs.html"><span class="ni">📋</span>操作紀錄</a>
 </nav></aside><div class="main">
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 <header class="topbar"><div style="display:flex;align-items:center;gap:10px"><button class="menu-toggle" id="menuToggle" aria-label="開啟選單">☰</button><div><div class="topbar-title">授權管理</div><div class="topbar-sub">查詢與設定訂閱狀態</div></div></div></header>
@@ -31,9 +31,9 @@
     </div>
   </div>
   <div class="panel">
-    <div class="panel-header"><h2><span class="ph-icon">👤</span>使用者清單</h2></div>
+    <div class="panel-header"><h2><span class="ph-icon">👥</span>群組清單</h2></div>
     <div class="filter-bar">
-      <div class="search-wrap"><span class="search-icon">🔍</span><input id="searchInput" type="text" class="field search-field" placeholder="搜尋使用者名稱 / ID / 狀態"/></div>
+      <div class="search-wrap"><span class="search-icon">🔍</span><input id="searchInput" type="text" class="field search-field" placeholder="搜尋群組名稱 / ID / 授權者 / 狀態"/></div>
       <select id="statusFilter" class="field" style="width:160px"><option value="">全部狀態</option><option value="TRIAL">TRIAL</option><option value="ACTIVE">ACTIVE</option><option value="MANUAL_ACTIVE">MANUAL_ACTIVE</option><option value="PAYMENT_FAILED">PAYMENT_FAILED</option><option value="INACTIVE">INACTIVE</option></select>
       <span id="listMeta" class="filter-count">— 筆</span>
     </div>
@@ -42,7 +42,7 @@
 </div>
 
 <div id="tab-config" class="tab-panel">
-  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">⚙️</span>設定授權 — <span id="selectedUserText" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
+  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">⚙️</span>設定授權 — <span id="selectedUserText" style="color:var(--blue);font-size:13px">請先從清單選取群組</span></h2></div>
   <div id="selectedSummary" class="detail-grid" style="margin-bottom:16px"></div>
   <form id="configForm" class="form-grid">
     <input id="configUserId" type="hidden"/>
@@ -51,7 +51,6 @@
     <div class="form-group"><label>付款狀態</label><input id="configLastPaymentStatus" type="text" class="field" placeholder="paid / failed / —"/></div>
     <div class="form-group"><label>試用到期</label><input id="configTrialEndsAt" type="datetime-local" class="field"/></div>
     <div class="form-group"><label>方案到期</label><input id="configCurrentPeriodEnd" type="datetime-local" class="field"/></div>
-    <div class="form-group"><label>群組上限</label><input id="configMaxGroups" type="number" class="field" min="0" placeholder="e.g. 5"/></div>
     <div class="form-group"><label>月額度</label><input id="configMonthlyQuota" type="number" class="field" min="0" placeholder="e.g. 3000"/></div>
     <div class="form-group"><label>手動覆寫</label><select id="configManualOverride" class="field"><option value="NONE">NONE</option><option value="FORCE_ACTIVE">FORCE_ACTIVE</option><option value="FORCE_INACTIVE">FORCE_INACTIVE</option></select></div>
     <div class="form-group"><label>覆寫原因</label><input id="configManualReason" type="text" class="field" placeholder="備注"/></div>
@@ -60,13 +59,12 @@
 </div>
 
 <div id="tab-manual" class="tab-panel">
-  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🛠</span>手動操作 — <span id="manualUserBadge" style="color:var(--blue);font-size:13px">請先從清單選取使用者</span></h2></div>
+  <div class="panel"><div class="panel-header"><h2><span class="ph-icon">🛠</span>手動操作 — <span id="manualUserBadge" style="color:var(--blue);font-size:13px">請先從清單選取群組</span></h2></div>
   <input id="manualUserIdTarget" type="hidden"/>
   <form id="manualForm" class="form-grid">
     <div class="form-group"><label>操作類型</label><select id="manualAction" class="field"><option value="activate">啟用（MANUAL_ACTIVE）</option><option value="deactivate">停用（INACTIVE）</option><option value="reset_trial">重設試用</option><option value="extend">延長方案</option></select></div>
     <div class="form-group"><label>方案名稱（選填）</label><input id="manualPlanInput" type="text" class="field" placeholder="manual / monthly…"/></div>
     <div class="form-group"><label>天數（延長/試用）</label><input id="manualDaysInput" type="number" class="field" min="1" placeholder="e.g. 30"/></div>
-    <div class="form-group"><label>群組上限（選填）</label><input id="manualMaxGroupsInput" type="number" class="field" min="1" placeholder="e.g. 5"/></div>
     <div class="form-group"><label>月額度（選填）</label><input id="manualMonthlyQuotaInput" type="number" class="field" min="1" placeholder="e.g. 3000"/></div>
     <div class="form-group full"><label>原因 / 備注</label><input id="manualReasonInput" type="text" class="field" placeholder="例如：客服補償"/></div>
     <div class="form-group full"><button type="submit" class="btn btn-primary">▶ 執行操作</button></div>
