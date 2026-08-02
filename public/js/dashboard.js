@@ -91,7 +91,7 @@ async function loadDashboard() {
               <div class="log-dot" style="background:var(--yellow)"></div>
               <div class="log-main">
                 <div class="log-action">
-                  ${escapeHtml(item.userId)}
+                  ${escapeHtml(item.gid)}
                   ${statusBadge(item.status)}
                 </div>
                 <div class="log-detail">
@@ -172,23 +172,18 @@ async function wakeServer() {
 }
 
 async function queryUser() {
-  const userId = document.getElementById("queryUserId").value.trim();
+  const gid = document.getElementById("queryUserId").value.trim();
   const resultEl = document.getElementById("queryResult");
 
-  if (!userId) {
-    toast("請輸入 LINE userId", true);
-    return;
-  }
-
-  if (!/^U[\w-]{10,}$/.test(userId)) {
-    toast("userId 格式不正確，應以 U 開頭", true);
+  if (!gid) {
+    toast("請輸入群組 ID", true);
     return;
   }
 
   resultEl.innerHTML = `<span style="color:#888;font-size:13px">查詢中...</span>`;
 
   try {
-    const d = await api(`/admin/subscriptions/${encodeURIComponent(userId)}`);
+    const d = await api(`/admin/subscriptions/${encodeURIComponent(gid)}`);
     const sub = d.subscription;
     const usage = d.usage;
 
@@ -197,7 +192,7 @@ async function queryUser() {
         <div class="empty-state" style="padding:16px 0">
           <div class="empty-icon">🔎</div>
           <div class="empty-title">找不到訂閱資料</div>
-          <div class="empty-desc">${escapeHtml(userId)}</div>
+          <div class="empty-desc">${escapeHtml(gid)}</div>
         </div>
       `;
       return;
@@ -206,10 +201,10 @@ async function queryUser() {
     resultEl.innerHTML = `
       <div class="panel" style="margin-top:8px;background:var(--surface-2,#f8f9fa)">
         <table class="table" style="font-size:13px">
-          <tr><th>使用者</th><td>${escapeHtml(d.displayName || userId)}<br><small style="color:#888">${escapeHtml(userId)}</small></td></tr>
+          <tr><th>群組</th><td>${escapeHtml(d.groupName || gid)}<br><small style="color:#888">${escapeHtml(gid)}</small></td></tr>
+          <tr><th>授權者</th><td>${escapeHtml(d.inviterName || d.userId || "—")}</td></tr>
           <tr><th>狀態</th><td>${statusBadge(sub.status)}</td></tr>
           <tr><th>方案</th><td>${escapeHtml(sub.plan || "—")}</td></tr>
-          <tr><th>最大群組</th><td>${sub.maxGroups ?? "—"} ／ 已綁定 ${d.groupsCount ?? 0} 個</td></tr>
           <tr><th>月額度</th><td>${formatQuota(usage?.translationCount, sub.monthlyQuota)}</td></tr>
           <tr><th>試用到期</th><td>${sub.trialEndsAt ? formatTime(sub.trialEndsAt) : "—"}</td></tr>
           <tr><th>訂閱到期</th><td>${sub.currentPeriodEnd ? formatTime(sub.currentPeriodEnd) : "—"}</td></tr>
@@ -217,7 +212,7 @@ async function queryUser() {
           <tr><th>備註</th><td>${escapeHtml(sub.manualReason || "—")}</td></tr>
         </table>
         <div style="padding:8px 0">
-          <a class="btn btn-primary btn-sm" href="subscriptions.html?userId=${encodeURIComponent(userId)}">前往訂閱管理</a>
+          <a class="btn btn-primary btn-sm" href="subscriptions.html?gid=${encodeURIComponent(gid)}">前往訂閱管理</a>
         </div>
       </div>
     `;
