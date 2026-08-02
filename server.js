@@ -546,20 +546,20 @@ function parseOptionalDateInput(value, fallback = undefined) {
   return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
-async function getSubscriptionByUserId(userId) {
-  if (!userId) return null;
-  const doc = await db.collection("userSubscriptions").doc(userId).get();
+async function getSubscriptionByGroupId(gid) {
+  if (!gid) return null;
+  const doc = await db.collection("groupSubscriptions").doc(gid).get();
   return doc.exists ? doc.data() : null;
 }
 
-async function getMonthlyUsage(userId, monthKey = getMonthKey()) {
+async function getGroupUsage(gid, monthKey = getMonthKey()) {
   const normalizedMonthKey = normalizeMonthKey(monthKey);
-  const id = `${userId}_${normalizedMonthKey}`;
+  const id = `${gid}_${normalizedMonthKey}`;
   const doc = await db.collection("usageMonthly").doc(id).get();
 
   if (!doc.exists) {
     return {
-      userId,
+      gid,
       monthKey: normalizedMonthKey,
       translationCount: 0,
       charCount: 0,
@@ -569,14 +569,14 @@ async function getMonthlyUsage(userId, monthKey = getMonthKey()) {
   return doc.data();
 }
 
-async function incrementMonthlyUsage(userId, translationCount = 1, charCount = 0) {
-  if (!userId) return;
+async function incrementGroupUsage(gid, translationCount = 1, charCount = 0) {
+  if (!gid) return;
   const monthKey = getMonthKey();
-  const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
+  const ref = db.collection("usageMonthly").doc(`${gid}_${monthKey}`);
 
   await ref.set(
     {
-      userId,
+      gid,
       monthKey,
       translationCount: admin.firestore.FieldValue.increment(translationCount),
       charCount: admin.firestore.FieldValue.increment(charCount),
@@ -593,10 +593,11 @@ async function countGroupsByInviter(userId) {
   return snap.size;
 }
 
-async function ensureSubscriptionDoc(userId) {
-  if (!userId) return null;
+// 每個群組各自獨立的訂閱資料（試用期、額度、到期日都以「群組加入時間」各自起算）
+async function ensureGroupSubscriptionDoc(gid, userId) {
+  if (!gid) return null;
 
-  const ref = db.collection("userSubscriptions").doc(userId);
+  const ref = db.collection("groupSubscriptions").doc(gid);
   const doc = await ref.get();
   if (doc.exists) return doc.data();
 
@@ -606,12 +607,12 @@ async function ensureSubscriptionDoc(userId) {
   trialEnd.setDate(trialEnd.getDate() + defaults.trialDays);
 
   const initData = {
-    userId,
+    gid,
+    userId: userId || null,
     status: SUBSCRIPTION_STATUS.TRIAL,
     plan: "trial",
     trialEndsAt: trialEnd,
     currentPeriodEnd: null,
-    maxGroups: defaults.trialMaxGroups,
     monthlyQuota: defaults.trialMonthlyQuota,
     usedQuota: 0,
     manualOverride: MANUAL_OVERRIDE.NONE,
@@ -637,31 +638,9 @@ async function getBoundGroupsByInviter(userId) {
   }));
 }
 
+// 群組彼此獨立計費，不再有「同一授權最多綁定幾個群組」的共用上限
 async function canBindGroupToInviter(userId, gid) {
-  const sub = await ensureSubscriptionDoc(userId);
-  const maxGroups = Number(sub?.maxGroups || 0);
-
-  if (maxGroups <= 0) {
-    return { ok: true, sub };
-  }
-
-  const groups = await getBoundGroupsByInviter(userId);
-  const alreadyBound = groups.some(x => x.gid === gid);
-
-  if (alreadyBound) {
-    return { ok: true, sub, alreadyBound: true };
-  }
-
-  if (groups.length >= maxGroups) {
-    return {
-      ok: false,
-      code: "BIND_GROUP_LIMIT",
-      sub,
-      message: `此授權最多只能綁定 ${maxGroups} 個群組，請先移除舊群組或升級方案。`,
-    };
-  }
-
-  return { ok: true, sub };
+  return { ok: true };
 }
 
 async function canUseGroup(gid) {
@@ -670,7 +649,7 @@ async function canUseGroup(gid) {
     return { ok: false, code: "NO_INVITER", message: "此群組尚未綁定授權者。" };
   }
 
-  const sub = await ensureSubscriptionDoc(inviterUserId);
+  const sub = await ensureGroupSubscriptionDoc(gid, inviterUserId);
   const now = new Date();
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
@@ -687,7 +666,7 @@ async function canUseGroup(gid) {
     return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub };
   }
 
-  const usage = await getMonthlyUsage(inviterUserId);
+  const usage = await getGroupUsage(gid);
 
   if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
     return {
@@ -696,7 +675,7 @@ async function canUseGroup(gid) {
       inviterUserId,
       sub,
       usage,
-      message: `本月額度已用完（${sub.monthlyQuota}）。`,
+      message: `本群組本月額度已用完（${sub.monthlyQuota}）。`,
     };
   }
 
@@ -867,6 +846,7 @@ async function ensureInviterIfMissing(gid, uid) {
     boundAt: admin.firestore.FieldValue.serverTimestamp(),
     createdBy: uid,
   });
+  await ensureGroupSubscriptionDoc(gid, uid);
 
   return { ok: true, inviter: uid };
 }
@@ -1375,7 +1355,7 @@ const shouldSkipSourceLanguage =
 
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
-  await incrementMonthlyUsage(ownerUserId, 1, masked.length);
+  await incrementGroupUsage(gid, 1, masked.length);
 }
 
 async function fetchImageUrlsByDate(gid, dateStr) {
@@ -1642,22 +1622,22 @@ adminRouter.get("/dashboard", async (req, res) => {
 
     const [logSnapshot, subscriptionSnapshot, usageSnapshot] = await Promise.all([
       db.collection("adminLogs").orderBy("createdAt", "desc").limit(20).get(),
-      db.collection("userSubscriptions").get(),
+      db.collection("groupSubscriptions").get(),
       db.collection("usageMonthly").where("monthKey", "==", monthKey).get(),
     ]);
 
-    const usageByUser = new Map();
+    const usageByGroup = new Map();
     let monthlyTranslations = 0;
     let monthlyChars = 0;
 
     usageSnapshot.forEach(doc => {
       const usage = doc.data();
-      const userId = usage.userId;
+      const usageGid = usage.gid;
       const translationCount = Number(usage.translationCount || 0);
       const charCount = Number(usage.charCount || 0);
 
-      if (userId) {
-        usageByUser.set(userId, {
+      if (usageGid) {
+        usageByGroup.set(usageGid, {
           translationCount,
           charCount,
           monthKey: usage.monthKey || monthKey,
@@ -1687,10 +1667,10 @@ adminRouter.get("/dashboard", async (req, res) => {
 
     subscriptionSnapshot.forEach(doc => {
       const sub = doc.data();
-      const userId = doc.id;
+      const subGid = doc.id;
       const status = normalizeSubscriptionStatus(sub.status);
       const manualOverride = normalizeManualOverride(sub.manualOverride);
-      const usage = usageByUser.get(userId) || {
+      const usage = usageByGroup.get(subGid) || {
         translationCount: 0,
         charCount: 0,
       };
@@ -1726,7 +1706,8 @@ adminRouter.get("/dashboard", async (req, res) => {
         status !== SUBSCRIPTION_STATUS.PAYMENT_FAILED
       ) {
         expiringSoon.push({
-          userId,
+          gid: subGid,
+          userId: sub.userId || null,
           status,
           plan: sub.plan || "",
           expiresAt,
@@ -1774,31 +1755,23 @@ adminRouter.get("/groups", async (req, res) => {
     const monthKey = getMonthKey();
     const allGids = getAllKnownGroupIds();
 
-    const inviterIds = [
-      ...new Set(
-        allGids
-          .map(gid => groupInviter.get(gid))
-          .filter(Boolean)
-      ),
-    ];
-
     const [subscriptionDocs, usageDocs] = await Promise.all([
       Promise.all(
-        inviterIds.map(async userId => [
-          userId,
-          await getSubscriptionByUserId(userId),
+        allGids.map(async gid => [
+          gid,
+          await getSubscriptionByGroupId(gid),
         ])
       ),
       Promise.all(
-        inviterIds.map(async userId => [
-          userId,
-          await getMonthlyUsage(userId, monthKey),
+        allGids.map(async gid => [
+          gid,
+          await getGroupUsage(gid, monthKey),
         ])
       ),
     ]);
 
-    const subscriptionByUser = new Map(subscriptionDocs);
-    const usageByUser = new Map(usageDocs);
+    const subscriptionByGid = new Map(subscriptionDocs);
+    const usageByGid = new Map(usageDocs);
 
     const groups = await Promise.all(
       allGids.map(async gid => {
@@ -1830,17 +1803,14 @@ adminRouter.get("/groups", async (req, res) => {
           }
         }
 
-        const rawSub = inviter ? subscriptionByUser.get(inviter) : null;
-        const rawUsage = inviter
-          ? usageByUser.get(inviter)
-          : { translationCount: 0, charCount: 0, monthKey };
+        const rawSub = subscriptionByGid.get(gid);
+        const rawUsage = usageByGid.get(gid) || { translationCount: 0, charCount: 0, monthKey };
 
         const subscription = rawSub
           ? {
               status: normalizeSubscriptionStatus(rawSub.status),
               plan: rawSub.plan || "",
               monthlyQuota: Number(rawSub.monthlyQuota || 0),
-              maxGroups: Number(rawSub.maxGroups || 0),
               trialEndsAt: rawSub.trialEndsAt || null,
               currentPeriodEnd: rawSub.currentPeriodEnd || null,
               manualOverride: normalizeManualOverride(rawSub.manualOverride),
@@ -2136,19 +2106,33 @@ adminRouter.get("/logs", async (req, res) => {
 
 adminRouter.get("/subscriptions", async (req, res) => {
   try {
-    const snapshot = await db.collection("userSubscriptions").get();
+    const snapshot = await db.collection("groupSubscriptions").get();
 
     const items = await Promise.all(
       snapshot.docs.map(async (doc) => {
-        const userId = doc.id;
-        const displayName = await getUserDisplayNameByUserId(userId);
-        const groupsCount = await countGroupsByInviter(userId);
+        const gid = doc.id;
+        const sub = doc.data();
+        const inviter = sub.userId || groupInviter.get(gid) || null;
+
+        let groupName = null;
+        let inviterName = null;
+        try {
+          const summary = await client.getGroupSummary(gid);
+          groupName = summary?.groupName || null;
+        } catch {}
+        if (inviter) {
+          try {
+            const profile = await client.getGroupMemberProfile(gid, inviter);
+            inviterName = profile?.displayName || inviter;
+          } catch {}
+        }
 
         return {
-          userId,
-          displayName: displayName || "",
-          groupsCount,
-          ...doc.data(),
+          gid,
+          groupName: groupName || "",
+          userId: inviter || "",
+          inviterName: inviterName || "",
+          ...sub,
         };
       })
     );
@@ -2199,59 +2183,72 @@ adminRouter.put("/subscription-defaults", async (req, res) => {
   }
 });
 
-adminRouter.get("/subscriptions/:userId", async (req, res) => {
+adminRouter.get("/subscriptions/:gid", async (req, res) => {
   try {
-    const userId = req.params.userId;
-    const sub = await getSubscriptionByUserId(userId);
-    const usage = await getMonthlyUsage(userId);
-    const groupsCount = await countGroupsByInviter(userId);
-    const displayName = await getUserDisplayNameByUserId(userId);
+    const gid = req.params.gid;
+    const sub = await getSubscriptionByGroupId(gid);
+    const usage = await getGroupUsage(gid);
+    const inviter = sub?.userId || groupInviter.get(gid) || null;
+
+    let groupName = null;
+    let inviterName = null;
+    try {
+      const summary = await client.getGroupSummary(gid);
+      groupName = summary?.groupName || null;
+    } catch {}
+    if (inviter) {
+      try {
+        const profile = await client.getGroupMemberProfile(gid, inviter);
+        inviterName = profile?.displayName || inviter;
+      } catch {}
+    }
 
     res.json({
       success: true,
-      userId,
-      displayName: displayName || "",
+      gid,
+      groupName: groupName || "",
+      userId: inviter || "",
+      inviterName: inviterName || "",
       subscription: sub
         ? {
             ...sub,
-            userId,
-            displayName: displayName || "",
+            gid,
+            groupName: groupName || "",
           }
         : null,
       usage,
-      groupsCount,
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// ✅ 新增：刪除使用者授權資料
-adminRouter.delete("/subscriptions/:userId", async (req, res) => {
+// ✅ 刪除群組授權資料
+adminRouter.delete("/subscriptions/:gid", async (req, res) => {
   try {
-    const { userId } = req.params;
-    if (!userId) return res.status(400).json({ success: false, error: "缺少 userId" });
+    const { gid } = req.params;
+    if (!gid) return res.status(400).json({ success: false, error: "缺少 gid" });
 
-    await db.collection("userSubscriptions").doc(userId).delete();
+    await db.collection("groupSubscriptions").doc(gid).delete();
 
     await addAdminLog(
       "DELETE_SUBSCRIPTION",
-      `刪除使用者授權 ${userId}`,
+      `刪除群組授權 ${gid}`,
       req.auth.user,
-      { userId }
+      { gid }
     );
 
-    res.json({ success: true, userId });
+    res.json({ success: true, gid });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 // 設定授權
-adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
+adminRouter.put("/subscriptions/:gid/config", async (req, res) => {
   try {
-    const { userId } = req.params;
-    if (!isValidLineUserId(userId)) {
-      return res.status(400).json({ error: "userId 格式不正確" });
+    const { gid } = req.params;
+    if (!gid) {
+      return res.status(400).json({ error: "缺少 gid" });
     }
 
     const {
@@ -2260,21 +2257,19 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
       lastPaymentStatus,
       trialEndsAt,
       currentPeriodEnd,
-      maxGroups,
       monthlyQuota,
       manualOverride,
       manualReason,
     } = req.body;
 
     const payload = {
-      userId,
+      gid,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     if (status !== undefined)           payload.status           = normalizeSubscriptionStatus(status);
     if (plan !== undefined)             payload.plan             = String(plan || "").trim();
     if (lastPaymentStatus !== undefined) payload.lastPaymentStatus = String(lastPaymentStatus || "").trim();
-    if (maxGroups !== undefined)        payload.maxGroups        = toSafeInt(maxGroups, 0, 0);
     if (monthlyQuota !== undefined)     payload.monthlyQuota     = toSafeInt(monthlyQuota, 0, 0);
     if (manualOverride !== undefined)   payload.manualOverride   = normalizeManualOverride(manualOverride);
     if (manualReason !== undefined)     payload.manualReason     = String(manualReason || "").trim();
@@ -2285,35 +2280,38 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
     const periodDate = parseOptionalDateInput(currentPeriodEnd);
     if (periodDate !== undefined)       payload.currentPeriodEnd = periodDate;
 
-    const ref = db.collection("userSubscriptions").doc(userId);
+    const ref = db.collection("groupSubscriptions").doc(gid);
     const snap = await ref.get();
-    if (!snap.exists) payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    if (!snap.exists) {
+      payload.userId = groupInviter.get(gid) || null;
+      payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    }
 
     await ref.set(payload, { merge: true });
 
-    await addAdminLog("subscription_config", `設定授權 ${userId}`, "admin", payload);
+    await addAdminLog("subscription_config", `設定群組授權 ${gid}`, "admin", payload);
 
     res.json({ ok: true });
   } catch (e) {
-    console.error("PUT /subscriptions/:userId/config 錯誤:", e.message);
+    console.error("PUT /subscriptions/:gid/config 錯誤:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
-adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
+adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const gid = req.params.gid;
     const defaults = await getSubscriptionDefaults();
 
     const action = normalizeManualAction(req.body?.action);
     const plan = String(req.body?.plan ?? defaults.manualPlan).trim() || defaults.manualPlan;
     const days = toSafeInt(req.body?.days, defaults.manualDays, 1);
-    const maxGroups = toSafeInt(req.body?.maxGroups, defaults.manualMaxGroups, 0);
     const monthlyQuota = toSafeInt(req.body?.monthlyQuota, defaults.manualMonthlyQuota, 0);
     const reason = String(req.body?.reason || "").trim();
 
-    const ref = db.collection("userSubscriptions").doc(userId);
+    const ref = db.collection("groupSubscriptions").doc(gid);
     const snap = await ref.get();
     const current = snap.exists ? snap.data() : null;
+    const userId = current?.userId || groupInviter.get(gid) || null;
 
     if (action === "activate") {
       const now = new Date();
@@ -2324,11 +2322,11 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       end.setDate(end.getDate() + days);
 
       const payload = {
+        gid,
         userId,
         status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
         plan,
         currentPeriodEnd: end,
-        maxGroups,
         monthlyQuota,
         manualOverride: MANUAL_OVERRIDE.NONE,
         manualReason: reason || "admin manual activate",
@@ -2344,6 +2342,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       await ref.set(payload, { merge: true });
     } else if (action === "deactivate") {
       const payload = {
+        gid,
         userId,
         status: SUBSCRIPTION_STATUS.INACTIVE,
         manualOverride: MANUAL_OVERRIDE.NONE,
@@ -2358,6 +2357,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       await ref.set(payload, { merge: true });
     } else if (action === "force_active") {
       const payload = {
+        gid,
         userId,
         manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
         manualReason: reason || "admin force active",
@@ -2373,6 +2373,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       await ref.set(payload, { merge: true });
     } else if (action === "force_inactive") {
       const payload = {
+        gid,
         userId,
         manualOverride: MANUAL_OVERRIDE.FORCE_INACTIVE,
         manualReason: reason || "admin force inactive",
@@ -2397,10 +2398,10 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       return res.status(400).json({ success: false, error: `不支援的 action: ${action}` });
     }
 
-    await addAdminLog("MANUAL_SUBSCRIPTION", `手動操作 ${userId} → ${action}`, req.auth.user, { userId, action, plan, days, maxGroups, monthlyQuota, reason });
+    await addAdminLog("MANUAL_SUBSCRIPTION", `手動操作群組 ${gid} → ${action}`, req.auth.user, { gid, action, plan, days, monthlyQuota, reason });
 
-    const updated = await getSubscriptionByUserId(userId);
-    res.json({ success: true, userId, subscription: updated });
+    const updated = await getSubscriptionByGroupId(gid);
+    res.json({ success: true, gid, subscription: updated });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -2481,27 +2482,49 @@ app.get("/api/member/me", requireMemberSession, async (req, res) => {
     const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
     const user = userDoc.exists ? userDoc.data() : {};
 
-    let subscription = null;
-    let usage = null;
+    let summary = null;
 
     if (user.lineUserId) {
-      subscription = await getSubscriptionByUserId(user.lineUserId);
-      usage = await getMonthlyUsage(user.lineUserId);
+      const boundGroups = await getBoundGroupsByInviter(user.lineUserId);
 
-      if (subscription) {
-        const status = normalizeSubscriptionStatus(subscription.status);
-        const expiresAt = status === SUBSCRIPTION_STATUS.TRIAL
-          ? toDateSafe(subscription.trialEndsAt)
-          : toDateSafe(subscription.currentPeriodEnd);
+      const perGroup = await Promise.all(
+        boundGroups.map(async (g) => {
+          const sub = await getSubscriptionByGroupId(g.gid);
+          const usage = await getGroupUsage(g.gid);
+          if (!sub) return null;
 
-        subscription = {
-          ...subscription,
-          expiresAt: expiresAt ? expiresAt.toISOString() : null,
-        };
-      }
+          const status = normalizeSubscriptionStatus(sub.status);
+          const expiresAt = status === SUBSCRIPTION_STATUS.TRIAL
+            ? toDateSafe(sub.trialEndsAt)
+            : toDateSafe(sub.currentPeriodEnd);
+
+          return {
+            gid: g.gid,
+            status,
+            used: Number(usage.translationCount || 0),
+            quota: Number(sub.monthlyQuota || 0),
+            expiresAt,
+          };
+        })
+      );
+
+      const validGroups = perGroup.filter(Boolean);
+      const usedTotal = validGroups.reduce((sum, g) => sum + g.used, 0);
+      const quotaTotal = validGroups.reduce((sum, g) => sum + g.quota, 0);
+      const nearestExpiry = validGroups
+        .map(g => g.expiresAt)
+        .filter(Boolean)
+        .sort((a, b) => a - b)[0] || null;
+
+      summary = {
+        groupCount: validGroups.length,
+        usedTotal,
+        quotaTotal,
+        nearestExpiresAt: nearestExpiry ? nearestExpiry.toISOString() : null,
+      };
     }
 
-    res.json({ ...user, subscription, usage });
+    res.json({ ...user, summary });
   } catch (e) {
     console.error("GET /api/member/me:", e.message);
     res.status(500).json({ error: e.message });
@@ -2530,12 +2553,37 @@ app.get("/api/member/groups", requireMemberSession, async (req, res) => {
           groupName = summary?.groupName || null;
         } catch {}
 
+        const sub = await getSubscriptionByGroupId(g.gid);
+        const usage = await getGroupUsage(g.gid);
+
+        let status = null;
+        let expiresAt = null;
+        let quota = 0;
+        let used = 0;
+
+        if (sub) {
+          status = normalizeSubscriptionStatus(sub.status);
+          expiresAt = status === SUBSCRIPTION_STATUS.TRIAL
+            ? toDateSafe(sub.trialEndsAt)
+            : toDateSafe(sub.currentPeriodEnd);
+          quota = Number(sub.monthlyQuota || 0);
+          used = Number(usage.translationCount || 0);
+        }
+
         return {
           gid: g.gid,
           groupName,
           langs: [...(groupLang.get(g.gid) || new Set())],
           industry: groupIndustry.get(g.gid) || null,
-          industryOptions
+          industryOptions,
+          subscription: sub
+            ? {
+                status,
+                expiresAt: expiresAt ? expiresAt.toISOString() : null,
+                quota,
+                used,
+              }
+            : null,
         };
       })
     );
@@ -2643,8 +2691,6 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
             usedByLineUserId: lineUserId
           });
         });
-
-        await ensureSubscriptionDoc(lineUserId);
 
         await safeReply(replyToken, "✅ 綁定成功！請回到會員頁面重新整理，即可查看群組與方案設定。");
       } catch (error) {
@@ -2779,7 +2825,7 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
         return null;
       }
 
-      await safeReplyOrPush(replyToken, gid, "✅ 綁定完成！之後可在會員中心管理此群組，開啟語言與行業別設定。");
+      await safeReplyOrPush(replyToken, gid, "✅ 綁定完成！之後可在會員中心管理此群組，或輸入「!設定」開啟語言與行業別設定。");
       return null;
     }
 
