@@ -664,101 +664,45 @@ async function getBoundGroupsByInviter(userId) {
 }
 
 // 群組彼此獨立計費，不再有「同一授權最多綁定幾個群組」的共用上限
-async function canBindGroupToInviter(userId, gid) {
-  return { ok: true };
-}
-
 async function canUseGroup(gid) {
-  const inviterUserId = groupInviter.get(gid);
-  if (!gid || !inviterUserId) {
-    return { ok: false, code: "NO_INVITER", message: "此群組尚未綁定授權者。" };
+  if (!gid) {
+    return { ok: false, code: "NO_GID", message: "缺少 gid。" };
   }
 
-  const sub = await ensureGroupSubscriptionDoc(gid, inviterUserId);
+  const sub = await ensureGroupSubscriptionDoc(gid);
   const now = new Date();
+  const usage = await getGroupUsage(gid);
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
-    return {
-      ok: false,
-      code: "FORCE_INACTIVE",
-      inviterUserId,
-      sub,
-      message: "此授權已被後台手動停用。"
-    };
+    return { ok: false, code: "FORCE_INACTIVE", sub, usage, message: "此訂閱已被後台手動停用。" };
   }
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
-    return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub };
+    return { ok: true, code: "FORCE_ACTIVE", sub, usage };
   }
 
-  const usage = await getGroupUsage(gid);
-
   if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
-    return {
-      ok: false,
-      code: "QUOTA_EXCEEDED",
-      inviterUserId,
-      sub,
-      usage,
-      message: `本群組本月額度已用完（${sub.monthlyQuota}）。`,
-    };
+    return { ok: false, code: "QUOTA_EXCEEDED", sub, usage, message: `本群組本月額度已用完（${sub.monthlyQuota}）。` };
   }
 
   if (sub.status === SUBSCRIPTION_STATUS.TRIAL) {
     const trialEndsAt = toDateSafe(sub.trialEndsAt);
-    if (trialEndsAt && trialEndsAt >= now) {
-      return { ok: true, code: "TRIAL_OK", inviterUserId, sub, usage };
-    }
-    return {
-      ok: false,
-      code: "TRIAL_EXPIRED",
-      inviterUserId,
-      sub,
-      usage,
-      message: "試用已到期，請完成付款。"
-    };
+    if (trialEndsAt && trialEndsAt >= now) return { ok: true, code: "TRIAL_OK", sub, usage };
+    return { ok: false, code: "TRIAL_EXPIRED", sub, usage, message: "試用已到期，請完成付款。" };
   }
 
-  if (
-    sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
-    sub.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE
-  ) {
+  if (sub.status === SUBSCRIPTION_STATUS.ACTIVE || sub.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE) {
     const currentPeriodEnd = toDateSafe(sub.currentPeriodEnd);
-    if (!currentPeriodEnd || currentPeriodEnd >= now) {
-      return { ok: true, code: "ACTIVE_OK", inviterUserId, sub, usage };
-    }
-    return {
-      ok: false,
-      code: "SUB_EXPIRED",
-      inviterUserId,
-      sub,
-      usage,
-      message: "訂閱已到期。"
-    };
+    if (!currentPeriodEnd || currentPeriodEnd >= now) return { ok: true, code: "ACTIVE_OK", sub, usage };
+    return { ok: false, code: "SUB_EXPIRED", sub, usage, message: "訂閱已到期。" };
   }
 
   if (sub.status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) {
-    return {
-      ok: false,
-      code: "PAYMENT_FAILED",
-      inviterUserId,
-      sub,
-      usage,
-      message: "付款失敗，已停用服務。"
-    };
+    return { ok: false, code: "PAYMENT_FAILED", sub, usage, message: "付款失敗，已停用服務。" };
   }
 
-  return {
-    ok: false,
-    code: "INACTIVE",
-    inviterUserId,
-    sub,
-    usage,
-    message: "尚未開通訂閱。"
-  };
+  return { ok: false, code: "INACTIVE", sub, usage, message: "尚未開通訂閱。" };
 }
-
-
 async function activateGroupPaidSubscription(gid, options = {}) {
   const defaults = await getSubscriptionDefaults();
   const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
