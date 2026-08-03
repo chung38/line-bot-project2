@@ -759,15 +759,13 @@ async function canUseGroup(gid) {
 }
 
 
-async function activatePaidSubscription(userId, options = {}) {
+async function activateGroupPaidSubscription(gid, options = {}) {
   const defaults = await getSubscriptionDefaults();
-
   const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
   const months = toSafeInt(options.months, defaults.paidMonths, 1);
-  const maxGroups = toSafeInt(options.maxGroups, defaults.paidMaxGroups, 0);
   const monthlyQuota = toSafeInt(options.monthlyQuota, defaults.paidMonthlyQuota, 0);
 
-  const ref = db.collection("userSubscriptions").doc(userId);
+  const ref = db.collection("groupSubscriptions").doc(gid);
   const snap = await ref.get();
   const current = snap.exists ? snap.data() : null;
 
@@ -779,11 +777,10 @@ async function activatePaidSubscription(userId, options = {}) {
   end.setMonth(end.getMonth() + months);
 
   const payload = {
-    userId,
+    gid,
     status: SUBSCRIPTION_STATUS.ACTIVE,
     plan,
     currentPeriodEnd: end,
-    maxGroups,
     monthlyQuota,
     manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
@@ -793,13 +790,14 @@ async function activatePaidSubscription(userId, options = {}) {
 
   if (!snap.exists) {
     payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    payload.trialEndsAt = null;
+    payload.usedQuota = 0;
   }
 
   await ref.set(payload, { merge: true });
 }
-
-async function markPaymentFailed(userId) {
-  const ref = db.collection("userSubscriptions").doc(userId);
+async function markGroupPaymentFailed(gid){
+  const ref = db.collection("groupSubscriptions").doc(gid);
   const snap = await ref.get();
   const current = snap.exists ? snap.data() : null;
 
@@ -810,7 +808,7 @@ async function markPaymentFailed(userId) {
   if (isManualProtected) {
     await ref.set(
       {
-        userId,
+        gid,
         lastPaymentStatus: "failed",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
@@ -821,7 +819,7 @@ async function markPaymentFailed(userId) {
 
   await ref.set(
     {
-      userId,
+      gid,
       status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
       lastPaymentStatus: "failed",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2559,27 +2557,28 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
     const decrypted = aesDecrypt(TradeInfo);
     const result = JSON.parse(decrypted);
 
-    if (result.Status === "SUCCESS") {
-      const orderNo = result.Result.MerchantOrderNo;
-      const orderRef = db.collection("paymentOrders").doc(orderNo);
-      const orderSnap = await orderRef.get();
-      if (!orderSnap.exists) return res.status(404).send("0|OrderNotFound");
+if (result.Status === "SUCCESS") {
+  const orderNo = result.Result.MerchantOrderNo;
+  const orderRef = db.collection("paymentOrders").doc(orderNo);
+  const orderSnap = await orderRef.get();
+  if (!orderSnap.exists) return res.status(404).send("0|OrderNotFound");
 
-      const order = orderSnap.data();
-      if (order.status !== "paid") {
-        await activatePaidSubscription(order.userId, {
-          plan: order.plan,
-          months: order.months,
-          maxGroups: 5,
-          monthlyQuota: 3000
-        });
-        await orderRef.set({
-          status: "paid",
-          paidAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        await addAdminLog("PAYMENT_SUCCESS", `${order.userId} ${order.plan}`, "system", { orderNo });
-      }
-    }
+  const order = orderSnap.data();
+  if (order.status !== "paid") {
+    await activateGroupPaidSubscription(order.gid, {
+      plan: order.plan,
+      months: order.months,
+      monthlyQuota: order.plan === "yearly" ? 3000 : 300,
+    });
+
+    await orderRef.set({
+      status: "paid",
+      paidAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await addAdminLog("PAYMENT_SUCCESS", `${order.gid} ${order.plan}`, "system", { orderNo });
+  }
+}
     res.send("1|OK");
   } catch (e) {
     console.error("payment-notify 錯誤", e.message);
