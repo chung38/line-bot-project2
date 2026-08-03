@@ -14,14 +14,20 @@ import { Client, middleware } from "@line/bot-sdk";
 import crypto from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
+const NEWEBPAY_MERCHANT_ID = process.env.NEWEBPAY_MERCHANT_ID;
+const NEWEBPAY_HASHKEY = process.env.NEWEBPAY_HASHKEY;
+const NEWEBPAY_HASHIV = process.env.NEWEBPAY_HASHIV;
+const NEWEBPAY_MPG_URL = process.env.NEWEBPAY_MPG_URL || "https://ccore.newebpay.com/MPG/mpg_gateway";
 const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
   "OPENAI_API_KEY",
   "FIREBASE_CONFIG",
   "ADMIN_USER",
-  "ADMIN_PASS"
+  "ADMIN_PASS",
+  "NEWEBPAY_MERCHANT_ID",
+  "NEWEBPAY_HASHKEY",
+  "NEWEBPAY_HASHIV"
 ];
 
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
@@ -45,7 +51,26 @@ try {
   console.error("❌ Firebase 初始化失敗:", e);
   process.exit(1);
 }
+function aesEncrypt(data) {
+  const cipher = crypto.createCipheriv("aes-256-cbc", NEWEBPAY_HASHKEY, NEWEBPAY_HASHIV);
+  cipher.setAutoPadding(true);
+  let encrypted = cipher.update(data, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return encrypted;
+}
 
+function aesDecrypt(data) {
+  const decipher = crypto.createDecipheriv("aes-256-cbc", NEWEBPAY_HASHKEY, NEWEBPAY_HASHIV);
+  decipher.setAutoPadding(true);
+  let decrypted = decipher.update(data, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+function shaEncrypt(tradeInfo) {
+  const str = `HashKey=${NEWEBPAY_HASHKEY}&${tradeInfo}&HashIV=${NEWEBPAY_HASHIV}`;
+  return crypto.createHash("sha256").update(str).digest("hex").toUpperCase();
+}
 const app = express();
 app.set("trust proxy", 1);
 
@@ -2462,7 +2487,105 @@ app.post("/api/member/session-login", async (req, res) => {
 app.post("/api/member/logout", (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
+app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const { gid, plan } = req.body;
+    if (!gid || !["monthly", "yearly"].includes(plan)) {
+      return res.status(400).json({ error: "缺少 gid 或 plan 錯誤" });
+    }
 
+    const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
+    const user = userDoc.exists ? userDoc.data() : {};
+    if (!user.lineUserId) return res.status(403).json({ error: "尚未綁定 LINE" });
+
+    const isOwner = groupInviter.get(gid) === user.lineUserId;
+    if (!isOwner) return res.status(403).json({ error: "非此群組管理者" });
+
+    const amount = plan === "yearly" ? 3000 : 300;
+    const months = plan === "yearly" ? 12 : 1;
+    const orderNo = "ORD" + Date.now() + Math.floor(Math.random() * 1000);
+
+    await db.collection("paymentOrders").doc(orderNo).set({
+      userId: user.lineUserId,
+      firebaseUid,
+      gid,
+      plan,
+      amount,
+      months,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const tradeInfoObj = {
+      MerchantID: NEWEBPAY_MERCHANT_ID,
+      RespondType: "JSON",
+      TimeStamp: Math.floor(Date.now() / 1000),
+      Version: "2.0",
+      MerchantOrderNo: orderNo,
+      Amt: amount,
+      ItemDesc: plan === "yearly" ? "翻譯機器人年繳" : "翻譯機器人月繳",
+      Email: user.email,
+      ReturnURL: `${process.env.BASE_URL}/api/member/payment-return`,
+      NotifyURL: `${process.env.BASE_URL}/api/member/payment-notify`,
+      ClientBackURL: `${process.env.BASE_URL}/member.html`
+    };
+
+    const tradeInfoStr = new URLSearchParams(tradeInfoObj).toString();
+    const tradeInfo = aesEncrypt(tradeInfoStr);
+    const tradeSha = shaEncrypt(tradeInfo);
+
+    res.json({
+      mpgUrl: NEWEBPAY_MPG_URL,
+      merchantId: NEWEBPAY_MERCHANT_ID,
+      tradeInfo,
+      tradeSha,
+      version: "2.0"
+    });
+  } catch (e) {
+    console.error("checkout 建立失敗", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), async (req, res) => {
+  try {
+    const { TradeInfo, TradeSha } = req.body;
+    const checkSha = shaEncrypt(TradeInfo);
+    if (checkSha !== TradeSha) {
+      console.error("藍新通知簽章驗證失敗");
+      return res.status(400).send("0|ErrorSha");
+    }
+
+    const decrypted = aesDecrypt(TradeInfo);
+    const result = JSON.parse(decrypted);
+
+    if (result.Status === "SUCCESS") {
+      const orderNo = result.Result.MerchantOrderNo;
+      const orderRef = db.collection("paymentOrders").doc(orderNo);
+      const orderSnap = await orderRef.get();
+      if (!orderSnap.exists) return res.status(404).send("0|OrderNotFound");
+
+      const order = orderSnap.data();
+      if (order.status !== "paid") {
+        await activatePaidSubscription(order.userId, {
+          plan: order.plan,
+          months: order.months,
+          maxGroups: 5,
+          monthlyQuota: 3000
+        });
+        await orderRef.set({
+          status: "paid",
+          paidAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        await addAdminLog("PAYMENT_SUCCESS", `${order.userId} ${order.plan}`, "system", { orderNo });
+      }
+    }
+    res.send("1|OK");
+  } catch (e) {
+    console.error("payment-notify 錯誤", e.message);
+    res.status(500).send("0|Error");
+  }
+});
 app.post("/api/member/line-link-code", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
@@ -2491,7 +2614,9 @@ app.post("/api/member/line-link-code", requireMemberSession, async (req, res) =>
     res.status(500).json({ error: "無法產生綁定碼" });
   }
 });
-
+app.get("/api/member/payment-return", (req, res) => {
+  res.redirect("/member.html?paid=1");
+});
 app.get("/api/member/me", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
