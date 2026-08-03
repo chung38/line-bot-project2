@@ -612,12 +612,6 @@ async function incrementGroupUsage(gid, translationCount = 1, charCount = 0) {
   );
 }
 
-async function countGroupsByInviter(userId) {
-  if (!userId) return 0;
-  const snap = await db.collection("groupInviters").where("userId", "==", userId).get();
-  return snap.size;
-}
-
 // 每個群組各自獨立的訂閱資料（試用期、額度、到期日都以「群組加入時間」各自起算）
 async function ensureGroupSubscriptionDoc(gid, userId) {
   if (!gid) return null;
@@ -793,7 +787,6 @@ async function ensureInviterIfMissing(gid, uid) {
     return { ok: false, message: "缺少 gid 或 uid" };
   }
 
-  // 機器人曾退出或被踢出的群組，不重建設定
   if (deletedGroups.has(gid)) {
     return { ok: false, code: "GROUP_DELETED", message: "此群組已停用翻譯服務。" };
   }
@@ -801,11 +794,6 @@ async function ensureInviterIfMissing(gid, uid) {
   let inviter = groupInviter.get(gid);
   if (inviter) {
     return { ok: true, inviter, alreadyBound: true };
-  }
-
-  const bindCheck = await canBindGroupToInviter(uid, gid);
-  if (!bindCheck.ok) {
-    return bindCheck;
   }
 
   groupInviter.set(gid, uid);
@@ -817,7 +805,6 @@ async function ensureInviterIfMissing(gid, uid) {
 
   return { ok: true, inviter: uid };
 }
-
 
 async function getGroupMemberDisplayName(gid, uid) {
   if (!gid || !uid) return uid || "未知使用者";
@@ -1905,17 +1892,7 @@ adminRouter.put("/groups/:gid/settings", async (req, res) => {
     if (inviter && !isValidLineUserId(inviter)) {
       return res.status(400).json({ success: false, error: i18n["zh-TW"].invalidUserId });
     }
-    if (inviter) {
-  const bindCheck = await canBindGroupToInviter(inviter, gid);
-  if (!bindCheck.ok) {
-    return res.status(400).json({
-      success: false,
-      error: bindCheck.message,
-      code: bindCheck.code,
-    });
-  }
-}
-
+    
     groupLang.set(gid, new Set(langs));
     if (industry) groupIndustry.set(gid, industry); else groupIndustry.delete(gid);
     if (inviter) groupInviter.set(gid, inviter); else groupInviter.delete(gid);
