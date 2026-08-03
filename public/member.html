@@ -461,69 +461,76 @@
         return;
       }
 
-      document.getElementById("groups").innerHTML = groups.map((group) => {
-        const sub = group.subscription;
-        const status = sub?.status || "INACTIVE";
-        const expiresAt = sub?.expiresAt ? new Date(sub.expiresAt) : null;
-        const expiresText = expiresAt
-          ? expiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
-          : "—";
-        const quotaText = sub ? (sub.quota > 0 ? sub.quota.toLocaleString() : "無限制") : "—";
-        const usedText = sub ? Number(sub.used || 0).toLocaleString() : "—";
-
-        return `
-        <article class="member-v2-group-card">
-          <div class="member-v2-group-card-head">
-            <div>
-              <h3>${escapeHtml(group.groupName || "未命名群組")}</h3>
-              <p>${escapeHtml(group.gid)}</p>
-            </div>
-            <span class="member-v2-status-badge ${subscriptionClass(status)}">${escapeHtml(subscriptionLabel(status))}</span>
-          </div>
-
-          <div class="member-v2-detail-row">
-            <span>使用期限</span>
-            <strong>${expiresText}</strong>
-          </div>
-          <div class="member-v2-detail-row">
-            <span>本月使用量</span>
-            <strong>${usedText} / ${quotaText}</strong>
-          </div>
-
-          <div class="member-v2-setting-block">
-            <div class="member-v2-setting-label">
-              <span>翻譯語言</span>
-              <small>可多選</small>
-            </div>
-            <div class="member-v2-language-list">
-              ${buildLangCheckboxes(group.gid, group.langs || [])}
-            </div>
-          </div>
-
-          <div class="member-v2-setting-block">
-            <div class="member-v2-setting-label">
-              <span>行業類別</span>
-            </div>
-            <select
-              id="industry_${group.gid}"
-              class="member-v2-select"
-              onchange="updateGroup('${group.gid}')"
-            >
-              <option value="" ${!group.industry ? "selected" : ""}>未指定行業</option>
-              ${(group.industryOptions || []).map((industry) => `
-                <option value="${escapeHtml(industry)}" ${group.industry === industry ? "selected" : ""}>
-                  ${escapeHtml(industry)}
-                </option>
-              `).join("")}
-            </select>
-          </div>
-
-          <div id="save_${group.gid}" class="member-v2-save-state"></div>
-        </article>
-      `;
-      }).join("");
+document.getElementById("groups").innerHTML = groups.map(group => `
+  <article class="member-v2-group-card">
+    <div class="member-v2-group-card-head">
+      <div>
+        <h3>${escapeHtml(group.groupName || group.gid)}</h3>
+        <p>${escapeHtml(group.gid)}</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="member-v2-status-badge ${subscriptionClass(group.subscriptionStatus)}">
+          ${escapeHtml(subscriptionLabel(group.subscriptionStatus))}
+        </span>
+        <button class="member-v2-primary-btn" style="padding:6px 14px; font-size:13px;" onclick="openCheckout('${group.gid}')">付款 / 續約</button>
+      </div>
+    </div>
+    <div class="member-v2-setting-block">
+      <div class="member-v2-setting-label">
+        <span>翻譯語言</span>
+        <small>可多選</small>
+      </div>
+      <div class="member-v2-language-list">${buildLangCheckboxes(group.gid, group.langs)}</div>
+    </div>
+    <div class="member-v2-setting-block">
+      <div class="member-v2-setting-label">
+        <span>行業類別</span>
+      </div>
+      <select id="industry-${group.gid}" class="member-v2-select" onchange="updateGroup('${group.gid}')">
+        <option value="" ${!group.industry ? "selected" : ""}>未選擇</option>
+        ${(group.industryOptions || []).map(industry =>
+          `<option value="${escapeHtml(industry)}" ${group.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`
+        ).join("")}
+      </select>
+    </div>
+    <div id="save-${group.gid}" class="member-v2-save-state"></div>
+  </article>
+`).join("");
     }
+async function openCheckout(gid) {
+  const plan = window.confirm("按「確定」選擇年繳 NT$3000，按「取消」選擇月繳 NT$300")
+    ? "yearly" : "monthly";
 
+  const response = await fetch("/api/member/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gid, plan })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || "建立訂單失敗");
+    return;
+  }
+
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = data.mpgUrl;
+  const fields = {
+    MerchantID: data.merchantId,
+    TradeInfo: data.tradeInfo,
+    TradeSha: data.tradeSha,
+    Version: data.version
+  };
+  Object.entries(fields).forEach(([key, value]) => {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = key;
+    input.value = value;
+    form.appendChild(input);
+  });
+  document.body.appendChild(form);
+  form.submit();
+}
     async function updateGroup(gid) {
       const saveState = document.getElementById(`save_${gid}`);
       const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
