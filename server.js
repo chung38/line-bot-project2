@@ -2563,7 +2563,6 @@ await activateGroupPaidSubscription(order.gid, {
   monthlyQuota: order.plan === "yearly" ? 3000 : 300,
   ownerUserId: order.userId || null,
 });
-
     await orderRef.set({
       status: "paid",
       paidAt: admin.firestore.FieldValue.serverTimestamp()
