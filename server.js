@@ -1639,13 +1639,11 @@ const allGids = [...new Set([
     const usageByGroup = new Map();
     let monthlyTranslations = 0;
     let monthlyChars = 0;
-
     usageSnapshot.forEach(doc => {
       const usage = doc.data();
       const usageGid = usage.gid;
       const translationCount = Number(usage.translationCount || 0);
       const charCount = Number(usage.charCount || 0);
-
       if (usageGid) {
         usageByGroup.set(usageGid, {
           translationCount,
