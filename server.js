@@ -2111,7 +2111,11 @@ adminRouter.get("/subscriptions", async (req, res) => {
       snapshot.docs.map(async (doc) => {
         const gid = doc.id;
         const sub = doc.data();
-        const inviter = sub.ownerUserId || groupInviter.get(gid) || null;
+        const inviter =
+  sub.ownerUserId ||
+  sub.userId ||
+  groupInviter.get(gid) ||
+  null;
         let groupName = null;
         let inviterName = null;
         try {
@@ -2186,7 +2190,11 @@ adminRouter.get("/subscriptions/:gid", async (req, res) => {
     const gid = req.params.gid;
     const sub = await getSubscriptionByGroupId(gid);
     const usage = await getGroupUsage(gid);
-    const inviter = sub?.ownerUserId || groupInviter.get(gid) || null;
+    const inviter =
+  sub?.ownerUserId ||
+  sub?.userId ||
+  groupInviter.get(gid) ||
+  null;
     let groupName = null;
     let inviterName = null;
     try {
