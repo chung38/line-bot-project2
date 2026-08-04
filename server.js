@@ -2303,15 +2303,27 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
     const defaults = await getSubscriptionDefaults();
 
     const action = normalizeManualAction(req.body?.action);
-    const plan = String(req.body?.plan ?? defaults.manualPlan).trim() || defaults.manualPlan;
+    const plan =
+      String(req.body?.plan ?? defaults.manualPlan).trim() ||
+      defaults.manualPlan;
     const days = toSafeInt(req.body?.days, defaults.manualDays, 1);
-    const monthlyQuota = toSafeInt(req.body?.monthlyQuota, defaults.manualMonthlyQuota, 0);
+    const monthlyQuota = toSafeInt(
+      req.body?.monthlyQuota,
+      defaults.manualMonthlyQuota,
+      0
+    );
     const reason = String(req.body?.reason || "").trim();
 
     const ref = db.collection("groupSubscriptions").doc(gid);
     const snap = await ref.get();
     const current = snap.exists ? snap.data() : null;
-    const ownerUserId = current?.ownerUserId || groupInviter.get(gid) || null;
+
+    const ownerUserId =
+      current?.ownerUserId ||
+      current?.userId ||
+      groupInviter.get(gid) ||
+      null;
+
     if (action === "activate") {
       const now = new Date();
       const currentEnd = toDateSafe(current?.currentPeriodEnd);
@@ -2322,7 +2334,7 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
 
       const payload = {
         gid,
-        userId,
+        ownerUserId,
         status: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
         plan,
         currentPeriodEnd: end,
@@ -2339,10 +2351,11 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
       }
 
       await ref.set(payload, { merge: true });
+
     } else if (action === "deactivate") {
       const payload = {
         gid,
-        userId,
+        ownerUserId,
         status: SUBSCRIPTION_STATUS.INACTIVE,
         manualOverride: MANUAL_OVERRIDE.NONE,
         manualReason: reason || "admin manual deactivate",
@@ -2354,10 +2367,11 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
       }
 
       await ref.set(payload, { merge: true });
+
     } else if (action === "force_active") {
       const payload = {
         gid,
-        userId,
+        ownerUserId,
         manualOverride: MANUAL_OVERRIDE.FORCE_ACTIVE,
         manualReason: reason || "admin force active",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2370,10 +2384,11 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
       }
 
       await ref.set(payload, { merge: true });
+
     } else if (action === "force_inactive") {
       const payload = {
         gid,
-        userId,
+        ownerUserId,
         manualOverride: MANUAL_OVERRIDE.FORCE_INACTIVE,
         manualReason: reason || "admin force inactive",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2384,6 +2399,7 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
       }
 
       await ref.set(payload, { merge: true });
+
     } else if (action === "clear_override") {
       await ref.set(
         {
@@ -2393,15 +2409,26 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
         },
         { merge: true }
       );
+
     } else {
-      return res.status(400).json({ success: false, error: `不支援的 action: ${action}` });
+      return res.status(400).json({
+        success: false,
+        error: `不支援的 action: ${action}`,
+      });
     }
 
-    await addAdminLog("MANUAL_SUBSCRIPTION", `手動操作群組 ${gid} → ${action}`, req.auth.user, { gid, action, plan, days, monthlyQuota, reason });
+    await addAdminLog(
+      "MANUAL_SUBSCRIPTION",
+      `手動操作群組 ${gid} → ${action}`,
+      req.auth.user,
+      { gid, action, plan, days, monthlyQuota, reason }
+    );
 
     const updated = await getSubscriptionByGroupId(gid);
     res.json({ success: true, gid, subscription: updated });
+
   } catch (e) {
+    console.error("PUT /subscriptions/:gid/manual 錯誤:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
