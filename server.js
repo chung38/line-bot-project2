@@ -2549,11 +2549,12 @@ if (result.Status === "SUCCESS") {
 
   const order = orderSnap.data();
   if (order.status !== "paid") {
-    await activateGroupPaidSubscription(order.gid, {
-      plan: order.plan,
-      months: order.months,
-      monthlyQuota: order.plan === "yearly" ? 3000 : 300,
-    });
+await activateGroupPaidSubscription(order.gid, {
+  plan: order.plan,
+  months: order.months,
+  monthlyQuota: order.plan === "yearly" ? 3000 : 300,
+  ownerUserId: order.userId || null,
+});
 
     await orderRef.set({
       status: "paid",
