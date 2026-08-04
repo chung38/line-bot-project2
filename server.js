@@ -1215,7 +1215,7 @@ if (afterLastUrl.trim()) {
   return restoreMentions(outLine, segments);
 }
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false) {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, hasOfficialMentionData = false) {
   const allNeededLangs = new Set();
   const langOutputs = {};
 
@@ -2951,9 +2951,9 @@ if (event.message?.mention) {
     if (!rawLines.length) return null;
 
     processTranslationInBackground(
-      replyToken, gid, uid, masked, segments, rawLines,
-      langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData
-    ).catch(e => console.error("背景翻譯失敗:", e));
+  replyToken, gid, uid, masked, segments, rawLines,
+  langSet, sourceLang, hasOfficialMentionData
+).catch(e => console.error("背景翻譯失敗:", e));
   }
 
   return null;
