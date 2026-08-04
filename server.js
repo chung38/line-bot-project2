@@ -2609,9 +2609,17 @@ app.post("/api/member/line-link-code", requireMemberSession, async (req, res) =>
     res.status(500).json({ error: "無法產生綁定碼" });
   }
 });
-app.get("/api/member/payment-return", (req, res) => {
-  res.redirect("/member.html?paid=1");
-});
+function redirectToMemberAfterPayment(req, res) {
+  return res.redirect(303, "/member.html?paid=1");
+}
+
+app.get("/api/member/payment-return", redirectToMemberAfterPayment);
+
+app.post(
+  "/api/member/payment-return",
+  express.urlencoded({ extended: true }),
+  redirectToMemberAfterPayment
+);
 app.get("/api/member/me", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
