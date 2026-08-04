@@ -1114,24 +1114,62 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       .join("\n")
       .trim();
 
+// 繁中翻譯輸出檢查
 if (targetLang === "zh-TW") {
   const hasChinese = /[\u4e00-\u9fff]/.test(out);
   const unchanged = out.trim() === text.trim();
   const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
-  // GPT 判斷這段不需翻譯（人名、代號等），直接接受
-  if (unchanged) {
-    return out;
+  // 來源包含泰文、越南文，卻仍輸出泰文／越南文，代表沒有翻成繁中
+  const outputStillThai = /[\u0E00-\u0E7F]/.test(out);
+  const outputStillVietnamese =
+    /[\u0102-\u01B0\u1EA0-\u1EF9]/.test(out);
+
+  // 原文是非中文，但繁中結果完全沒有中文；
+  // 或結果仍含有泰文／越南文，都視為翻譯失敗。
+  const invalidZhTranslation =
+    !sourceHasChinese &&
+    (
+      !hasChinese ||
+      outputStillThai ||
+      outputStillVietnamese
+    );
+
+  if (invalidZhTranslation) {
+    console.warn("⚠️ 繁中翻譯不符合預期，準備重試：", {
+      retry,
+      text,
+      out,
+      hasChinese,
+      outputStillThai,
+      outputStillVietnamese
+    });
+
+    if (retry < 2) {
+      const strongPrompt = buildTranslationPrompt(
+        "zh-TW",
+        industry,
+        true
+      );
+
+      return translateWithChatGPT(
+        text,
+        targetLang,
+        gid,
+        retry + 1,
+        strongPrompt
+      );
+    }
+
+    // 已重試兩次仍無有效繁中結果：不可把原始泰文／越南文偽裝成繁中譯文
+    out = "（繁中翻譯異常，請稍後再試）";
   }
 
-  // 只有「原文含中文、但輸出沒有中文」才重試
-  // 避免純外語片段（泰文/英文）翻成中文後被誤判為異常
-  if (!hasChinese && sourceHasChinese) {
-    if (retry < 2) {
-      const strongPrompt = buildTranslationPrompt("zh-TW", industry, true);
-      return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
-    }
-    out = "（翻譯異常，請稍後再試）";
+  // 只有「原文本身已有中文」且結果原樣返回時，才允許直接視為成功。
+  // 例如：原文本來就是繁中，或中文訊息中只有人名、型號。
+  if (unchanged && sourceHasChinese) {
+    translationCache.set(cacheKey, out);
+    return out;
   }
 }
 
