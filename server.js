@@ -900,7 +900,6 @@ async function loadLang() {
     groupLang.set(doc.id, new Set(langs));
   });
 }
-
 async function loadInviter() {
   const snapshot = await db.collection("groupInviters").get();
   snapshot.forEach(doc => {
@@ -908,7 +907,6 @@ async function loadInviter() {
     if (userId) groupInviter.set(doc.id, userId);
   });
 }
-
 async function loadIndustry() {
   const snapshot = await db.collection("groupIndustries").get();
   snapshot.forEach(doc => {
@@ -916,7 +914,6 @@ async function loadIndustry() {
     if (industry) groupIndustry.set(doc.id, industry);
   });
 }
-
 let industryContextMap = new Map(); // name → promptContext
 
 async function loadIndustryMaster() {
