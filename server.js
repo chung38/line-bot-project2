@@ -1763,8 +1763,13 @@ expiringSoon.push({
 adminRouter.get("/groups", async (req, res) => {
   try {
     const monthKey = getMonthKey();
-    const allGids = getAllKnownGroupIds();
-
+    const subscriptionSnapshot = await db
+  .collection("groupSubscriptions")
+  .get();
+    const allGids = [...new Set([
+  ...getAllKnownGroupIds(),
+  ...subscriptionSnapshot.docs.map(doc => doc.id),
+])].sort();
     const [subscriptionDocs, usageDocs] = await Promise.all([
       Promise.all(
         allGids.map(async gid => [
