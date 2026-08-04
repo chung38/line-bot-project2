@@ -2076,8 +2076,7 @@ adminRouter.get("/subscriptions", async (req, res) => {
       snapshot.docs.map(async (doc) => {
         const gid = doc.id;
         const sub = doc.data();
-        const inviter = sub.userId || groupInviter.get(gid) || null;
-
+        const inviter = sub.ownerUserId || groupInviter.get(gid) || null;
         let groupName = null;
         let inviterName = null;
         try {
@@ -2152,8 +2151,7 @@ adminRouter.get("/subscriptions/:gid", async (req, res) => {
     const gid = req.params.gid;
     const sub = await getSubscriptionByGroupId(gid);
     const usage = await getGroupUsage(gid);
-    const inviter = sub?.userId || groupInviter.get(gid) || null;
-
+    const inviter = sub?.ownerUserId || groupInviter.get(gid) || null;
     let groupName = null;
     let inviterName = null;
     try {
@@ -2247,7 +2245,7 @@ adminRouter.put("/subscriptions/:gid/config", async (req, res) => {
     const ref = db.collection("groupSubscriptions").doc(gid);
     const snap = await ref.get();
     if (!snap.exists) {
-      payload.userId = groupInviter.get(gid) || null;
+      payload.ownerUserId = groupInviter.get(gid) || null;
       payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
     }
 
@@ -2275,8 +2273,7 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
     const ref = db.collection("groupSubscriptions").doc(gid);
     const snap = await ref.get();
     const current = snap.exists ? snap.data() : null;
-    const userId = current?.userId || groupInviter.get(gid) || null;
-
+    const ownerUserId = current?.ownerUserId || groupInviter.get(gid) || null;
     if (action === "activate") {
       const now = new Date();
       const currentEnd = toDateSafe(current?.currentPeriodEnd);
