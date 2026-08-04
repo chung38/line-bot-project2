@@ -1714,15 +1714,15 @@ adminRouter.get("/dashboard", async (req, res) => {
         status !== SUBSCRIPTION_STATUS.INACTIVE &&
         status !== SUBSCRIPTION_STATUS.PAYMENT_FAILED
       ) {
-        expiringSoon.push({
-          gid: subGid,
-          userId: sub.userId || null,
-          status,
-          plan: sub.plan || "",
-          expiresAt,
-          used,
-          quota,
-        });
+expiringSoon.push({
+  gid: subGid,
+  ownerUserId: sub.ownerUserId || sub.userId || null,
+  status,
+  plan: sub.plan || "",
+  expiresAt,
+  used,
+  quota,
+});
       }
     });
 
