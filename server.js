@@ -613,7 +613,7 @@ async function incrementGroupUsage(gid, translationCount = 1, charCount = 0) {
 }
 
 // 每個群組各自獨立的訂閱資料（試用期、額度、到期日都以「群組加入時間」各自起算）
-async function ensureGroupSubscriptionDoc(gid, userId) {
+async function ensureGroupSubscriptionDoc(gid, ownerUserId) {
   if (!gid) return null;
 
   const ref = db.collection("groupSubscriptions").doc(gid);
@@ -627,7 +627,7 @@ async function ensureGroupSubscriptionDoc(gid, userId) {
 
   const initData = {
     gid,
-    userId: userId || null,
+    ownerUserId: ownerUserId || null,
     status: SUBSCRIPTION_STATUS.TRIAL,
     plan: "trial",
     trialEndsAt: trialEnd,
@@ -644,6 +644,7 @@ async function ensureGroupSubscriptionDoc(gid, userId) {
   await ref.set(initData, { merge: true });
   return initData;
 }
+
 async function getBoundGroupsByInviter(userId) {
   if (!userId) return [];
   const snap = await db
@@ -702,6 +703,7 @@ async function activateGroupPaidSubscription(gid, options = {}) {
   const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
   const months = toSafeInt(options.months, defaults.paidMonths, 1);
   const monthlyQuota = toSafeInt(options.monthlyQuota, defaults.paidMonthlyQuota, 0);
+  const ownerUserId = options.ownerUserId || groupInviter.get(gid) || null;
 
   const ref = db.collection("groupSubscriptions").doc(gid);
   const snap = await ref.get();
@@ -716,6 +718,7 @@ async function activateGroupPaidSubscription(gid, options = {}) {
 
   const payload = {
     gid,
+    ownerUserId,
     status: SUBSCRIPTION_STATUS.ACTIVE,
     plan,
     currentPeriodEnd: end,
@@ -734,6 +737,7 @@ async function activateGroupPaidSubscription(gid, options = {}) {
 
   await ref.set(payload, { merge: true });
 }
+
 async function markGroupPaymentFailed(gid){
   const ref = db.collection("groupSubscriptions").doc(gid);
   const snap = await ref.get();
