@@ -1610,39 +1610,57 @@ adminRouter.get("/dashboard", async (req, res) => {
 
     const monthKey = getMonthKey();
     const now = new Date();
+
     const expiringThreshold = new Date(now);
     expiringThreshold.setDate(expiringThreshold.getDate() + 7);
-    const langUsage = {};
-    Object.keys(SUPPORTED_LANGS).forEach(code => {
-      langUsage[code] = 0;
-    });
-    allGids.forEach(gid => {
-      (groupLang.get(gid) || new Set()).forEach(code => {
-        langUsage[code] = (langUsage[code] || 0) + 1;
-      });
-    });
 
     const [logSnapshot, subscriptionSnapshot, usageSnapshot] = await Promise.all([
       db.collection("adminLogs").orderBy("createdAt", "desc").limit(20).get(),
       db.collection("groupSubscriptions").get(),
       db.collection("usageMonthly").where("monthKey", "==", monthKey).get(),
     ]);
-const allGids = [...new Set([
-  ...getAllKnownGroupIds(),
-  ...subscriptionSnapshot.docs.map(doc => doc.id),
-])].sort();
-        const groupsWithIndustry = allGids.filter(gid => !!groupIndustry.get(gid)).length;
+
+    /*
+      群組清單來源：
+      1. 記憶體中仍有設定的群組。
+      2. Firestore 中仍有訂閱資料的群組。
+      即使機器人離開群組、語言／邀請人設定已清除，
+      後台仍能看到該群組的付費訂閱。
+    */
+    const allGids = [...new Set([
+      ...getAllKnownGroupIds(),
+      ...subscriptionSnapshot.docs.map(doc => doc.id),
+    ])].sort();
+
+    const groupsWithIndustry = allGids.filter(
+      gid => !!groupIndustry.get(gid)
+    ).length;
+
     const groupsWithLang = allGids.filter(
       gid => (groupLang.get(gid) || new Set()).size > 0
     ).length;
+
+    const langUsage = {};
+    Object.keys(SUPPORTED_LANGS).forEach(code => {
+      langUsage[code] = 0;
+    });
+
+    allGids.forEach(gid => {
+      (groupLang.get(gid) || new Set()).forEach(code => {
+        langUsage[code] = (langUsage[code] || 0) + 1;
+      });
+    });
+
     const usageByGroup = new Map();
     let monthlyTranslations = 0;
     let monthlyChars = 0;
+
     usageSnapshot.forEach(doc => {
       const usage = doc.data();
       const usageGid = usage.gid;
       const translationCount = Number(usage.translationCount || 0);
       const charCount = Number(usage.charCount || 0);
+
       if (usageGid) {
         usageByGroup.set(usageGid, {
           translationCount,
@@ -1676,17 +1694,22 @@ const allGids = [...new Set([
       const sub = doc.data();
       const subGid = doc.id;
       const status = normalizeSubscriptionStatus(sub.status);
-      const manualOverride = normalizeManualOverride(sub.manualOverride);
       const usage = usageByGroup.get(subGid) || {
         translationCount: 0,
         charCount: 0,
       };
 
-      if (status === SUBSCRIPTION_STATUS.TRIAL) subscriptionStatus.trial++;
-      else if (status === SUBSCRIPTION_STATUS.ACTIVE) subscriptionStatus.active++;
-      else if (status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE) subscriptionStatus.manualActive++;
-      else if (status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) subscriptionStatus.paymentFailed++;
-      else subscriptionStatus.inactive++;
+      if (status === SUBSCRIPTION_STATUS.TRIAL) {
+        subscriptionStatus.trial++;
+      } else if (status === SUBSCRIPTION_STATUS.ACTIVE) {
+        subscriptionStatus.active++;
+      } else if (status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE) {
+        subscriptionStatus.manualActive++;
+      } else if (status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) {
+        subscriptionStatus.paymentFailed++;
+      } else {
+        subscriptionStatus.inactive++;
+      }
 
       const quota = Number(sub.monthlyQuota || 0);
       const used = Number(usage.translationCount || 0);
@@ -1712,15 +1735,15 @@ const allGids = [...new Set([
         status !== SUBSCRIPTION_STATUS.INACTIVE &&
         status !== SUBSCRIPTION_STATUS.PAYMENT_FAILED
       ) {
-expiringSoon.push({
-  gid: subGid,
-  ownerUserId: sub.ownerUserId || sub.userId || null,
-  status,
-  plan: sub.plan || "",
-  expiresAt,
-  used,
-  quota,
-});
+        expiringSoon.push({
+          gid: subGid,
+          ownerUserId: sub.ownerUserId || sub.userId || null,
+          status,
+          plan: sub.plan || "",
+          expiresAt,
+          used,
+          quota,
+        });
       }
     });
 
@@ -1740,7 +1763,6 @@ expiringSoon.push({
         totalIndustries: industryMasterDocs.length,
         enabledIndustries: getEnabledIndustryNames().length,
         langUsage,
-
         monthKey,
         monthlyTranslations,
         monthlyChars,
@@ -1753,10 +1775,12 @@ expiringSoon.push({
     });
   } catch (e) {
     console.error("GET /admin/dashboard:", e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
-
 adminRouter.get("/groups", async (req, res) => {
   try {
     const monthKey = getMonthKey();
