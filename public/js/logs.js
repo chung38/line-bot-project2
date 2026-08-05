@@ -1,8 +1,15 @@
 const { api, toast, formatTime, escapeHtml } = window.AdminCommon;
 let logItems = [];
 async function loadLogs() {
-  try { const d = await api('/admin/logs'); logItems = d.logs || []; renderLogs(); }
-  catch(e) { toast(`讀取失敗：${e.message}`, true); }
+  try {
+    const d = await api("/admin/logs");
+
+    logItems = Array.isArray(d.items) ? d.items : [];
+
+    renderLogs();
+  } catch (e) {
+    toast(`讀取失敗：${e.message}`, true);
+  }
 }
 function renderLogs() {
   const kw = document.getElementById('logKeyword').value.trim().toLowerCase();
