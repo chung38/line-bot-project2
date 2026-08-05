@@ -650,5 +650,102 @@ async function openCheckout(gid) {
 
     init();
   </script>
+  <div
+  id="checkoutModal"
+  class="member-v2-modal"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="checkoutModalTitle"
+  aria-hidden="true"
+>
+  <div class="member-v2-modal-backdrop" onclick="closeCheckoutModal()"></div>
+
+  <div class="member-v2-modal-panel">
+    <button
+      type="button"
+      class="member-v2-modal-close"
+      onclick="closeCheckoutModal()"
+      aria-label="關閉付款方案選擇"
+    >
+      ×
+    </button>
+
+    <div class="member-v2-modal-head">
+      <p class="member-v2-eyebrow">SUBSCRIPTION PLAN</p>
+      <h2 id="checkoutModalTitle">選擇訂閱方案</h2>
+      <p>此方案只套用到目前選擇的群組，其他群組不會受到影響。</p>
+    </div>
+
+    <div class="member-v2-plan-grid">
+      <article class="member-v2-plan-card">
+        <div class="member-v2-plan-card-top">
+          <div>
+            <p class="member-v2-plan-name">月繳方案</p>
+            <p class="member-v2-plan-desc">適合想先彈性使用的群組</p>
+          </div>
+        </div>
+
+        <div class="member-v2-plan-price">
+          <strong>NT$300</strong>
+          <span>/ 月</span>
+        </div>
+
+        <ul class="member-v2-plan-list">
+          <li>訂閱期限 1 個月</li>
+          <li>群組額度獨立計算</li>
+          <li>可隨時續約</li>
+        </ul>
+
+        <button
+          type="button"
+          class="member-v2-plan-btn secondary"
+          onclick="startCheckout('monthly')"
+        >
+          選擇月繳
+        </button>
+      </article>
+
+      <article class="member-v2-plan-card featured">
+        <div class="member-v2-plan-badge">推薦方案</div>
+
+        <div class="member-v2-plan-card-top">
+          <div>
+            <p class="member-v2-plan-name">年繳方案</p>
+            <p class="member-v2-plan-desc">一次訂閱，全年持續使用</p>
+          </div>
+        </div>
+
+        <div class="member-v2-plan-price">
+          <strong>NT$3,000</strong>
+          <span>/ 年</span>
+        </div>
+
+        <p class="member-v2-plan-saving">平均每月 NT$250</p>
+
+        <ul class="member-v2-plan-list">
+          <li>訂閱期限 12 個月</li>
+          <li>群組額度獨立計算</li>
+          <li>比月繳全年少 NT$600</li>
+        </ul>
+
+        <button
+          type="button"
+          class="member-v2-plan-btn primary"
+          onclick="startCheckout('yearly')"
+        >
+          選擇年繳
+        </button>
+      </article>
+    </div>
+
+    <button
+      type="button"
+      class="member-v2-modal-cancel"
+      onclick="closeCheckoutModal()"
+    >
+      取消，暫不付款
+    </button>
+  </div>
+</div>
 </body>
 </html>
