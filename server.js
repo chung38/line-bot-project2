@@ -1612,11 +1612,6 @@ adminRouter.get("/dashboard", async (req, res) => {
     const now = new Date();
     const expiringThreshold = new Date(now);
     expiringThreshold.setDate(expiringThreshold.getDate() + 7);
-    const groupsWithIndustry = allGids.filter(gid => !!groupIndustry.get(gid)).length;
-    const groupsWithLang = allGids.filter(
-      gid => (groupLang.get(gid) || new Set()).size > 0
-    ).length;
-
     const langUsage = {};
     Object.keys(SUPPORTED_LANGS).forEach(code => {
       langUsage[code] = 0;
@@ -1636,6 +1631,10 @@ const allGids = [...new Set([
   ...getAllKnownGroupIds(),
   ...subscriptionSnapshot.docs.map(doc => doc.id),
 ])].sort();
+        const groupsWithIndustry = allGids.filter(gid => !!groupIndustry.get(gid)).length;
+    const groupsWithLang = allGids.filter(
+      gid => (groupLang.get(gid) || new Set()).size > 0
+    ).length;
     const usageByGroup = new Map();
     let monthlyTranslations = 0;
     let monthlyChars = 0;
