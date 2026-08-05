@@ -560,39 +560,88 @@ document.getElementById("groups").innerHTML = groups.map(group => {
   `;
 }).join("");
     }
-async function openCheckout(gid) {
-  const plan = window.confirm("按「確定」選擇年繳 NT$3000，按「取消」選擇月繳 NT$300")
-    ? "yearly" : "monthly";
+let selectedCheckoutGroupId = null;
 
-  const response = await fetch("/api/member/checkout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ gid, plan })
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || "建立訂單失敗");
+function openCheckout(gid) {
+  selectedCheckoutGroupId = gid;
+
+  const modal = document.getElementById("checkoutModal");
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden", "false");
+
+  document.body.style.overflow = "hidden";
+}
+
+function closeCheckoutModal() {
+  const modal = document.getElementById("checkoutModal");
+  modal.classList.remove("show");
+  modal.setAttribute("aria-hidden", "true");
+
+  document.body.style.overflow = "";
+  selectedCheckoutGroupId = null;
+}
+
+async function startCheckout(plan) {
+  const gid = selectedCheckoutGroupId;
+
+  if (!gid) {
+    alert("找不到要付款的群組，請關閉視窗後重新操作。");
     return;
   }
 
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = data.mpgUrl;
-  const fields = {
-    MerchantID: data.merchantId,
-    TradeInfo: data.tradeInfo,
-    TradeSha: data.tradeSha,
-    Version: data.version
-  };
-  Object.entries(fields).forEach(([key, value]) => {
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = key;
-    input.value = value;
-    form.appendChild(input);
+  if (!["monthly", "yearly"].includes(plan)) {
+    alert("付款方案錯誤，請重新選擇。");
+    return;
+  }
+
+  const buttons = document.querySelectorAll(".member-v2-plan-btn");
+
+  buttons.forEach((button) => {
+    button.disabled = true;
   });
-  document.body.appendChild(form);
-  form.submit();
+
+  try {
+    const response = await fetch("/api/member/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gid, plan })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "建立訂單失敗");
+    }
+
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = data.mpgUrl;
+
+    const fields = {
+      MerchantID: data.merchantId,
+      TradeInfo: data.tradeInfo,
+      TradeSha: data.tradeSha,
+      Version: data.version
+    };
+
+    Object.entries(fields).forEach(([key, value]) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = value;
+      form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+
+  } catch (error) {
+    alert(error.message || "建立訂單失敗，請稍後再試。");
+
+    buttons.forEach((button) => {
+      button.disabled = false;
+    });
+  }
 }
     async function updateGroup(gid) {
      const saveState = document.getElementById(`save-${gid}`);
