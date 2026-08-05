@@ -218,10 +218,6 @@
       const used = Number(summary.usedTotal ?? 0);
       const quota = Number(summary.quotaTotal ?? 0);
       const quotaText = groupCount === 0 ? "—" : (quota > 0 ? quota.toLocaleString() : "無限制");
-      const nearestExpiresAt = summary.nearestExpiresAt ? new Date(summary.nearestExpiresAt) : null;
-      const expiresText = nearestExpiresAt
-        ? nearestExpiresAt.toLocaleDateString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit" })
-        : "—";
 
       document.getElementById("profileStats").innerHTML = `
         <article class="member-v2-metric">
@@ -242,12 +238,6 @@
           <p>本月翻譯（全部群組）</p>
           <strong>${used.toLocaleString()}</strong>
           <span class="member-v2-metric-note">已使用次數加總</span>
-        </article>
-
-        <article class="member-v2-metric">
-          <p>最近到期</p>
-          <strong>${expiresText}</strong>
-          <span class="member-v2-metric-note">詳見下方各群組期限</span>
         </article>
       `;
 
@@ -461,41 +451,114 @@
         return;
       }
 
-document.getElementById("groups").innerHTML = groups.map(group => `
-  <article class="member-v2-group-card">
-    <div class="member-v2-group-card-head">
-      <div>
-        <h3>${escapeHtml(group.groupName || group.gid)}</h3>
-        <p>${escapeHtml(group.gid)}</p>
+document.getElementById("groups").innerHTML = groups.map(group => {
+  const subscription = group.subscription || {};
+  const status = subscription.status || "INACTIVE";
+  const used = Number(subscription.used || 0);
+  const quota = Number(subscription.quota || 0);
+
+  const expiresAt = subscription.expiresAt
+    ? new Date(subscription.expiresAt)
+    : null;
+
+  const expiresText = expiresAt && !Number.isNaN(expiresAt.getTime())
+    ? expiresAt.toLocaleDateString("zh-TW", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      })
+    : "尚未開通";
+
+  const quotaText = quota > 0
+    ? `${used.toLocaleString()} / ${quota.toLocaleString()}`
+    : "無限制";
+
+  return `
+    <article class="member-v2-group-card">
+      <div class="member-v2-group-card-head">
+        <div>
+          <h3>${escapeHtml(group.groupName || group.gid)}</h3>
+          <p>${escapeHtml(group.gid)}</p>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="member-v2-status-badge ${subscriptionClass(status)}">
+            ${escapeHtml(subscriptionLabel(status))}
+          </span>
+
+          <button
+            class="member-v2-primary-btn"
+            style="padding:6px 14px; font-size:13px;"
+            onclick="openCheckout('${group.gid}')"
+          >
+            付款 / 續約
+          </button>
+        </div>
       </div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span class="member-v2-status-badge ${subscriptionClass(group.subscriptionStatus)}">
-          ${escapeHtml(subscriptionLabel(group.subscriptionStatus))}
-        </span>
-        <button class="member-v2-primary-btn" style="padding:6px 14px; font-size:13px;" onclick="openCheckout('${group.gid}')">付款 / 續約</button>
+
+      <div class="member-v2-setting-block">
+        <div class="member-v2-setting-label">
+          <span>群組訂閱</span>
+          <small>獨立計費</small>
+        </div>
+
+        <div class="member-v2-detail-row">
+          <span>訂閱狀態</span>
+          <strong>
+            <span class="member-v2-status-badge ${subscriptionClass(status)}">
+              ${escapeHtml(subscriptionLabel(status))}
+            </span>
+          </strong>
+        </div>
+
+        <div class="member-v2-detail-row">
+          <span>到期日</span>
+          <strong>${escapeHtml(expiresText)}</strong>
+        </div>
+
+        <div class="member-v2-detail-row">
+          <span>本月額度</span>
+          <strong>${escapeHtml(quotaText)}</strong>
+        </div>
       </div>
-    </div>
-    <div class="member-v2-setting-block">
-      <div class="member-v2-setting-label">
-        <span>翻譯語言</span>
-        <small>可多選</small>
+
+      <div class="member-v2-setting-block">
+        <div class="member-v2-setting-label">
+          <span>翻譯語言</span>
+          <small>可多選</small>
+        </div>
+
+        <div class="member-v2-language-list">
+          ${buildLangCheckboxes(group.gid, group.langs)}
+        </div>
       </div>
-      <div class="member-v2-language-list">${buildLangCheckboxes(group.gid, group.langs)}</div>
-    </div>
-    <div class="member-v2-setting-block">
-      <div class="member-v2-setting-label">
-        <span>行業類別</span>
+
+      <div class="member-v2-setting-block">
+        <div class="member-v2-setting-label">
+          <span>行業類別</span>
+        </div>
+
+        <select
+          id="industry-${group.gid}"
+          class="member-v2-select"
+          onchange="updateGroup('${group.gid}')"
+        >
+          <option value="" ${!group.industry ? "selected" : ""}>
+            未選擇
+          </option>
+
+          ${(group.industryOptions || []).map(industry =>
+            `<option value="${escapeHtml(industry)}" ${
+              group.industry === industry ? "selected" : ""
+            }>${escapeHtml(industry)}</option>`
+          ).join("")}
+        </select>
       </div>
-      <select id="industry-${group.gid}" class="member-v2-select" onchange="updateGroup('${group.gid}')">
-        <option value="" ${!group.industry ? "selected" : ""}>未選擇</option>
-        ${(group.industryOptions || []).map(industry =>
-          `<option value="${escapeHtml(industry)}" ${group.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`
-        ).join("")}
-      </select>
-    </div>
-    <div id="save-${group.gid}" class="member-v2-save-state"></div>
-  </article>
-`).join("");
+
+      <div id="save-${group.gid}" class="member-v2-save-state"></div>
+    </article>
+  `;
+}).join("");
     }
 async function openCheckout(gid) {
   const plan = window.confirm("按「確定」選擇年繳 NT$3000，按「取消」選擇月繳 NT$300")
@@ -532,7 +595,7 @@ async function openCheckout(gid) {
   form.submit();
 }
     async function updateGroup(gid) {
-      const saveState = document.getElementById(`save_${gid}`);
+     const saveState = document.getElementById(`save-${gid}`);
       const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
       const langs = [...checkboxes]
         .filter((checkbox) => checkbox.checked)
