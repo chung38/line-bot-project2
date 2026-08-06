@@ -1242,8 +1242,17 @@ if (afterLastUrl.trim()) {
   }
 }
   }
+const restored = restoreMentions(outLine, segments);
 
-  return restoreMentions(outLine, segments);
+console.log("🔎 mention restore check:", {
+  targetLang,
+  originalLine: line,
+  beforeRestore: outLine,
+  segments,
+  afterRestore: restored
+});
+
+return restored;
 }
 
 async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, hasOfficialMentionData = false) {
