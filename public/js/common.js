@@ -1,20 +1,14 @@
 window.AdminCommon = (() => {
-  function utf8ToBase64(str) {
-    const bytes = new TextEncoder().encode(str);
-    let bin = ''; bytes.forEach(b => (bin += String.fromCharCode(b))); return btoa(bin);
-  }
-  const getUser = () => localStorage.getItem('adminUser') || 'admin';
-  const getPass = () => localStorage.getItem('adminPass') || '';
-  const getAuth = () => 'Basic ' + utf8ToBase64(`${getUser()}:${getPass()}`);
-  const isHome  = () => { const p = location.pathname; return p === '/' || p.endsWith('/index.html'); };
+  const isHome = () => { const p = location.pathname; return p === '/' || p.endsWith('/index.html'); };
 
+  // 認證改用伺服器端 session cookie（登入時呼叫 /admin/login），
+  // 瀏覽器端不再保存帳號密碼，fetch 帶上 credentials 讓 cookie 自動隨請求送出。
   async function api(url, opts = {}) {
-    const res = await fetch(url, { ...opts, headers: { Authorization: getAuth(), 'Content-Type': 'application/json', ...(opts.headers||{}) }});
+    const res = await fetch(url, { ...opts, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(opts.headers||{}) }});
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = { message: text }; }
     if (res.status === 401 || res.status === 403) {
-      localStorage.removeItem('adminPass');
       if (!isHome()) { alert('登入已失效，請重新登入'); location.href = '/index.html'; }
       throw new Error(data?.error || '未授權');
     }
@@ -22,16 +16,34 @@ window.AdminCommon = (() => {
     return data;
   }
 
-  function loadAuthInputs() {
-    const u = document.getElementById('authUser'), p = document.getElementById('authPass');
-    if (u) u.value = getUser(); if (p) p.value = getPass();
+  async function login(username, password) {
+    const res = await fetch('/admin/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data?.error || '登入失敗');
+    return data;
   }
-  function saveAuth() {
+
+  async function logout() {
+    await fetch('/admin/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+    location.href = '/index.html';
+  }
+
+  async function handleLoginSubmit() {
     const u = document.getElementById('authUser'), p = document.getElementById('authPass');
     if (!u || !p) return;
-    localStorage.setItem('adminUser', u.value.trim() || 'admin');
-    localStorage.setItem('adminPass', p.value);
-    toast('✅ 登入資訊已儲存');
+    try {
+      await login(u.value.trim(), p.value);
+      p.value = '';
+      toast('✅ 登入成功');
+      if (window.loadDashboard) window.loadDashboard();
+    } catch (e) {
+      toast('❌ ' + (e.message || '登入失敗'), true);
+    }
   }
 
   let _toastTimer = null;
@@ -83,13 +95,15 @@ window.AdminCommon = (() => {
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    if (!isHome() && !getPass()) { location.href = '/index.html'; return; }
-    loadAuthInputs();
+    // 非登入頁若沒有有效 session，伺服器端已在回傳 HTML 前就導回 /admin/index.html，
+    // 這裡不再需要（也無法）用前端存的密碼來判斷是否登入。
     const btn = document.getElementById('saveAuthBtn');
-    if (btn) btn.addEventListener('click', saveAuth);
+    if (btn) btn.addEventListener('click', handleLoginSubmit);
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.addEventListener('click', logout);
     initTabs('#subTabs');
     initMobileMenu();
   });
 
-  return { api, toast, formatTime, escapeHtml, statusBadge };
+  return { api, toast, formatTime, escapeHtml, statusBadge, logout };
 })();
