@@ -8,7 +8,6 @@ import axios from "axios";
 import { load } from "cheerio";
 import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
-import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
 import crypto from "node:crypto";
@@ -25,6 +24,7 @@ const requiredEnv = [
   "FIREBASE_CONFIG",
   "ADMIN_USER",
   "ADMIN_PASS",
+  "SESSION_SECRET",
   "NEWEBPAY_MERCHANT_ID",
   "NEWEBPAY_HASHKEY",
   "NEWEBPAY_HASHIV"
@@ -1587,17 +1587,55 @@ const adminLimiter = rateLimit({
   legacyHeaders: false
 });
 
-const adminAuth = basicAuth({
-  users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
-  challenge: false,
-  unauthorizedResponse: () => ({ success: false, error: "未登入或帳號密碼錯誤" })
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+function safeEqual(a = "", b = "") {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function requireAdminSession(req, res, next) {
+  if (req.session?.isAdmin) return next();
+  return res.status(401).json({ success: false, error: "未登入或登入已逾時" });
+}
+
+// 登入頁本身（index.html）維持公開，其餘 /admin 頁面須有有效 session 才能載入，
+// 避免後台頁面在未登入狀態下就能被任何人直接讀取。
+// 只攔截「載入 .html 頁面」這種請求 —— 掛在 /admin 下的 API（adminRouter）
+// 走的是自己的 requireAdminSession，會回正確的 JSON 401，不能被這裡攔截改成 redirect。
+app.use("/admin", (req, res, next) => {
+  const isHtmlPageRequest = req.method === "GET" && (req.path === "/" || req.path.endsWith(".html"));
+  if (!isHtmlPageRequest) return next();
+  const isPublicPage = req.path === "/" || req.path === "/index.html";
+  if (isPublicPage || req.session?.isAdmin) return next();
+  return res.redirect("/admin/index.html");
 });
 app.use("/admin", express.static(path.join(__dirname, "public", "admin")));
 app.use(express.static(path.join(__dirname, "public")));
 
+app.post("/admin/login", adminLoginLimiter, express.json({ limit: "10kb" }), (req, res) => {
+  const { username = "", password = "" } = req.body || {};
+  const ok = safeEqual(username, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASS);
+  if (!ok) return res.status(401).json({ success: false, error: "帳號或密碼錯誤" });
+  req.session.isAdmin = true;
+  res.json({ success: true });
+});
+
+app.post("/admin/logout", (req, res) => {
+  if (req.session) req.session.isAdmin = false;
+  res.json({ success: true });
+});
+
 const adminRouter = express.Router();
 adminRouter.use(adminLimiter);
-adminRouter.use(adminAuth);
+adminRouter.use(requireAdminSession);
 adminRouter.use(express.json({ limit: "1mb" }));
 
 adminRouter.get("/constants", async (req, res) => {
