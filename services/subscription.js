@@ -1,0 +1,363 @@
+// 訂閱、用量、付款訂單相關的狀態機與商業邏輯。
+// 這裡故意不 import 任何 routes/ 或 lib/state.js 的群組 Map，
+// 只透過參數（例如 ownerUserId）拿到需要的資料，維持單向依賴：
+// routes/ 依賴 services/，services/ 依賴 lib/，反過來不行。
+import { db, admin } from "../lib/firestore.js";
+import { getMonthKey, normalizeMonthKey, toDateSafe, toSafeInt } from "../lib/utils.js";
+
+const SUBSCRIPTION_STATUS = {
+  TRIAL: "TRIAL",
+  ACTIVE: "ACTIVE",
+  MANUAL_ACTIVE: "MANUAL_ACTIVE",
+  INACTIVE: "INACTIVE",
+  PAYMENT_FAILED: "PAYMENT_FAILED",
+};
+
+const MANUAL_OVERRIDE = {
+  NONE: "NONE",
+  FORCE_ACTIVE: "FORCE_ACTIVE",
+  FORCE_INACTIVE: "FORCE_INACTIVE",
+};
+const ORDER_STATUS = {
+  PENDING: "pending",
+  PAID: "paid",
+  FAILED: "failed",
+  EXPIRED: "expired",
+};
+const ORDER_PENDING_TTL_MS = 30 * 60 * 1000; // 訂單建立後 30 分鐘內須完成付款，否則視為逾期
+
+// 訂單建立後超過 expiresAt 仍是 pending，視為逾期未付款（僅影響顯示與是否允許再開新單，
+// 不會主動擋掉銀行端稍後才送達的成功通知——真的有扣款就還是要開通，只是會補記一筆警示 log）。
+function isOrderExpired(order) {
+  if (!order || order.status !== ORDER_STATUS.PENDING) return false;
+  const expiresAt = toDateSafe(order.expiresAt);
+  return !!expiresAt && expiresAt.getTime() < Date.now();
+}
+
+const FALLBACK_SUBSCRIPTION_DEFAULTS = {
+  trialDays: 14,
+  trialMaxGroups: 2,
+  trialMonthlyQuota: 300,
+
+  paidPlan: "monthly",
+  paidMonths: 1,
+  paidMaxGroups: 5,
+  paidMonthlyQuota: 3000,
+
+  manualPlan: "custom",
+  manualDays: 30,
+  manualMaxGroups: 5,
+  manualMonthlyQuota: 3000,
+};
+
+function normalizeSubscriptionDefaults(raw = {}) {
+  return {
+    trialDays: toSafeInt(raw.trialDays, FALLBACK_SUBSCRIPTION_DEFAULTS.trialDays, 1),
+    trialMaxGroups: toSafeInt(raw.trialMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.trialMaxGroups, 0),
+    trialMonthlyQuota: toSafeInt(raw.trialMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.trialMonthlyQuota, 0),
+
+    paidPlan: String(raw.paidPlan ?? FALLBACK_SUBSCRIPTION_DEFAULTS.paidPlan).trim() || "monthly",
+    paidMonths: toSafeInt(raw.paidMonths, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonths, 1),
+    paidMaxGroups: toSafeInt(raw.paidMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMaxGroups, 0),
+    paidMonthlyQuota: toSafeInt(raw.paidMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonthlyQuota, 0),
+
+    manualPlan: String(raw.manualPlan ?? FALLBACK_SUBSCRIPTION_DEFAULTS.manualPlan).trim() || "custom",
+    manualDays: toSafeInt(raw.manualDays, FALLBACK_SUBSCRIPTION_DEFAULTS.manualDays, 1),
+    manualMaxGroups: toSafeInt(raw.manualMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.manualMaxGroups, 0),
+    manualMonthlyQuota: toSafeInt(raw.manualMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.manualMonthlyQuota, 0),
+  };
+}
+
+async function getSubscriptionDefaults() {
+  const ref = db.collection("systemSettings").doc("subscriptionDefaults");
+  const snap = await ref.get();
+
+  const defaults = normalizeSubscriptionDefaults(snap.exists ? snap.data() : {});
+
+  if (!snap.exists) {
+    await ref.set(
+      {
+        ...defaults,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  return defaults;
+}
+
+function normalizeSubscriptionStatus(value, fallback = SUBSCRIPTION_STATUS.INACTIVE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    TRIAL: SUBSCRIPTION_STATUS.TRIAL,
+    ACTIVE: SUBSCRIPTION_STATUS.ACTIVE,
+    MANUALACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    MANUAL_ACTIVE: SUBSCRIPTION_STATUS.MANUAL_ACTIVE,
+    INACTIVE: SUBSCRIPTION_STATUS.INACTIVE,
+    PAYMENTFAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+    PAYMENT_FAILED: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeManualOverride(value, fallback = MANUAL_OVERRIDE.NONE) {
+  const raw = String(value || "").trim().toUpperCase().replace(/[\s-]/g, "_");
+  const map = {
+    NONE: MANUAL_OVERRIDE.NONE,
+    FORCEACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCE_ACTIVE: MANUAL_OVERRIDE.FORCE_ACTIVE,
+    FORCEINACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+    FORCE_INACTIVE: MANUAL_OVERRIDE.FORCE_INACTIVE,
+  };
+  return map[raw] || fallback;
+}
+
+function normalizeManualAction(value) {
+  const raw = String(value || "").trim().toLowerCase().replace(/[\s-]/g, "_");
+  const map = {
+    activate: "activate",
+    deactivate: "deactivate",
+    forceactive: "force_active",
+    force_active: "force_active",
+    forceinactive: "force_inactive",
+    force_inactive: "force_inactive",
+    clearoverride: "clear_override",
+    clear_override: "clear_override",
+  };
+  return map[raw] || raw;
+}
+
+function parseOptionalDateInput(value, fallback = undefined) {
+  if (value === undefined) return fallback;
+  if (value === "" || value === null) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? fallback : d;
+}
+
+async function getSubscriptionByGroupId(gid) {
+  if (!gid) return null;
+  const doc = await db.collection("groupSubscriptions").doc(gid).get();
+  return doc.exists ? doc.data() : null;
+}
+
+async function getGroupUsage(gid, monthKey = getMonthKey()) {
+  const normalizedMonthKey = normalizeMonthKey(monthKey);
+  const id = `${gid}_${normalizedMonthKey}`;
+  const doc = await db.collection("usageMonthly").doc(id).get();
+
+  if (!doc.exists) {
+    return {
+      gid,
+      monthKey: normalizedMonthKey,
+      translationCount: 0,
+      charCount: 0,
+    };
+  }
+
+  return doc.data();
+}
+
+async function incrementGroupUsage(gid, translationCount = 1, charCount = 0) {
+  if (!gid) return;
+  const monthKey = getMonthKey();
+  const ref = db.collection("usageMonthly").doc(`${gid}_${monthKey}`);
+
+  await ref.set(
+    {
+      gid,
+      monthKey,
+      translationCount: admin.firestore.FieldValue.increment(translationCount),
+      charCount: admin.firestore.FieldValue.increment(charCount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+// 每個群組各自獨立的訂閱資料（試用期、額度、到期日都以「群組加入時間」各自起算）
+async function ensureGroupSubscriptionDoc(gid, ownerUserId) {
+  if (!gid) return null;
+
+  const ref = db.collection("groupSubscriptions").doc(gid);
+  const doc = await ref.get();
+  if (doc.exists) return doc.data();
+
+  const defaults = await getSubscriptionDefaults();
+  const now = new Date();
+  const trialEnd = new Date(now);
+  trialEnd.setDate(trialEnd.getDate() + defaults.trialDays);
+
+  const initData = {
+    gid,
+    ownerUserId: ownerUserId || null,
+    status: SUBSCRIPTION_STATUS.TRIAL,
+    plan: "trial",
+    trialEndsAt: trialEnd,
+    currentPeriodEnd: null,
+    monthlyQuota: defaults.trialMonthlyQuota,
+    usedQuota: 0,
+    manualOverride: MANUAL_OVERRIDE.NONE,
+    manualReason: "",
+    lastPaymentStatus: "",
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await ref.set(initData, { merge: true });
+  return initData;
+}
+
+async function getBoundGroupsByInviter(userId) {
+  if (!userId) return [];
+  const snap = await db
+    .collection("groupInviters")
+    .where("userId", "==", userId)
+    .get();
+
+  return snap.docs.map(doc => ({
+    gid: doc.id,
+    ...doc.data(),
+  }));
+}
+
+// 群組彼此獨立計費，不再有「同一授權最多綁定幾個群組」的共用上限
+async function canUseGroup(gid) {
+  if (!gid) {
+    return { ok: false, code: "NO_GID", message: "缺少 gid。" };
+  }
+
+  const sub = await ensureGroupSubscriptionDoc(gid);
+  const now = new Date();
+  const usage = await getGroupUsage(gid);
+
+  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
+    return { ok: false, code: "FORCE_INACTIVE", sub, usage, message: "此訂閱已被後台手動停用。" };
+  }
+
+  if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE) {
+    return { ok: true, code: "FORCE_ACTIVE", sub, usage };
+  }
+
+  if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
+    return { ok: false, code: "QUOTA_EXCEEDED", sub, usage, message: `本群組本月額度已用完（${sub.monthlyQuota}）。` };
+  }
+
+  if (sub.status === SUBSCRIPTION_STATUS.TRIAL) {
+    const trialEndsAt = toDateSafe(sub.trialEndsAt);
+    if (trialEndsAt && trialEndsAt >= now) return { ok: true, code: "TRIAL_OK", sub, usage };
+    return { ok: false, code: "TRIAL_EXPIRED", sub, usage, message: "試用已到期，請完成付款。" };
+  }
+
+  if (sub.status === SUBSCRIPTION_STATUS.ACTIVE || sub.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE) {
+    const currentPeriodEnd = toDateSafe(sub.currentPeriodEnd);
+    if (!currentPeriodEnd || currentPeriodEnd >= now) return { ok: true, code: "ACTIVE_OK", sub, usage };
+    return { ok: false, code: "SUB_EXPIRED", sub, usage, message: "訂閱已到期。" };
+  }
+
+  if (sub.status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) {
+    return { ok: false, code: "PAYMENT_FAILED", sub, usage, message: "付款失敗，已停用服務。" };
+  }
+
+  return { ok: false, code: "INACTIVE", sub, usage, message: "尚未開通訂閱。" };
+}
+async function activateGroupPaidSubscription(gid, options = {}, tx = null) {
+  const defaults = await getSubscriptionDefaults();
+  const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
+  const months = toSafeInt(options.months, defaults.paidMonths, 1);
+  const monthlyQuota = toSafeInt(options.monthlyQuota, defaults.paidMonthlyQuota, 0);
+  const ownerUserId = options.ownerUserId || groupInviter.get(gid) || null;
+
+  const ref = db.collection("groupSubscriptions").doc(gid);
+  const snap = tx ? await tx.get(ref) : await ref.get();
+  const current = snap.exists ? snap.data() : null;
+
+  const now = new Date();
+  const currentEnd = toDateSafe(current?.currentPeriodEnd);
+  const baseDate = currentEnd && currentEnd > now ? currentEnd : now;
+
+  const end = new Date(baseDate);
+  end.setMonth(end.getMonth() + months);
+
+  const payload = {
+    gid,
+    ownerUserId,
+    status: SUBSCRIPTION_STATUS.ACTIVE,
+    plan,
+    currentPeriodEnd: end,
+    monthlyQuota,
+    manualOverride: MANUAL_OVERRIDE.NONE,
+    manualReason: "",
+    lastPaymentStatus: "paid",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (!snap.exists) {
+    payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    payload.trialEndsAt = null;
+    payload.usedQuota = 0;
+  }
+
+  if (tx) {
+    tx.set(ref, payload, { merge: true });
+  } else {
+    await ref.set(payload, { merge: true });
+  }
+}
+
+async function markGroupPaymentFailed(gid){
+  const ref = db.collection("groupSubscriptions").doc(gid);
+  const snap = await ref.get();
+  const current = snap.exists ? snap.data() : null;
+
+  const isManualProtected =
+    current?.status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE ||
+    current?.manualOverride === MANUAL_OVERRIDE.FORCE_ACTIVE;
+
+  if (isManualProtected) {
+    await ref.set(
+      {
+        gid,
+        lastPaymentStatus: "failed",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    return;
+  }
+
+  await ref.set(
+    {
+      gid,
+      status: SUBSCRIPTION_STATUS.PAYMENT_FAILED,
+      lastPaymentStatus: "failed",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export {
+  SUBSCRIPTION_STATUS,
+  MANUAL_OVERRIDE,
+  ORDER_STATUS,
+  ORDER_PENDING_TTL_MS,
+  isOrderExpired,
+  FALLBACK_SUBSCRIPTION_DEFAULTS,
+  normalizeSubscriptionDefaults,
+  getSubscriptionDefaults,
+  normalizeSubscriptionStatus,
+  normalizeManualOverride,
+  normalizeManualAction,
+  parseOptionalDateInput,
+  getSubscriptionByGroupId,
+  getGroupUsage,
+  incrementGroupUsage,
+  ensureGroupSubscriptionDoc,
+  getBoundGroupsByInviter,
+  canUseGroup,
+  activateGroupPaidSubscription,
+  markGroupPaymentFailed,
+};
