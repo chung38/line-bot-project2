@@ -57,6 +57,9 @@
       </header>
 
       <div class="member-v2-content">
+        <!-- 付款完成後的訂單確認訊息（依實際查詢到的訂單狀態顯示，不是單看網址參數） -->
+        <div id="orderStatusBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:14px;"></div>
+
         <!-- 未登入畫面 -->
         <section id="loginSection" class="member-v2-login-wrap" style="display:none;">
           <div class="member-v2-login-card">
@@ -265,6 +268,53 @@
       `;
     }
 
+    function renderOrderStatusBanner(status) {
+      const el = document.getElementById("orderStatusBanner");
+      if (!el) return;
+      const presets = {
+        paid: { bg: "#e6f7ee", color: "#0a7a3d", text: "✅ 付款成功，訂閱已開通。" },
+        pending: { bg: "#fff8e6", color: "#8a6300", text: "⏳ 訂單處理中，通常幾秒內就會完成，可稍後重新整理查看最新狀態。" },
+        failed: { bg: "#fdecec", color: "#b3261e", text: "❌ 付款失敗或已取消，尚未扣款成功，可重新選擇方案付款。" },
+        expired: { bg: "#fdecec", color: "#b3261e", text: "⌛ 這筆訂單已逾期未完成付款，請重新選擇方案付款。" },
+        unknown: { bg: "#f0f0f0", color: "#555", text: "找不到對應的訂單資訊。" },
+        error: { bg: "#fdecec", color: "#b3261e", text: "查詢付款結果時發生錯誤，請重新整理頁面。" },
+      };
+      const preset = presets[status] || presets.unknown;
+      el.style.display = "block";
+      el.style.background = preset.bg;
+      el.style.color = preset.color;
+      el.textContent = preset.text;
+    }
+
+    // 付款完成從銀行導回後，實際狀態一律以伺服器查到的訂單資料為準；
+    // 如果銀行端的 Notify 還沒到（訂單仍是 pending），就等一下再查一次，而不是相信網址參數。
+    async function checkPaymentReturnStatus() {
+      const params = new URLSearchParams(window.location.search);
+      const orderNo = params.get("orderNo");
+      if (!orderNo) return;
+
+      window.history.replaceState({}, document.title, "/member.html");
+
+      const fetchStatus = async () => {
+        try {
+          const res = await fetch(`/api/member/orders/${encodeURIComponent(orderNo)}`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data.status || null;
+        } catch {
+          return null;
+        }
+      };
+
+      let status = await fetchStatus();
+      if (status === "pending") {
+        // 給 NotifyURL 一點緩衝時間再查一次，避免使用者剛好卡在「銀行已扣款、通知還沒到」的空窗期。
+        await new Promise(r => setTimeout(r, 3000));
+        status = (await fetchStatus()) || status;
+      }
+      renderOrderStatusBanner(status || "unknown");
+    }
+
     async function init() {
       if (firebase.auth().isSignInWithEmailLink(window.location.href)) {
         let email = window.localStorage.getItem("emailForSignIn");
@@ -319,6 +369,7 @@
         showMember();
         renderProfile(data);
         await loadGroups();
+        await checkPaymentReturnStatus();
       } catch (error) {
         showLogin();
         setLoginMessage("系統暫時無法連線，請稍後再試。", true);
