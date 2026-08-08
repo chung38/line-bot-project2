@@ -205,6 +205,13 @@ const MANUAL_OVERRIDE = {
   FORCE_ACTIVE: "FORCE_ACTIVE",
   FORCE_INACTIVE: "FORCE_INACTIVE",
 };
+const ORDER_STATUS = {
+  PENDING: "pending",
+  PAID: "paid",
+  FAILED: "failed",
+  EXPIRED: "expired",
+};
+const ORDER_PENDING_TTL_MS = 30 * 60 * 1000; // 訂單建立後 30 分鐘內須完成付款，否則視為逾期
 const SUPPORTED_LANGS = {
   en: "英文",
   th: "泰文",
@@ -463,6 +470,14 @@ function toDateSafe(v) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+// 訂單建立後超過 expiresAt 仍是 pending，視為逾期未付款（僅影響顯示與是否允許再開新單，
+// 不會主動擋掉銀行端稍後才送達的成功通知——真的有扣款就還是要開通，只是會補記一筆警示 log）。
+function isOrderExpired(order) {
+  if (!order || order.status !== ORDER_STATUS.PENDING) return false;
+  const expiresAt = toDateSafe(order.expiresAt);
+  return !!expiresAt && expiresAt.getTime() < Date.now();
+}
+
 const FALLBACK_SUBSCRIPTION_DEFAULTS = {
   trialDays: 14,
   trialMaxGroups: 2,
@@ -698,7 +713,7 @@ async function canUseGroup(gid) {
 
   return { ok: false, code: "INACTIVE", sub, usage, message: "尚未開通訂閱。" };
 }
-async function activateGroupPaidSubscription(gid, options = {}) {
+async function activateGroupPaidSubscription(gid, options = {}, tx = null) {
   const defaults = await getSubscriptionDefaults();
   const plan = String(options.plan ?? defaults.paidPlan).trim() || defaults.paidPlan;
   const months = toSafeInt(options.months, defaults.paidMonths, 1);
@@ -706,7 +721,7 @@ async function activateGroupPaidSubscription(gid, options = {}) {
   const ownerUserId = options.ownerUserId || groupInviter.get(gid) || null;
 
   const ref = db.collection("groupSubscriptions").doc(gid);
-  const snap = await ref.get();
+  const snap = tx ? await tx.get(ref) : await ref.get();
   const current = snap.exists ? snap.data() : null;
 
   const now = new Date();
@@ -735,7 +750,11 @@ async function activateGroupPaidSubscription(gid, options = {}) {
     payload.usedQuota = 0;
   }
 
-  await ref.set(payload, { merge: true });
+  if (tx) {
+    tx.set(ref, payload, { merge: true });
+  } else {
+    await ref.set(payload, { merge: true });
+  }
 }
 
 async function markGroupPaymentFailed(gid){
@@ -798,6 +817,27 @@ async function ensureInviterIfMissing(gid, uid) {
   let inviter = groupInviter.get(gid);
   if (inviter) {
     return { ok: true, inviter, alreadyBound: true };
+  }
+
+  // 機器人被移出群組時，leaveGroupCleanup 只會清掉 groupInviter 綁定，
+  // groupSubscriptions（付費/試用狀態、ownerUserId）會刻意保留。
+  // 因此重新加回群組後，若這個群組先前已經有 ownerUserId 紀錄，
+  // 只有原本的持有人可以自動重新綁定，避免被其他成員搶先輸入「!啟動」奪走已付費的群組管理權。
+  const subSnap = await db.collection("groupSubscriptions").doc(gid).get();
+  const priorOwner = subSnap.exists ? subSnap.data()?.ownerUserId : null;
+
+  if (priorOwner && priorOwner !== uid) {
+    await addAdminLog(
+      "REBIND_BLOCKED",
+      `群組 ${gid} 重新綁定被拒：操作者非原持有人`,
+      "system",
+      { gid, attemptedUid: uid, priorOwner }
+    );
+    return {
+      ok: false,
+      code: "OWNER_MISMATCH",
+      message: "此群組先前已由其他人綁定管理，如需更換管理者請聯絡客服協助。"
+    };
   }
 
   groupInviter.set(gid, uid);
@@ -1602,7 +1642,12 @@ function safeEqual(a = "", b = "") {
 }
 
 function requireAdminSession(req, res, next) {
-  if (req.session?.isAdmin) return next();
+  if (req.session?.isAdmin) {
+    // 相容既有程式碼：原本 express-basic-auth 會設定 req.auth.user 給操作紀錄用，
+    // 改成 session 登入後這裡補回同樣的介面，避免每處 addAdminLog(...) 呼叫都要改寫。
+    req.auth = { user: req.session.adminUser || "admin" };
+    return next();
+  }
   return res.status(401).json({ success: false, error: "未登入或登入已逾時" });
 }
 
@@ -1625,6 +1670,7 @@ app.post("/admin/login", adminLoginLimiter, express.json({ limit: "10kb" }), (re
   const ok = safeEqual(username, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASS);
   if (!ok) return res.status(401).json({ success: false, error: "帳號或密碼錯誤" });
   req.session.isAdmin = true;
+  req.session.adminUser = username;
   res.json({ success: true });
 });
 
@@ -2360,7 +2406,7 @@ adminRouter.put("/subscriptions/:gid/config", async (req, res) => {
 
     await ref.set(payload, { merge: true });
 
-    await addAdminLog("subscription_config", `設定群組授權 ${gid}`, "admin", payload);
+    await addAdminLog("UPDATE_SUBSCRIPTION_CONFIG", `設定群組授權 ${gid}`, req.auth.user, payload);
 
     res.json({ ok: true });
   } catch (e) {
@@ -2561,6 +2607,8 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
     const amount = plan === "yearly" ? 3000 : 300;
     const months = plan === "yearly" ? 12 : 1;
     const orderNo = "ORD" + Date.now() + Math.floor(Math.random() * 1000);
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + ORDER_PENDING_TTL_MS);
 
     await db.collection("paymentOrders").doc(orderNo).set({
       userId: user.lineUserId,
@@ -2569,9 +2617,12 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
       plan,
       amount,
       months,
-      status: "pending",
+      status: ORDER_STATUS.PENDING,
+      expiresAt,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
+
+    await addAdminLog("PAYMENT_ORDER_CREATED", `建立訂單 ${orderNo}：${gid} ${plan}`, "system", { orderNo, gid, plan, amount });
 
     const tradeInfoObj = {
       MerchantID: NEWEBPAY_MERCHANT_ID,
@@ -2614,29 +2665,84 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
 
     const decrypted = aesDecrypt(TradeInfo);
     const result = JSON.parse(decrypted);
+    const orderNo = result?.Result?.MerchantOrderNo;
+    if (!orderNo) return res.status(400).send("0|MissingOrderNo");
 
-if (result.Status === "SUCCESS") {
-  const orderNo = result.Result.MerchantOrderNo;
-  const orderRef = db.collection("paymentOrders").doc(orderNo);
-  const orderSnap = await orderRef.get();
-  if (!orderSnap.exists) return res.status(404).send("0|OrderNotFound");
+    const orderRef = db.collection("paymentOrders").doc(orderNo);
 
-  const order = orderSnap.data();
-  if (order.status !== "paid") {
-await activateGroupPaidSubscription(order.gid, {
-  plan: order.plan,
-  months: order.months,
-  monthlyQuota: order.plan === "yearly" ? 3000 : 300,
-  ownerUserId: order.userId || null,
-});
-    await orderRef.set({
-      status: "paid",
-      paidAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    if (result.Status === "SUCCESS") {
+      // 藍新可能因為沒收到 200/1|OK 而重送通知，這裡整段包進同一個 transaction：
+      // 若訂單已經是 paid 就直接跳過，不會重複延長訂閱期限或重複開通。
+      const outcome = await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        if (!orderSnap.exists) return { code: "ORDER_NOT_FOUND" };
 
-    await addAdminLog("PAYMENT_SUCCESS", `${order.gid} ${order.plan}`, "system", { orderNo });
-  }
-}
+        const order = orderSnap.data();
+        if (order.status === ORDER_STATUS.PAID) {
+          return { code: "ALREADY_PROCESSED", order };
+        }
+
+        await activateGroupPaidSubscription(order.gid, {
+          plan: order.plan,
+          months: order.months,
+          monthlyQuota: order.plan === "yearly" ? 3000 : 300,
+          ownerUserId: order.userId || null,
+        }, tx);
+
+        tx.set(orderRef, {
+          status: ORDER_STATUS.PAID,
+          paidAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        return { code: "ACTIVATED", order, wasExpired: isOrderExpired(order) };
+      });
+
+      if (outcome.code === "ORDER_NOT_FOUND") {
+        return res.status(404).send("0|OrderNotFound");
+      }
+
+      if (outcome.code === "ACTIVATED") {
+        await addAdminLog("PAYMENT_SUCCESS", `${outcome.order.gid} ${outcome.order.plan}`, "system", { orderNo });
+        if (outcome.wasExpired) {
+          // 錢確實有收到，還是照常開通，但訂單早就過了原本設定的付款期限，
+          // 留一筆記錄讓管理員知道有這種「銀行端延遲通知」的情況存在。
+          await addAdminLog("PAYMENT_SUCCESS_AFTER_EXPIRY", `訂單 ${orderNo} 逾期後才收到成功通知，已照常開通`, "system", { orderNo, gid: outcome.order.gid });
+        }
+      }
+      // ALREADY_PROCESSED：代表這是重複通知，靜默略過即可，不用再寫一次 log 洗版。
+    } else {
+      // 非 SUCCESS（例如付款失敗、使用者取消）：標記訂單失敗並同步群組訂閱的付款狀態，
+      // 讓後台看得到失敗紀錄，而不是完全沒有反應。
+      const outcome = await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        if (!orderSnap.exists) return { code: "ORDER_NOT_FOUND" };
+
+        const order = orderSnap.data();
+        if (order.status === ORDER_STATUS.PAID) {
+          return { code: "ALREADY_PAID", order };
+        }
+
+        tx.set(orderRef, {
+          status: ORDER_STATUS.FAILED,
+          failReason: String(result.Status || "UNKNOWN"),
+          failedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        return { code: "MARKED_FAILED", order };
+      });
+
+      if (outcome.code === "MARKED_FAILED") {
+        await markGroupPaymentFailed(outcome.order.gid);
+        await addAdminLog(
+          "PAYMENT_FAILED",
+          `訂單 ${orderNo} 付款失敗：${result.Status || "UNKNOWN"}`,
+          "system",
+          { orderNo, gid: outcome.order.gid, status: result.Status }
+        );
+      }
+      // ORDER_NOT_FOUND / ALREADY_PAID：不用額外處理，仍回 1|OK 讓藍新不要一直重送。
+    }
+
     res.send("1|OK");
   } catch (e) {
     console.error("payment-notify 錯誤", e.message);
@@ -2671,17 +2777,76 @@ app.post("/api/member/line-link-code", requireMemberSession, async (req, res) =>
     res.status(500).json({ error: "無法產生綁定碼" });
   }
 });
-function redirectToMemberAfterPayment(req, res) {
-  return res.redirect(303, "/member.html?paid=1");
+async function handlePaymentReturn(req, res) {
+  try {
+    const src = req.method === "POST" ? req.body : req.query;
+    let orderNo = src?.MerchantOrderNo || src?.orderNo || null;
+
+    // 藍新的 ReturnURL 也會帶 TradeInfo，嘗試解出訂單編號，這樣即使不是走查詢字串也能對得到單。
+    if (!orderNo && src?.TradeInfo) {
+      try {
+        const decrypted = aesDecrypt(src.TradeInfo);
+        const result = JSON.parse(decrypted);
+        orderNo = result?.Result?.MerchantOrderNo || null;
+      } catch (e) {
+        console.error("payment-return 解密 TradeInfo 失敗:", e.message);
+      }
+    }
+
+    if (!orderNo) {
+      return res.redirect(303, "/member.html?orderStatus=unknown");
+    }
+
+    // 這裡回跳的網址本身不代表付款成功與否——真正權威的狀態是 NotifyURL（payment-notify）
+    // 寫進 Firestore 的那份。查一次目前狀態附在導回網址上，讓前端顯示對應的確認畫面，
+    // 而不是只看網址上的 ?paid=1 就當作已經付款成功。
+    const orderSnap = await db.collection("paymentOrders").doc(orderNo).get();
+    const status = orderSnap.exists ? orderSnap.data().status : "unknown";
+    return res.redirect(303, `/member.html?orderNo=${encodeURIComponent(orderNo)}&orderStatus=${encodeURIComponent(status)}`);
+  } catch (e) {
+    console.error("payment-return 錯誤:", e.message);
+    return res.redirect(303, "/member.html?orderStatus=error");
+  }
 }
 
-app.get("/api/member/payment-return", redirectToMemberAfterPayment);
+app.get("/api/member/payment-return", handlePaymentReturn);
 
 app.post(
   "/api/member/payment-return",
   express.urlencoded({ extended: true }),
-  redirectToMemberAfterPayment
+  handlePaymentReturn
 );
+
+// 讓會員頁在導回後可以主動輪詢訂單目前狀態（銀行端 Notify 有時會比使用者瀏覽器晚幾秒到），
+// 只允許查自己名下的訂單。
+app.get("/api/member/orders/:orderNo", requireMemberSession, async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const snap = await db.collection("paymentOrders").doc(orderNo).get();
+    if (!snap.exists) return res.status(404).json({ error: "找不到訂單" });
+
+    const order = snap.data();
+    if (order.firebaseUid !== req.session.firebaseUid) {
+      return res.status(403).json({ error: "無權限查看此訂單" });
+    }
+
+    res.json({
+      orderNo,
+      status: isOrderExpired(order) ? ORDER_STATUS.EXPIRED : order.status,
+      plan: order.plan,
+      amount: order.amount,
+      gid: order.gid,
+      createdAt: order.createdAt || null,
+      expiresAt: order.expiresAt || null,
+      paidAt: order.paidAt || null,
+      failedAt: order.failedAt || null,
+      failReason: order.failReason || null,
+    });
+  } catch (e) {
+    console.error("查詢訂單失敗:", e.message);
+    res.status(500).json({ error: "查詢訂單失敗" });
+  }
+});
 app.get("/api/member/me", requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
