@@ -148,11 +148,28 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
 app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), async (req, res) => {
   try {
     const { TradeInfo, TradeSha } = req.body;
+
+    // 安全診斷 log：只印長度/格式，TradeInfo 本身是藍新加密後的密文、TradeSha 是雜湊值，
+    // 兩者都不是我們的密鑰，印出來不會外洩任何機敏資訊，但足以判斷問題出在
+    // 「body 有沒有正常收到」還是「收到了但解密內容對不起來」。
+    console.log("📩 payment-notify 收到請求：", {
+      contentType: req.headers["content-type"],
+      hasTradeInfo: typeof TradeInfo === "string",
+      tradeInfoLength: TradeInfo?.length,
+      tradeInfoIsHex: typeof TradeInfo === "string" && /^[0-9a-fA-F]+$/.test(TradeInfo),
+      hasTradeSha: typeof TradeSha === "string",
+      tradeShaLength: TradeSha?.length,
+    });
+
     const checkSha = shaEncrypt(TradeInfo);
     if (checkSha !== TradeSha) {
       console.error("藍新通知簽章驗證失敗");
       return res.status(400).send("0|ErrorSha");
     }
+    // 這行印出來代表「簽章驗證通過」——也就是 NEWEBPAY_HASHKEY/HASHIV 的內容
+    // 已經被證實跟藍新那邊算出 TradeSha 用的是同一組值。如果接下來還是
+    // bad decrypt，代表問題不是「金鑰打錯」，要往別的方向查（見下方 aesDecrypt 的補充註解）。
+    console.log("✅ 簽章驗證通過，開始解密 TradeInfo");
 
     const decrypted = aesDecrypt(TradeInfo);
     const result = JSON.parse(decrypted);
