@@ -696,17 +696,21 @@ async function startCheckout(plan) {
 }
     async function updateGroup(gid) {
      const saveState = document.getElementById(`save-${gid}`);
-      const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
-      const langs = [...checkboxes]
-        .filter((checkbox) => checkbox.checked)
-        .map((checkbox) => checkbox.value);
-
-      const industry = document.getElementById(`industry_${gid}`).value;
 
       saveState.className = "member-v2-save-state saving";
       saveState.textContent = "儲存中...";
 
       try {
+        const checkboxes = document.querySelectorAll(`.lang-check-${gid}`);
+        const langs = [...checkboxes]
+          .filter((checkbox) => checkbox.checked)
+          .map((checkbox) => checkbox.value);
+
+        // 這個下拉選單的 id 是 industry-${gid}（連字號），
+        // 不是 industry_${gid}（底線）——兩者曾經對不起來，
+        // 導致這裡整個存檔動作連語言勾選一起靜默失敗，畫面完全沒反應。
+        const industry = document.getElementById(`industry-${gid}`).value;
+
         const response = await fetch(`/api/member/groups/${gid}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
