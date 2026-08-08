@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// 本專案所有 Firestore 讀寫都是由 server.js 透過 Firebase Admin SDK 完成
+// （Admin SDK 不受這份規則限制，一律可以讀寫）。
+// 前端（public/member.html）只用 Firebase Auth 做 Email Link 登入，
+// 從來沒有直接呼叫 Firestore Client SDK 讀寫任何 collection。
+//
+// 因此這裡刻意「全部拒絕」任何用戶端（瀏覽器 SDK / REST API 帶使用者憑證）
+// 直接存取 Firestore，避免：
+//   1. 專案剛建立時常見的「測試模式」規則（allow read, write: if true）
+//      忘記關掉、過期後變成完全公開。
+//   2. 之後有人不小心在前端加了 Firestore SDK，卻忘記另外設計規則，
+//      導致 groupSubscriptions（付款/授權狀態）、paymentOrders（訂單）、
+//      memberUsers（會員資料）這些集合被任何登入過 Firebase Auth 的人讀到或竄改。
+//
+// 如果之後真的需要讓前端直接讀寫某個 collection（例如未來要做即時通知），
+// 請針對「那個 collection」另外加規則，並且明確限制成
+// `request.auth.uid == resource.data.firebaseUid` 這種只能存取自己資料的條件，
+// 不要整個放寬 match /{document=**}。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
