@@ -198,7 +198,6 @@ async function ensureGroupSubscriptionDoc(gid, ownerUserId) {
     trialEndsAt: trialEnd,
     currentPeriodEnd: null,
     monthlyQuota: defaults.trialMonthlyQuota,
-    usedQuota: 0,
     manualOverride: MANUAL_OVERRIDE.NONE,
     manualReason: "",
     lastPaymentStatus: "",
@@ -297,7 +296,6 @@ async function activateGroupPaidSubscription(gid, options = {}, tx = null) {
   if (!snap.exists) {
     payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
     payload.trialEndsAt = null;
-    payload.usedQuota = 0;
   }
 
   if (tx) {
