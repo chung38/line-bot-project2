@@ -125,6 +125,8 @@ const shouldSkipSourceLanguage =
   });
 
   let replyText = "";
+  // 記錄實際成功翻出內容的語言數，用來決定要不要計入額度。
+  let successCount = 0;
 
   for (const code of targetLangs) {
     const result = langOutputs[code];
@@ -133,6 +135,7 @@ const shouldSkipSourceLanguage =
       continue;
     }
     replyText += `${LANG_LABELS[code] || code}：\n${result.trim()}\n\n`;
+    successCount++;
   }
 
   if (!replyText.trim()) return;
@@ -143,7 +146,12 @@ const shouldSkipSourceLanguage =
 
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
-  await incrementGroupUsage(gid, 1, masked.length);
+
+  // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、額度用盡、
+  // 服務異常等）時使用者其實什麼都沒拿到，不應該扣他的額度。
+  if (successCount > 0) {
+    await incrementGroupUsage(gid, 1, masked.length);
+  }
 }
 
 async function fetchImageUrlsByDate(gid, dateStr) {
