@@ -132,6 +132,17 @@ firebase deploy --only firestore:rules
 - 群組狀態的多 instance 同步（見上方「群組狀態與多 instance 的限制」）。
 - 測試覆蓋率：目前只覆蓋不依賴外部服務的純函式，`services/subscription.js`、
   `services/group.js`、`routes/*.js` 這些牽動 Firestore/LINE 的部分還沒有測試。
-- `lib/state.js` 裡的 `industryContextMap` 目前只有寫入、沒有任何地方讀取
-  （`buildTranslationPrompt` 實際上是直接查 `industryMasterDocs`），可能是之前
-  規劃但沒接上的功能，之後可以確認是否還需要。
+- **`maxGroups` 設定目前沒有作用**：後台訂閱設定頁可以填 `trialMaxGroups` /
+  `paidMaxGroups` / `manualMaxGroups`，也會存進 Firestore，但後端沒有任何一處
+  讀取它們來限制綁定數量，使用者可以無限綁定群組。要嘛在
+  `ensureInviterIfMissing()` 裡加上檢查（用 `getBoundGroupsByInviter()` 算數量），
+  要嘛把後台那三個欄位拿掉——現況是管理員以為設定生效、實際上沒有，容易誤判。
+- **額度是「事後扣」，可能小幅超用**：`canUseGroup()` 先檢查額度、翻譯完才
+  `incrementGroupUsage()`。因為 webhook 是先回 200 再背景處理，短時間湧入多則
+  訊息時它們會全部通過檢查（當下計數都還沒加），之後才一起累加，所以額度
+  3000 的群組有可能衝到 3010 左右。如果需要精準計費，要改成「先扣再翻、
+  失敗時退回」。
+- `services/translate.js` 的 retry 機制：`forceStrict` 對所有語言都會套用極簡
+  prompt，但觸發它的 `isInvalidZhTwTranslation()` 只對 zh-TW 有效，所以其他語言
+  的 retry 路徑實際上永遠不會執行。另外極簡 prompt 沒有帶入 `industryContext`，
+  重試時會失去產業術語脈絡。
