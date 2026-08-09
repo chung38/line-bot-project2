@@ -26,6 +26,7 @@ import {
   isValidPaidPlanKey,
   getOwnedSubscriptions,
   normalizeSubscriptionDefaults,
+  reserveGroupBinding,
 } from "../services/subscription.js";
 import { getMonthKey } from "../lib/utils.js";
 
@@ -447,4 +448,88 @@ test("getMaxGroupsForOwner：已到期的付費訂閱不會再撐高上限", asy
   const res = await getMaxGroupsForOwner("Uowner");
   assert.equal(res.limit, 1);
   assert.equal(res.planSource, "trial");
+});
+
+
+// ── 綁定上限的交易保護（回歸測試：以前是先查再寫，會有競態）──
+test("reserveGroupBinding：在上限內正常綁定並寫入 groupInviters", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 2,
+  });
+
+  const res = await reserveGroupBinding("G1", "Uowner");
+
+  assert.equal(res.ok, true);
+  assert.equal(res.code, "BOUND");
+  assert.equal(fake.read("groupInviters", "G1").userId, "Uowner");
+});
+
+test("reserveGroupBinding：已經綁在自己名下時直接放行，不重複計數", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 1,
+  });
+  fake.seed("groupInviters", "G1", { userId: "Uowner" });
+
+  const res = await reserveGroupBinding("G1", "Uowner");
+
+  assert.equal(res.ok, true);
+  assert.equal(res.code, "ALREADY_BOUND");
+});
+
+test("reserveGroupBinding：超過上限時拒絕，也不會寫入", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 1,
+  });
+  fake.seed("groupInviters", "G1", { userId: "Uowner" });
+
+  const res = await reserveGroupBinding("G2", "Uowner");
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "MAX_GROUPS_EXCEEDED");
+  assert.equal(fake.read("groupInviters", "G2"), null);
+});
+
+test("reserveGroupBinding：同時綁多個群組不會超出上限（回歸測試）", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 2,
+  });
+
+  // 五個群組「同時」觸發綁定。假 Firestore 的交易是排隊執行的，
+  // 所以只要程式把計數放進交易，就一定只有前兩個會成功。
+  const results = await Promise.all(
+    ["G1", "G2", "G3", "G4", "G5"].map(gid => reserveGroupBinding(gid, "Uowner"))
+  );
+
+  const okCount = results.filter(r => r.ok).length;
+  assert.equal(okCount, 2, "上限是 2，最多只能成功兩個");
+  assert.equal(fake.count("groupInviters"), 2);
+});
+
+test("reserveGroupBinding：上限設 0 代表不限制", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 0,
+  });
+
+  const results = await Promise.all(
+    ["G1", "G2", "G3"].map(gid => reserveGroupBinding(gid, "Uowner"))
+  );
+
+  assert.equal(results.every(r => r.ok), true);
+  assert.equal(fake.count("groupInviters"), 3);
+});
+
+test("reserveGroupBinding：缺少 gid 或 uid 時直接失敗", async () => {
+  freshDb();
+  assert.equal((await reserveGroupBinding("", "Uowner")).ok, false);
+  assert.equal((await reserveGroupBinding("G1", "")).ok, false);
 });

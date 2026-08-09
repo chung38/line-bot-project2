@@ -1,8 +1,8 @@
 // 群組層級的操作權限與 LINE 訊息回覆輔助函式。
 import { db, admin } from "../lib/firestore.js";
 import { client } from "../lib/line.js";
-import { groupInviter, deletedGroups, saveInviterForGroup } from "../lib/state.js";
-import { ensureGroupSubscriptionDoc, canBindMoreGroups } from "./subscription.js";
+import { groupInviter, deletedGroups, withInviterWriteGuard } from "../lib/state.js";
+import { ensureGroupSubscriptionDoc, reserveGroupBinding } from "./subscription.js";
 import { addAdminLog } from "../lib/adminLog.js";
 
 function isAuthorizedOperator(gid, uid) {
@@ -51,28 +51,31 @@ async function ensureInviterIfMissing(gid, uid) {
   // 以前後端完全沒讀這三個設定，管理員以為有生效、實際上使用者可以無限綁定群組。
   // 這裡是唯一會「新增一筆 groupInviters」的地方，所以檢查放在這裡就涵蓋
   // !啟動 與所有 postback 觸發的自動綁定。
-  const bindCheck = await canBindMoreGroups(uid, gid);
-  if (!bindCheck.ok) {
+  //
+  // reserveGroupBinding() 把「數目前綁了幾個 + 寫入這一筆」包在同一個 Firestore
+  // 交易裡，兩個群組同時輸入 !啟動 也不會雙雙通過檢查而超出上限。
+  // 外面再包一層 withInviterWriteGuard()，讓多 instance 的即時監聽不會用舊快照
+  // 把剛寫進去的綁定蓋掉。
+  const bindResult = await withInviterWriteGuard(gid, () => reserveGroupBinding(gid, uid));
+
+  if (!bindResult.ok) {
     await addAdminLog(
       "BIND_LIMIT_REACHED",
       `群組 ${gid} 綁定被拒：已達群組數量上限`,
       "system",
-      { gid, uid, limit: bindCheck.limit, boundCount: bindCheck.boundCount, planSource: bindCheck.planSource }
+      { gid, uid, limit: bindResult.limit, boundCount: bindResult.boundCount, planSource: bindResult.planSource }
     );
     return {
       ok: false,
-      code: bindCheck.code,
-      limit: bindCheck.limit,
-      boundCount: bindCheck.boundCount,
-      message: bindCheck.message,
+      code: bindResult.code,
+      limit: bindResult.limit,
+      boundCount: bindResult.boundCount,
+      message: bindResult.message,
     };
   }
 
+  // 交易已經把 groupInviters 寫進去了，這裡只要同步記憶體。
   groupInviter.set(gid, uid);
-  await saveInviterForGroup(gid, {
-    boundAt: admin.firestore.FieldValue.serverTimestamp(),
-    createdBy: uid,
-  });
   await ensureGroupSubscriptionDoc(gid, uid);
 
   return { ok: true, inviter: uid };

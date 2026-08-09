@@ -12,6 +12,7 @@ import https from "node:https";
 
 import { db, FirestoreSessionStore } from "./lib/firestore.js";
 import { loadAllGroupState, startGroupStateSync } from "./lib/state.js";
+import { startMaintenanceJobs } from "./services/maintenance.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerMemberRoutes } from "./routes/member.js";
 import { registerWebhookRoutes } from "./routes/webhook.js";
@@ -66,6 +67,9 @@ loadAllGroupState()
     // 另外保留一個低頻的整批重載當保險。設 STATE_SYNC_MODE=poll 可退回純輪詢。
     // 詳細取捨說明見 lib/state.js 檔頭註解。
     startGroupStateSync();
+
+    // 背景清理：過期 session、逾期未付款的訂單。細節與取捨見 services/maintenance.js。
+    startMaintenanceJobs();
 
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {

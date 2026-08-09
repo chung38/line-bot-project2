@@ -1,7 +1,7 @@
 // 記憶體版的假 Firestore，只實作這個專案實際會用到的 API 子集：
 //
 //   collection(name).doc(id).get() / set(data, {merge}) / update(data) / delete()
-//   collection(name).get() / where(field, "==", value) / limit(n) / add(data)
+//   collection(name).get() / where(field, "==" | "<" | "<=" | ">" | ">=", value) / limit(n) / add(data)
 //   collection(name).onSnapshot(onNext, onError)   ← lib/state.js 的即時同步
 //   db.runTransaction(fn)                          ← 額度預扣、綁定碼交易
 //   admin.firestore.FieldValue.increment / serverTimestamp
@@ -33,6 +33,14 @@ class FakeTimestamp {
   toDate() {
     return new Date(this._millis);
   }
+}
+
+function comparableValue(v) {
+  if (v instanceof FakeTimestamp) return v.toMillis();
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return v;
+  return null;
 }
 
 const SENTINEL = Symbol("fake-firestore-sentinel");
@@ -163,6 +171,19 @@ function createFakeFirestore() {
       entries = entries.filter(([, data]) => {
         const value = data?.[f.field];
         if (f.op === "==") return value === f.value;
+
+        // 範圍查詢（背景清理過期 session／逾期訂單會用到）。
+        // Date 與 FakeTimestamp 都先換算成毫秒再比，跟真的 Firestore 一樣
+        // 可以直接拿時間欄位做大小比較。
+        const left = comparableValue(value);
+        const right = comparableValue(f.value);
+        if (left === null || right === null) return false;
+
+        if (f.op === "<") return left < right;
+        if (f.op === "<=") return left <= right;
+        if (f.op === ">") return left > right;
+        if (f.op === ">=") return left >= right;
+
         throw new Error(`fakeFirestore 尚未支援的查詢運算子: ${f.op}`);
       });
     }

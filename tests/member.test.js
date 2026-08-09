@@ -14,7 +14,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeFirestore } from "./helpers/fakeFirestore.js";
 import { createFakeLineClient } from "./helpers/fakeLineClient.js";
-import { setFirestoreForTesting } from "../lib/firestore.js";
+import { setFirestoreForTesting, setIdTokenVerifierForTesting } from "../lib/firestore.js";
 import { setLineClientForTesting } from "../lib/line.js";
 import { groupInviter, groupLang, groupIndustry } from "../lib/state.js";
 import { registerMemberRoutes } from "../routes/member.js";
@@ -62,9 +62,15 @@ function createFakeApp() {
   };
 }
 
-function reset() {
+function reset({ decodedToken = null } = {}) {
   const fake = createFakeFirestore();
   setFirestoreForTesting(fake.db, fake.admin);
+  // 預設回一組「信箱已驗證」的 token 內容；測試要驗未驗證的情況時自己覆蓋。
+  setIdTokenVerifierForTesting(async () => decodedToken || {
+    uid: FUID,
+    email: "a@example.com",
+    email_verified: true,
+  });
   setLineClientForTesting(createFakeLineClient());
   groupInviter.clear();
   groupLang.clear();
@@ -95,6 +101,26 @@ function seedMember(fake, { gid = GID, lineUserId = UID, groupOwner = null } = {
 }
 
 const session = { firebaseUid: FUID, email: "a@example.com" };
+
+// express-session 的 req.session 有 regenerate() / save() 這兩個 callback 風格的方法，
+// 假 app 沒有 middleware，所以自己做一個最小可用的替身，順便記錄被呼叫幾次。
+function makeFakeSession() {
+  return {
+    regenerateCalls: 0,
+    saveCalls: 0,
+    regenerate(cb) {
+      this.regenerateCalls += 1;
+      // 真的 regenerate 會清掉舊資料，這裡照做，才測得出「登入狀態是之後才寫的」
+      delete this.firebaseUid;
+      delete this.email;
+      cb(null);
+    },
+    save(cb) {
+      this.saveCalls += 1;
+      cb(null);
+    },
+  };
+}
 
 // 組出一份藍新格式的通知 body（用專案自己的加解密函式，簽章一定會過）
 function buildNotifyBody({ orderNo, amount, status = "SUCCESS", merchantId = NEWEBPAY_MERCHANT_ID }) {
@@ -321,4 +347,51 @@ test("解除綁定：不是自己的群組不能解除", async () => {
 
   assert.equal(res.statusCode, 403);
   assert.ok(fake.read("groupInviters", GID), "綁定必須還在");
+});
+
+
+// ── 登入把關 ────────────────────────────────────────────────
+
+test("session-login：信箱已驗證時建立 session 並寫入 memberUsers", async () => {
+  const { fake, app } = reset();
+
+  const req = { body: { idToken: "fake-token" }, session: makeFakeSession() };
+  const res = await app.call("POST /api/member/session-login", req);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(req.session.firebaseUid, FUID);
+  assert.ok(fake.read("memberUsers", FUID));
+});
+
+test("session-login：信箱未驗證時拒絕登入（回歸測試：以前完全沒檢查）", async () => {
+  const { fake, app } = reset({
+    decodedToken: { uid: FUID, email: "a@example.com", email_verified: false },
+  });
+
+  const req = { body: { idToken: "fake-token" }, session: makeFakeSession() };
+  const res = await app.call("POST /api/member/session-login", req);
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(req.session.firebaseUid, undefined, "不能建立登入狀態");
+  assert.equal(fake.read("memberUsers", FUID), null, "也不該寫入會員資料");
+});
+
+test("session-login：登入前會換發 session id（session fixation 防護）", async () => {
+  const { app } = reset();
+
+  const session = makeFakeSession();
+  const req = { body: { idToken: "fake-token" }, session };
+  await app.call("POST /api/member/session-login", req);
+
+  assert.equal(session.regenerateCalls, 1, "必須先 regenerate 再寫入登入狀態");
+  assert.equal(session.saveCalls, 1, "要等 session 存好再回應");
+});
+
+test("session-login：沒有 idToken 時回 400", async () => {
+  const { app } = reset();
+  const res = await app.call("POST /api/member/session-login", {
+    body: {},
+    session: makeFakeSession(),
+  });
+  assert.equal(res.statusCode, 400);
 });

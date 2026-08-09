@@ -2,8 +2,9 @@
 // LINE 綁定碼、群組列表與設定。
 import express from "express";
 import crypto from "node:crypto";
+import rateLimit from "express-rate-limit";
 import admin from "firebase-admin";
-import { db } from "../lib/firestore.js";
+import { db, verifyIdToken } from "../lib/firestore.js";
 import { client } from "../lib/line.js";
 import {
   aesEncrypt,
@@ -30,6 +31,38 @@ import {
   SUBSCRIPTION_STATUS,
 } from "../services/subscription.js";
 
+// ── Rate limit ──────────────────────────────────────────────
+// 後台與 webhook 本來就有 limiter，會員端原本完全沒有。
+//
+// 三種強度：
+//   memberAuthLimiter — 登入與產生綁定碼。這兩支不需要既有 session 就能打，
+//                       而且各自會做一次 verifyIdToken／寫一筆 Firestore，成本最高。
+//   memberApiLimiter  — 一般已登入的 API，正常操作不會碰到這個上限。
+//   checkoutLimiter   — 建立訂單。每打一次就多一筆 paymentOrders 文件。
+//
+// payment-notify 刻意「不」掛 limiter：它是藍新主動送來的，被擋掉會導致
+// 已付款卻沒開通，而且它本身有簽章驗證把關。
+const memberAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const memberApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const checkoutLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 function requireMemberSession(req, res, next) {
   if (!req.session?.firebaseUid) {
     return res.status(401).json({ error: "未登入" });
@@ -42,14 +75,23 @@ function makeLinkCode() {
 }
 
 function registerMemberRoutes(app) {
-app.post("/api/member/session-login", async (req, res) => {
+app.post("/api/member/session-login", memberAuthLimiter, express.json({ limit: "10kb" }), async (req, res) => {
   try {
     const { idToken } = req.body;
     if (!idToken) return res.status(400).json({ error: "idToken 必填" });
 
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await verifyIdToken(idToken);
     const firebaseUid = decoded.uid;
     const email = decoded.email || "";
+
+    // 目前只開放 Email Link 登入，那條路徑一定會把 email_verified 設成 true。
+    // 這個檢查是為了「之後有人加開密碼登入」的情況：沒有驗證過的信箱不該能
+    // 登入會員中心，否則任何人都可以用別人的信箱註冊、進到對方的群組設定。
+    // 如果之後要支援其他登入方式，要一併確認它們的 email_verified 行為。
+    if (!decoded.email_verified) {
+      console.warn("session-login 拒絕未驗證的信箱:", firebaseUid);
+      return res.status(403).json({ error: "此信箱尚未完成驗證，請改用信箱連結登入" });
+    }
 
     const userRef = db.collection("memberUsers").doc(firebaseUid);
     const userSnap = await userRef.get();
@@ -95,7 +137,7 @@ app.post("/api/member/session-login", async (req, res) => {
 app.post("/api/member/logout", (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
-app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSession, async (req, res) => {
+app.post("/api/member/checkout", checkoutLimiter, express.json({ limit: "1mb" }), requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid, plan } = req.body;
@@ -316,7 +358,7 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
     res.status(500).send("0|Error");
   }
 });
-app.post("/api/member/line-link-code", requireMemberSession, async (req, res) => {
+app.post("/api/member/line-link-code", memberAuthLimiter, requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const email = req.session.email || "";
@@ -386,7 +428,7 @@ app.post(
 
 // 讓會員頁在導回後可以主動輪詢訂單目前狀態（銀行端 Notify 有時會比使用者瀏覽器晚幾秒到），
 // 只允許查自己名下的訂單。
-app.get("/api/member/orders/:orderNo", requireMemberSession, async (req, res) => {
+app.get("/api/member/orders/:orderNo", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const { orderNo } = req.params;
     const snap = await db.collection("paymentOrders").doc(orderNo).get();
@@ -414,7 +456,7 @@ app.get("/api/member/orders/:orderNo", requireMemberSession, async (req, res) =>
     res.status(500).json({ error: "查詢訂單失敗" });
   }
 });
-app.get("/api/member/me", requireMemberSession, async (req, res) => {
+app.get("/api/member/me", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
@@ -469,7 +511,7 @@ app.get("/api/member/me", requireMemberSession, async (req, res) => {
   }
 });
 
-app.get("/api/member/groups", requireMemberSession, async (req, res) => {
+app.get("/api/member/groups", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
@@ -542,7 +584,7 @@ app.get("/api/member/groups", requireMemberSession, async (req, res) => {
 // groupSubscriptions 會保留（付費期限、ownerUserId 都還在），
 // 所以之後在群組裡重新輸入「!啟動」就能接回原本的訂閱，
 // 而且因為 ownerUserId 還記著，別人也搶不走。
-app.delete("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
+app.delete("/api/member/groups/:gid", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid } = req.params;
@@ -570,7 +612,7 @@ app.delete("/api/member/groups/:gid", requireMemberSession, async (req, res) => 
   }
 });
 
-app.put("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
+app.put("/api/member/groups/:gid", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid } = req.params;

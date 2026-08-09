@@ -349,12 +349,9 @@ function isSubscriptionStillValid(sub, now = new Date()) {
   return false;
 }
 
-async function getMaxGroupsForOwner(userId, options = {}) {
-  const defaults = options.defaults || (await getSubscriptionDefaults());
-  const boundGroups = options.boundGroups || (await getBoundGroupsByInviter(userId));
-  const ownedSubs = options.ownedSubs || (await getOwnedSubscriptions(userId));
-  const now = options.now || new Date();
-
+// 從「名下有效訂閱」算出這個人的群組上限。純函式，沒有 I/O，
+// 所以交易內（reserveGroupBinding）跟交易外（getMaxGroupsForOwner）可以共用同一套規則。
+function resolveMaxGroupsFromSubs(defaults, ownedSubs = [], now = new Date()) {
   let limit = toSafeInt(defaults.trialMaxGroups, 0, 0);
   let planSource = "trial";
 
@@ -378,17 +375,24 @@ async function getMaxGroupsForOwner(userId, options = {}) {
     if (candidate === null) continue;
 
     // 0 = 不限制，直接勝出
-    if (candidate === 0) return { limit: 0, unlimited: true, planSource: candidateSource, boundCount: boundGroups.length };
+    if (candidate === 0) return { limit: 0, unlimited: true, planSource: candidateSource };
     if (candidate > limit) {
       limit = candidate;
       planSource = candidateSource;
     }
   }
 
+  return { limit, unlimited: limit === 0, planSource };
+}
+
+async function getMaxGroupsForOwner(userId, options = {}) {
+  const defaults = options.defaults || (await getSubscriptionDefaults());
+  const boundGroups = options.boundGroups || (await getBoundGroupsByInviter(userId));
+  const ownedSubs = options.ownedSubs || (await getOwnedSubscriptions(userId));
+  const now = options.now || new Date();
+
   return {
-    limit,
-    unlimited: limit === 0,
-    planSource,
+    ...resolveMaxGroupsFromSubs(defaults, ownedSubs, now),
     boundCount: boundGroups.length,
   };
 }
@@ -423,6 +427,63 @@ async function canBindMoreGroups(userId, gid = null) {
     planSource,
     message: `❌ 已達可綁定的群組數量上限（${limit} 個）。請先到會員中心把其他群組解除綁定，或升級方案後再試。`,
   };
+}
+
+// 綁定群組（含數量上限檢查），整段包在 Firestore 交易裡。
+//
+// 為什麼要用交易：canBindMoreGroups() 是「先查數量、再另外寫入」，兩個群組同時
+// 輸入「!啟動」時會同時查到一樣的數量、雙雙通過檢查，結果超出上限。放進交易後，
+// 「數一次 + 寫一筆」是原子操作，Firestore 會偵測到讀取集合有變動並自動重試，
+// 不可能兩筆同時成立。
+//
+// 上限值（limit）本身是在交易外先算好的：它取決於名下訂閱的方案等級，
+// 那個在綁定的瞬間不會變，沒必要拉進交易增加衝突機率。真正需要原子性的是
+// 「目前綁了幾個」這個數字。
+async function reserveGroupBinding(gid, uid, options = {}) {
+  if (!gid || !uid) {
+    return { ok: false, code: "NO_GID_OR_USER", message: "缺少 gid 或使用者 ID。" };
+  }
+
+  const defaults = options.defaults || (await getSubscriptionDefaults());
+  const ownedSubs = options.ownedSubs || (await getOwnedSubscriptions(uid));
+  const { limit, unlimited, planSource } = resolveMaxGroupsFromSubs(defaults, ownedSubs);
+
+  const inviterQuery = db.collection("groupInviters").where("userId", "==", uid);
+  const inviterRef = db.collection("groupInviters").doc(gid);
+
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(inviterQuery);
+    const boundGids = snap.docs.map(doc => doc.id);
+
+    // 已經綁在自己名下：重複執行 !啟動 不該被擋，也不用重寫一次。
+    if (boundGids.includes(gid)) {
+      return { ok: true, code: "ALREADY_BOUND", boundCount: boundGids.length, limit, unlimited };
+    }
+
+    if (!unlimited && boundGids.length >= limit) {
+      return {
+        ok: false,
+        code: "MAX_GROUPS_EXCEEDED",
+        boundCount: boundGids.length,
+        limit,
+        planSource,
+        message: `❌ 已達可綁定的群組數量上限（${limit} 個）。請先到會員中心把其他群組解除綁定，或升級方案後再試。`,
+      };
+    }
+
+    tx.set(
+      inviterRef,
+      {
+        userId: uid,
+        boundAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdBy: uid,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return { ok: true, code: "BOUND", boundCount: boundGids.length + 1, limit, unlimited, planSource };
+  });
 }
 
 // ── 額度：先扣再翻、失敗時退回 ───────────────────────────────
@@ -649,8 +710,10 @@ export {
   resolvePaidPlanConfig,
   getPaidPlanConfig,
   isSubscriptionStillValid,
+  resolveMaxGroupsFromSubs,
   getMaxGroupsForOwner,
   canBindMoreGroups,
+  reserveGroupBinding,
   canUseGroup,
   reserveGroupTranslation,
   commitGroupTranslation,

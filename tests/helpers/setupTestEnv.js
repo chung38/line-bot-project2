@@ -19,3 +19,8 @@ process.env.NEWEBPAY_MERCHANT_ID ||= "TESTMERCHANT";
 process.env.NEWEBPAY_HASHKEY ||= "0123456789abcdef0123456789abcdef";
 process.env.NEWEBPAY_HASHIV ||= "0123456789abcdef";
 process.env.BASE_URL ||= "https://test.example.com";
+
+// tests/admin.test.js 會真的起一個 express server 來測後台登入流程，需要這兩個。
+process.env.ADMIN_USER ||= "test-admin";
+process.env.ADMIN_PASS ||= "test-admin-password";
+process.env.SESSION_SECRET ||= "test-session-secret";

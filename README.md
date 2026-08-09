@@ -57,6 +57,7 @@ services/           跟平台無關的商業邏輯
   translateLogic.js   翻譯相關的純函式（語言偵測、mention 遮罩/還原、zh-TW 輸出驗證）
                        —— 不依賴 Firebase，可以直接寫單元測試
   translate.js        呼叫 OpenAI 的翻譯邏輯，組裝 prompt，重用 translateLogic.js 的純函式
+  maintenance.js      背景清理（過期 session、逾期未付款訂單），由 server.js 定期呼叫
 routes/             把 services/ 組裝成實際的路由，各自匯出一個 register*Routes(app) 函式
   webhook.js          LINE webhook：事件處理、指令（!啟動 / !設定 / !文宣）
   admin.js            後台管理 API（/admin/*，session 登入）
@@ -125,10 +126,14 @@ npm test
 | `tests/group.test.js` | `services/group.js` 綁定規則與回覆輔助函式 |
 | `tests/subscription.test.js` | `services/subscription.js` 訂閱狀態機、額度預扣/退回、群組數量上限 |
 | `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
-| `tests/member.test.js` | `routes/member.js` checkout 金額來源、藍新通知驗證、解除綁定 |
+| `tests/member.test.js` | `routes/member.js` 登入把關、checkout 金額來源、藍新通知驗證、解除綁定 |
+| `tests/admin.test.js` | `routes/admin.js` 登入/權限/群組設定/訂閱設定（真的起一個 express server） |
+| `tests/maintenance.test.js` | `services/maintenance.js` 背景清理該刪什麼、不該刪什麼 |
 
-`routes/admin.js` 還沒有涵蓋——它主要是後台 CRUD 與 session 驗證，
-要測的話需要再包一層 express 的請求測試，是下一個可以補的地方。
+`tests/admin.test.js` 跟其他測試不一樣：它會真的用 express + express-session
+起一個伺服器（監聽隨機埠）再用 fetch 打進去。因為後台的權限判斷是靠 middleware
+串起來的，直接呼叫 handler 測不到「沒登入會不會被擋」這種真正重要的行為。
+這兩個套件本來就是專案的相依，不需要額外裝 supertest。
 
 ## Firestore 安全規則
 
@@ -151,20 +156,15 @@ firebase deploy --only firestore:rules
 
 ## 已知待改進項目
 
-- `routes/admin.js` 還沒有測試（見上方「測試」）。
-- 綁定數量上限沒有交易保護：兩個群組同時輸入 `!啟動` 時可能同時通過檢查，
-  小幅超出上限。影響很小，暫時沒處理。
-- 過期的 session 文件（`expressSessions`）只在被讀取到時才刪除，沒有背景清理。
-  建議在 Firebase Console 對這個 collection 的 `expires` 欄位設一個 TTL 政策。
-- 逾期未付款的 `paymentOrders` 也不會被清掉，只是在查詢時被標成 `EXPIRED`。
-- `/api/member/session-login` 沒有檢查 `decoded.email_verified`。目前只開放
-  Email Link 登入（一定是 verified），但之後若加開密碼登入要記得補。
-- 會員端 API（`/api/member/*`）還沒有掛 rate limiter，後台與 webhook 都有。
-- `npm audit` 仍有一項 moderate（`uuid` 在 `google-gax` 依賴鏈裡），要修需要
-  major 版本升級 `firebase-admin`，且該漏洞只在呼叫 uuid 時傳入 `buf` 參數才會
-  觸發，本專案沒有這種用法。
-- 額度預扣是以「一則訊息 = 1 次」計算，跟實際翻成幾種語言無關。
-- PDF 翻譯（版面保留）仍在另一條線上處理，尚未併進這個 repo。
+- **額度預扣是以「一則訊息 = 1 次」計算**，跟實際翻成幾種語言無關。要改成按語言
+  數計費的話，`reserveGroupTranslation()` 已經支援傳入 `translationCount`，但目標
+  語言是在背景處理才算出來的，呼叫順序要一起調整。這是計價方式的商業決定，
+  沒有動它。
+- **`npm audit` 剩一項 moderate**：`uuid` 在 `google-gax` 的依賴鏈裡。已實測過
+  升級到 `firebase-admin@13` 也不會解掉（google-gax 自己鎖著舊版 uuid），
+  所以沒有做這個 major 升級。該漏洞只在呼叫 uuid 時傳入 `buf` 參數才會觸發，
+  本專案沒有這種用法。
+- **PDF 翻譯（版面保留）** 仍在另一條線上處理，尚未併進這個 repo。
 
 ## 修正紀錄
 
@@ -181,6 +181,29 @@ firebase deploy --only firestore:rules
   會被序列化，不可能超用；翻譯成功只補記字元數（`commitGroupTranslation()`），
   失敗／逾時／沒有目標語言則退回（`releaseGroupTranslation()`）。
   `monthKey` 由預扣時決定並一路帶著，跨月不會退到下個月的計數上。
+### 第三批（清理待改進項目）
+
+- **綁定上限改成交易保護**：`reserveGroupBinding()` 把「數目前綁了幾個 + 寫入
+  這一筆」包在同一個 Firestore 交易裡，多個群組同時輸入 `!啟動` 不會再雙雙通過
+  檢查而超出上限。外面包一層 `withInviterWriteGuard()`，多 instance 的即時監聽
+  也不會用舊快照蓋掉剛寫進去的綁定。
+- **新增背景清理**（`services/maintenance.js`，每 6 小時一次）：刪除過期的
+  `expressSessions`、把逾期未付款的 `paymentOrders` 標成 `expired`、刪除 180 天前
+  的未成交訂單。已付款的訂單一律保留；逾期訂單只標記不刪除，銀行端延遲送達的
+  成功通知仍然對得到單。每輪只處理一批（預設 200 筆），清理失敗只印 log，
+  不影響正常服務。
+  > 如果你的 Firebase 專案可以設 TTL 政策，對 `expressSessions` 的 `expires`
+  > 欄位設一個 TTL 會比這裡的清理更省錢，那時可以用
+  > `startMaintenanceJobs({ sessions: false })` 關掉那一項。
+- **會員端 API 掛上 rate limiter**：登入與產生綁定碼 30 次／15 分鐘、一般 API
+  120 次／分鐘、建立訂單 20 次／10 分鐘。`payment-notify` 刻意不掛——它是藍新
+  主動送來的，被擋掉會導致已付款卻沒開通，而且它本身有簽章驗證把關。
+- **`session-login` 加上 `email_verified` 檢查**：目前只開放 Email Link 登入
+  （一定是 verified），這個檢查是為了之後有人加開密碼登入的情況。
+- **補上 `routes/admin.js` 與 `services/maintenance.js` 的測試**，並為
+  Firebase Auth 的 token 驗證加了測試注入點（`setIdTokenVerifierForTesting`），
+  讓登入把關的邏輯測得到。測試總數從 112 增加到 147。
+
 ### 第二批（安全性與計費）
 
 - **付費方案的價格／月數／額度不再寫死**：原本 `routes/member.js` 的 checkout 與
