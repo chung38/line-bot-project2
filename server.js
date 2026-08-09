@@ -11,7 +11,7 @@ import session from "express-session";
 import https from "node:https";
 
 import { db, FirestoreSessionStore } from "./lib/firestore.js";
-import { loadAllGroupState, startPeriodicStateRefresh } from "./lib/state.js";
+import { loadAllGroupState, startGroupStateSync } from "./lib/state.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerMemberRoutes } from "./routes/member.js";
 import { registerWebhookRoutes } from "./routes/webhook.js";
@@ -55,9 +55,10 @@ setInterval(() => {
 // 避免服務剛啟動、還沒載入完成時就處理到 webhook 事件。
 loadAllGroupState()
   .then(() => {
-    // 短期緩解「重啟才會同步」「多 instance 互相看不到彼此更新」的問題，
+    // 多 instance 之間的狀態同步：預設掛 Firestore 即時監聽（約 1 秒內一致），
+    // 另外保留一個低頻的整批重載當保險。設 STATE_SYNC_MODE=poll 可退回純輪詢。
     // 詳細取捨說明見 lib/state.js 檔頭註解。
-    startPeriodicStateRefresh();
+    startGroupStateSync();
 
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {

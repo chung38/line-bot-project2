@@ -16,7 +16,11 @@ import {
   leaveGroupCleanup,
 } from "../lib/state.js";
 import { ensureInviterIfMissing, isAuthorizedOperator, getGroupMemberDisplayName, safeReply, safeReplyOrPush } from "../services/group.js";
-import { canUseGroup, incrementGroupUsage } from "../services/subscription.js";
+import {
+  reserveGroupTranslation,
+  commitGroupTranslation,
+  releaseGroupTranslation,
+} from "../services/subscription.js";
 import {
   translateLineSegments,
   extractMentionsFromLineMessage,
@@ -24,6 +28,8 @@ import {
   isOnlyEmojiOrWhitespace,
   isSymbolOrNum,
   detectLang,
+  resolveTargetLangs,
+  summarizeTranslationOutputs,
 } from "../services/translate.js";
 
 const webhookLimiter = rateLimit({
@@ -33,124 +39,110 @@ const webhookLimiter = rateLimit({
   legacyHeaders: false
 });
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, hasOfficialMentionData = false) {
-  const allNeededLangs = new Set();
-  const langOutputs = {};
+// reservation 是 handleEvent 事先用 reserveGroupTranslation() 預扣下來的額度。
+// 這個函式負責在結束時「結清」：有翻出東西就補記字元數，沒有就把預扣的次數退回去。
+// 所有提前 return 的分支都會經過 finally，不會漏退。
+async function processTranslationInBackground(
+  replyToken,
+  gid,
+  uid,
+  masked,
+  segments,
+  rawLines,
+  langSet,
+  sourceLang,
+  hasOfficialMentionData = false,
+  reservation = null
+) {
+  let billable = false;
 
-  const textOnly = masked
-    .replace(/__MENTION_\d+__/g, "")
-    .replace(/(https?:\/\/[^\s]+)/gi, "")
-    .replace(/\s+/g, "")
-    .trim();
+  try {
+    const textOnly = masked
+      .replace(/__MENTION_\d+__/g, "")
+      .replace(/(https?:\/\/[^\s]+)/gi, "")
+      .replace(/\s+/g, "")
+      .trim();
 
-  if (!textOnly) {
-  console.log("Skip mention-only or URL-only message");
-  return;
-}
-
-  const mergedText = rawLines.join("\n");
-  const normalizedMergedText = normalizeTextForLangDetect(mergedText);
-
-  const chineseLen = (normalizedMergedText.match(/[\u4e00-\u9fff]/g) || []).length;
-  const thaiLen = (normalizedMergedText.match(/[\u0E00-\u0E7F]/g) || []).length;
-  const viCharLen = (normalizedMergedText.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
-  const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
-
-  const totalMeaningfulLen = normalizedMergedText.replace(/\s+/g, "").length || 1;
-  const chineseRatio = chineseLen / totalMeaningfulLen;
-  const foreignLen = thaiLen + viCharLen + latinLen;
-
-  const isChineseDominant =
-    (chineseLen >= 2 && chineseRatio >= 0.45) ||
-    (chineseLen >= 4 && foreignLen === 0);
-
-if (!isChineseDominant) {
-  allNeededLangs.add("zh-TW");
-}
-
-/*
-  sourceLang 是目前訊息偵測出的原文語言。
-
-  - 中文為主：群組勾選的每個外文都要翻。
-    例如「明天請 @Pakat 06:30 上班」，
-    即使 @Pakat 是泰文姓名，也仍必須輸出泰文。
-
-  - 非中文為主：跳過原文語言，避免把泰文再翻泰文、
-    越南文再翻越南文或印尼文再翻印尼文。
-
-  hasOfficialMentionData 保留給 mention 的官方遮罩／還原流程使用，
-  不用它來決定是否跳過來源語言。
-*/
-const isForeignSource = ["en", "th", "vi", "id"].includes(sourceLang);
-
-const shouldSkipSourceLanguage =
-  isForeignSource &&
-  !isChineseDominant;
-
-[...langSet].forEach(code => {
-  if (code === "zh-TW") return;
-
-  if (shouldSkipSourceLanguage && code === sourceLang) {
-    return;
-  }
-
-  allNeededLangs.add(code);
-});
-
-  const targetLangs = [...allNeededLangs];
-  if (!targetLangs.length) return;
-
-  let translationTimedOut = false;
-
-  const tasks = targetLangs.map(async code => {
-    try {
-      const result = await translateLineSegments(mergedText, code, gid, segments);
-      langOutputs[code] = result;
-    } catch (e) {
-      console.error(`❌ ${code} 翻譯失敗:`, e.message);
-      langOutputs[code] = "";
+    if (!textOnly) {
+      console.log("Skip mention-only or URL-only message");
+      return;
     }
-  });
 
-  await Promise.race([
-    Promise.allSettled(tasks),
-    new Promise((_, reject) =>
-      setTimeout(() => {
+    const mergedText = rawLines.join("\n");
+
+    /*
+      要翻成哪幾種語言的判斷（中文為主 → 翻所有勾選的外語；
+      外文為主 → 補上 zh-TW 並跳過原文語言本身）已經搬到
+      services/translateLogic.js 的 resolveTargetLangs()，那是純函式、有單元測試。
+    */
+    const targetLangs = resolveTargetLangs({ text: mergedText, langSet, sourceLang });
+    if (!targetLangs.length) return;
+
+    const langOutputs = {};
+    let translationTimedOut = false;
+
+    const tasks = targetLangs.map(async code => {
+      try {
+        const result = await translateLineSegments(mergedText, code, gid, segments);
+        langOutputs[code] = result;
+      } catch (e) {
+        console.error(`❌ ${code} 翻譯失敗:`, e.message);
+        langOutputs[code] = "";
+      }
+    });
+
+    // 逾時計時器要記得清掉：原本每處理一則訊息就留下一個 28 秒的 timer，
+    // 高流量時會累積一堆不必要的 handle（測試環境也會因此拖到最後才結束）。
+    let timeoutId = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
         translationTimedOut = true;
         reject(new Error("Translation timeout"));
-      }, 28000)
-    )
-  ]).catch(e => {
-    console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
-  });
+      }, 28000);
+    });
 
-  let replyText = "";
-  // 記錄實際成功翻出內容的語言數，用來決定要不要計入額度。
-  let successCount = 0;
+    await Promise.race([Promise.allSettled(tasks), timeoutPromise]).catch(e => {
+      console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
+    });
+    if (timeoutId) clearTimeout(timeoutId);
 
-  for (const code of targetLangs) {
-    const result = langOutputs[code];
-    if (!result || !result.trim()) {
-      replyText += `${LANG_LABELS[code] || code}：\n（翻譯失敗或逾時）\n\n`;
-      continue;
+    // successCount 會排除 translate.js 的失敗字串（[xxx...翻譯失敗] / （xx翻譯異常...）），
+    // 所以「有回覆但其實全部失敗」的情況不會被計費。
+    const { replyText: body, successCount } = summarizeTranslationOutputs({
+      targetLangs,
+      outputs: langOutputs,
+    });
+
+    if (!body.trim()) return;
+
+    const replyText = translationTimedOut
+      ? `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${body}`
+      : body;
+
+    const userName = await getGroupMemberDisplayName(gid, uid);
+    await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
+
+    // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、服務異常等）時
+    // 使用者其實什麼都沒拿到，不應該扣他的額度。
+    billable = successCount > 0;
+  } finally {
+    if (reservation?.ok) {
+      try {
+        if (billable) {
+          await commitGroupTranslation(gid, {
+            monthKey: reservation.monthKey,
+            charCount: masked.length,
+          });
+        } else {
+          await releaseGroupTranslation(gid, {
+            monthKey: reservation.monthKey,
+            translationCount: reservation.reserved,
+          });
+        }
+      } catch (e) {
+        console.error("❌ 額度結算失敗:", e.message);
+      }
     }
-    replyText += `${LANG_LABELS[code] || code}：\n${result.trim()}\n\n`;
-    successCount++;
-  }
-
-  if (!replyText.trim()) return;
-
-  if (translationTimedOut) {
-    replyText = `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${replyText}`;
-  }
-
-  const userName = await getGroupMemberDisplayName(gid, uid);
-  await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
-
-  // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、額度用盡、
-  // 服務異常等）時使用者其實什麼都沒拿到，不應該扣他的額度。
-  if (successCount > 0) {
-    await incrementGroupUsage(gid, 1, masked.length);
   }
 }
 
@@ -600,16 +592,19 @@ if (event.message?.mention) {
 
     const sourceLang = detectLang(normalizedForDetect);
 
-    const useResult = await canUseGroup(gid);
-    if (!useResult.ok) return null;
-
- const rawLines = masked.split("\n");
+    const rawLines = masked.split("\n");
     if (!rawLines.length) return null;
 
+    // 額度改成「先扣再翻」：預扣是在 Firestore 交易裡完成的，
+    // 所以就算同一瞬間湧入大量訊息也不會超用（原本事後才累加，3000 的額度可能衝到 3010）。
+    // 翻譯失敗或沒有任何目標語言時，processTranslationInBackground 會把預扣退回去。
+    const reservation = await reserveGroupTranslation(gid);
+    if (!reservation.ok) return null;
+
     processTranslationInBackground(
-  replyToken, gid, uid, masked, segments, rawLines,
-  langSet, sourceLang, hasOfficialMentionData
-).catch(e => console.error("背景翻譯失敗:", e));
+      replyToken, gid, uid, masked, segments, rawLines,
+      langSet, sourceLang, hasOfficialMentionData, reservation
+    ).catch(e => console.error("背景翻譯失敗:", e));
   }
 
   return null;
@@ -636,4 +631,12 @@ function registerWebhookRoutes(app) {
   );
 }
 
-export { registerWebhookRoutes, sendMenu };
+export {
+  registerWebhookRoutes,
+  sendMenu,
+  // 下面兩個匯出是給 tests/webhook.test.js 用的：
+  // 讓測試可以直接餵一個 LINE 事件進來，驗證綁定流程與額度預扣/退回，
+  // 不需要真的起一個 HTTP server 或通過 LINE 的簽章驗證。
+  handleEvent,
+  processTranslationInBackground,
+};

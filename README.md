@@ -50,7 +50,7 @@ lib/                跟外部服務對接的基礎設施
   utils.js            日期/月份/數字轉換、debugLog
   adminLog.js         後台操作紀錄（adminLogs collection）
   state.js            群組層級的共用狀態（語言/邀請人/行業別/封鎖清單），
-                       含定期重新整理機制，細節見檔案內註解
+                       含 Firestore 即時監聽的多 instance 同步，細節見檔案內註解
 services/           跟平台無關的商業邏輯
   subscription.js     訂閱狀態機、用量計算、付款訂單狀態
   group.js            群組操作權限、LINE 訊息回覆輔助
@@ -62,8 +62,8 @@ routes/             把 services/ 組裝成實際的路由，各自匯出一個 
   admin.js            後台管理 API（/admin/*，session 登入）
   member.js           會員中心 API（/api/member/*，Firebase Auth 登入）
 public/             前端靜態檔案（會員中心、後台管理面板）
-tests/              單元測試（node:test），只測 services/translateLogic.js 和 lib/utils.js
-                       這種不依賴 Firebase/LINE 的純函式
+tests/              單元測試（node:test），用假的 Firestore/LINE/OpenAI 注入，
+                       涵蓋 services/ 與 routes/webhook.js，helpers/ 放共用的假實作
 ```
 
 依賴方向固定是 `routes → services → lib`，反過來不行，避免循環依賴。
@@ -76,21 +76,28 @@ zh-TW 翻譯異常）要在同一個檔案裡跳來跳去找相關程式碼。�
 翻譯相關的問題，直接看 `services/translate.js` 和 `services/translateLogic.js`
 就好，不會混到金流或後台管理的程式碼。
 
-## 群組狀態與多 instance 的限制
+## 群組狀態與多 instance 同步
 
 `lib/state.js` 裡的群組語言/邀請人/行業別設定是 process 內的記憶體 Map，
-啟動時整批從 Firestore 載入，之後同步讀取、非同步寫回。這代表：
+啟動時整批從 Firestore 載入，之後同步讀取、非同步寫回。讀取不用 `await`，
+webhook 處理路徑上不會有多餘的網路往返。
 
-- 服務重啟後，要等 `loadAllGroupState()` 跑完才有資料（通常一兩秒內）。
-- 如果之後要開多台 instance，各 instance 的記憶體彼此不會即時同步。目前用
-  `startPeriodicStateRefresh()`（預設每 5 分鐘）做緩解，最多等一個週期就會跟
-  資料庫同步，但不是即時的。
+多台 instance 之間用 Firestore 的即時監聽（`collection.onSnapshot`）同步：
+任何一台寫入後，其他 instance 通常在 1 秒內就會收到 `docChanges` 並更新自己的
+記憶體。這條路徑不需要把幾十處同步讀取改成 `await`，呼叫端完全不用動。
 
-如果之後真的要上多台 instance 且需要即時同步，正確做法是把這些 Map 換成
-「每次讀都查 Firestore、外面包一層短 TTL 快取」，但那需要把所有同步讀取
-（例如 `groupLang.get(gid)`）幾十處呼叫全部改成 `await`，影響範圍大，
-建議另外排一輪、而且要在有真實環境可以實際測試的情況下再做。詳細取捨說明
-寫在 `lib/state.js` 檔案開頭。
+三個配套機制（實作在 `lib/state.js`）：
+
+1. **本地寫入保護**：自己剛寫出去、Firestore 還沒回寫完成的文件，會暫時忽略
+   對同一份文件的遠端快照，避免「自己的新設定被舊快照蓋回去」。
+2. **監聽斷線自動重連**：`onSnapshot` 的 error callback 以指數退避重新掛上監聽。
+3. **低頻整批重載當保險**（預設 30 分鐘）：萬一監聽無聲無息地失效，最多一個
+   週期會自我修正。
+
+`server.js` 只需要呼叫 `startGroupStateSync()`。若環境不允許長連線，設定
+`STATE_SYNC_MODE=poll` 就會退回舊行為（只做定期整批重載，預設 5 分鐘）。
+
+服務重啟後仍要等 `loadAllGroupState()` 跑完才有資料（通常一兩秒內）。
 
 ## 測試
 
@@ -98,15 +105,30 @@ zh-TW 翻譯異常）要在同一個檔案裡跳來跳去找相關程式碼。�
 npm test
 ```
 
-目前的測試只涵蓋 `services/translateLogic.js`（語言偵測、mention 遮罩/還原、
-zh-TW 輸出驗證這幾個之前實際除錯過的地方）和 `lib/utils.js`（日期/月份/數字
-轉換）。這兩個檔案刻意不 import 任何需要 Firebase 憑證的模組，所以測試可以
-直接跑，不需要 mock 或假的 `.env`。
+測試用 `node:test`，不需要 Firebase 憑證、不會發任何網路請求。三個外部相依
+都以假的實作注入（見 `tests/helpers/`）：
 
-其他大部分邏輯（`services/subscription.js`、`services/group.js`、
-`routes/*.js`）都會牽動 Firestore/LINE API，需要更完整的 mock 或一個測試用的
-Firebase 專案才能好好測試，目前還沒有涵蓋——如果要繼續補測試，這是下一個
-可以做的地方。
+- `fakeFirestore.js` — 記憶體版 Firestore，只實作專案實際用到的 API 子集。
+  兩個刻意做出來的行為讓測試有意義：`runTransaction` 會排隊執行（模擬交易的
+  序列化語意，才測得出併發預扣會不會超用）、`onSnapshot` 會在寫入後推送
+  `docChanges`（模擬另一台 instance 的變更）。
+- `fakeLineClient.js` — 只記錄 reply/push 呼叫，不真的送訊息。
+- `setChatCompletionForTesting()`（`services/translate.js`）— 換掉 OpenAI 呼叫。
+
+涵蓋範圍：
+
+| 測試檔 | 對應模組 |
+| --- | --- |
+| `tests/utils.test.js` | `lib/utils.js` 日期/月份/數字轉換 |
+| `tests/translateLogic.test.js` | 語言偵測、mention 遮罩/還原、輸出驗證等純函式 |
+| `tests/translate.test.js` | `services/translate.js` 的重試路徑、prompt 組裝、快取 |
+| `tests/group.test.js` | `services/group.js` 綁定規則與回覆輔助函式 |
+| `tests/subscription.test.js` | `services/subscription.js` 訂閱狀態機、額度預扣/退回、群組數量上限 |
+| `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
+
+`routes/admin.js` 與 `routes/member.js` 還沒有涵蓋——它們主要是 CRUD 與
+session/Firebase Auth 驗證，要測的話需要再包一層 express 的請求測試，
+是下一個可以補的地方。
 
 ## Firestore 安全規則
 
@@ -129,20 +151,31 @@ firebase deploy --only firestore:rules
 
 ## 已知待改進項目
 
-- 群組狀態的多 instance 同步（見上方「群組狀態與多 instance 的限制」）。
-- 測試覆蓋率：目前只覆蓋不依賴外部服務的純函式，`services/subscription.js`、
-  `services/group.js`、`routes/*.js` 這些牽動 Firestore/LINE 的部分還沒有測試。
-- **`maxGroups` 設定目前沒有作用**：後台訂閱設定頁可以填 `trialMaxGroups` /
-  `paidMaxGroups` / `manualMaxGroups`，也會存進 Firestore，但後端沒有任何一處
-  讀取它們來限制綁定數量，使用者可以無限綁定群組。要嘛在
-  `ensureInviterIfMissing()` 裡加上檢查（用 `getBoundGroupsByInviter()` 算數量），
-  要嘛把後台那三個欄位拿掉——現況是管理員以為設定生效、實際上沒有，容易誤判。
-- **額度是「事後扣」，可能小幅超用**：`canUseGroup()` 先檢查額度、翻譯完才
-  `incrementGroupUsage()`。因為 webhook 是先回 200 再背景處理，短時間湧入多則
-  訊息時它們會全部通過檢查（當下計數都還沒加），之後才一起累加，所以額度
-  3000 的群組有可能衝到 3010 左右。如果需要精準計費，要改成「先扣再翻、
-  失敗時退回」。
-- `services/translate.js` 的 retry 機制：`forceStrict` 對所有語言都會套用極簡
-  prompt，但觸發它的 `isInvalidZhTwTranslation()` 只對 zh-TW 有效，所以其他語言
-  的 retry 路徑實際上永遠不會執行。另外極簡 prompt 沒有帶入 `industryContext`，
-  重試時會失去產業術語脈絡。
+- `routes/admin.js` / `routes/member.js` 還沒有測試（見上方「測試」）。
+- 綁定數量上限的判定是「取名下所有有效群組對應方案上限的最大值」。同一個人
+  同時有付費與試用群組時，上限會以付費方案為準；如果之後要改成更精細的
+  規則（例如各方案分開計算配額），要改的是
+  `services/subscription.js` 的 `getMaxGroupsForOwner()`。
+- 額度預扣是以「一則訊息 = 1 次」計算，跟實際翻成幾種語言無關。若之後要按
+  語言數計費，`reserveGroupTranslation()` 已經支援傳入 `translationCount`，
+  但目標語言是在背景處理才算出來的，呼叫順序要一起調整。
+- PDF 翻譯（版面保留）仍在另一條線上處理，尚未併進這個 repo。
+
+## 修正紀錄
+
+以下是先前列在「已知待改進項目」、目前已經修掉的項目：
+
+- **多 instance 同步**：改用 Firestore `onSnapshot` 即時監聽，見上方章節。
+- **測試覆蓋率**：補上 `services/subscription.js`、`services/group.js`、
+  `services/translate.js`、`routes/webhook.js` 的測試，共 93 個案例。
+- **`maxGroups` 設定沒有作用**：`ensureInviterIfMissing()` 現在會呼叫
+  `canBindMoreGroups()` 檢查上限（0 代表不限制），超過時拒絕綁定並寫一筆
+  `BIND_LIMIT_REACHED` 的後台紀錄。後台那三個欄位現在是真的生效的。
+- **額度事後扣可能超用**：改成「先扣再翻、失敗時退回」。預扣
+  （`reserveGroupTranslation()`）在 Firestore 交易裡完成，同一瞬間湧入的訊息
+  會被序列化，不可能超用；翻譯成功只補記字元數（`commitGroupTranslation()`），
+  失敗／逾時／沒有目標語言則退回（`releaseGroupTranslation()`）。
+  `monthKey` 由預扣時決定並一路帶著，跨月不會退到下個月的計數上。
+- **retry 對非 zh-TW 無效、且失去產業脈絡**：改用
+  `isInvalidTranslation(src, out, targetLang)`，每個目標語言都有對應的判斷規則
+  （漢字/泰文/拉丁）；重試用的極簡 prompt 現在也會帶入 `industryContext`。

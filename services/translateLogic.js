@@ -9,6 +9,7 @@
 // （buildTranslationPrompt / translateWithChatGPT / translateLineSegments）
 // 留在原本的檔案，並從這裡 import 需要的純函式。
 import { debugLog } from "../lib/utils.js";
+import { SUPPORTED_LANGS, LANG_LABELS } from "../lib/i18n.js";
 
 function hasChinese(txt = "") {
   return /[\u4e00-\u9fff]/.test(txt);
@@ -204,6 +205,155 @@ function isUnchangedChineseSource(sourceText, outputText) {
   return unchanged && sourceHasChinese;
 }
 
+// ── 翻譯輸出品質檢查（所有語言通用）─────────────────────────────
+//
+// 原本只有 isInvalidZhTwTranslation() 一條規則，而且只對 zh-TW 有效，
+// 導致 translate.js 裡「輸出不合格就用極簡 prompt 重試」的機制，
+// 對 th / vi / id / en 實際上永遠不會觸發。這裡改成依目標語言分流：
+//
+//   - zh-TW（漢字）、th（泰文）：有專屬字元集，可以直接檢查「譯文有沒有出現該語言的字」。
+//     沿用原本的寬鬆原則：原文本來就有該語言的字時不強制要求（模型保留原文是合理的）。
+//   - en / vi / id：三者共用拉丁字母，無法只靠字元判斷語種，
+//     所以只抓「明顯沒翻譯」的情況：譯文整段仍是中文/泰文，或原樣照抄且原文不是目標語言。
+//
+// 這條規則寧可放過（不重試）也不要誤判——誤判會多打一次 OpenAI，成本與延遲都會上升。
+const HAN_CHAR_RE = /[\u4E00-\u9FFF]/;
+const THAI_CHAR_RE = /[\u0E00-\u0E7F]/;
+// 拉丁字母含越南文/印尼文常用的附加符號區段
+const LATIN_CHAR_GLOBAL_RE = /[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]/g;
+const NON_LATIN_CHAR_GLOBAL_RE = /[\u4E00-\u9FFF\u0E00-\u0E7F]/g;
+
+const TARGET_LANG_SCRIPT = {
+  "zh-TW": "han",
+  th: "thai",
+  vi: "latin",
+  id: "latin",
+  en: "latin",
+};
+
+// 翻譯失敗時對外顯示的字串。抽成函式，讓 webhook 端可以用
+// isTranslationFailureOutput() 認出「這一則其實沒翻成功」，不要計費。
+function buildTranslationErrorMessage(targetLang) {
+  const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
+  return `（${langLabel}翻譯異常，請稍後再試）`;
+}
+
+function isTranslationFailureOutput(text = "") {
+  const t = String(text ?? "").trim();
+  if (!t) return true;
+  // services/translate.js 呼叫 OpenAI 失敗時的回傳格式
+  if (/^\[[\s\S]*\.\.\.翻譯失敗\]$/.test(t)) return true;
+  // buildTranslationErrorMessage() 的格式（含舊版的「繁中翻譯異常」字串）
+  if (/^（.*翻譯異常，請稍後再試）$/.test(t)) return true;
+  return false;
+}
+
+function isInvalidTranslation(sourceText, outputText, targetLang = "zh-TW") {
+  const src = String(sourceText ?? "");
+  const out = String(outputText ?? "");
+
+  if (!out.trim()) return true;
+  if (isTranslationFailureOutput(out)) return true;
+
+  const script = TARGET_LANG_SCRIPT[targetLang] || "latin";
+
+  if (script === "han") {
+    // 原本 isInvalidZhTwTranslation 的規則，原封不動保留
+    return !HAN_CHAR_RE.test(src) && !HAN_CHAR_RE.test(out);
+  }
+
+  if (script === "thai") {
+    return !THAI_CHAR_RE.test(src) && !THAI_CHAR_RE.test(out);
+  }
+
+  const compact = out.replace(/\s+/g, "");
+  const latinLen = (compact.match(LATIN_CHAR_GLOBAL_RE) || []).length;
+  const nonLatinLen = (compact.match(NON_LATIN_CHAR_GLOBAL_RE) || []).length;
+
+  // 1. 完全沒有拉丁字母，卻還留著中文/泰文 → 根本沒翻
+  if (latinLen === 0 && nonLatinLen > 0) return true;
+  // 2. 中文/泰文的量不少於拉丁字母 → 只翻一半或原樣照抄
+  if (nonLatinLen > 0 && nonLatinLen >= latinLen) return true;
+  // 3. 原樣輸出，且原文本來就不是目標語言 → 模型只做了校對，不是翻譯
+  if (out.trim() === src.trim() && detectLang(src) !== targetLang) return true;
+
+  return false;
+}
+
+// translate.js 用這個決定要不要換極簡 prompt 重試。
+// 抽成純函式，測試就不需要 mock OpenAI 也能驗證「哪些語言會重試、重試幾次」。
+function shouldRetryTranslation({ sourceText, output, targetLang, retry = 0, maxRetry = 2 } = {}) {
+  if (retry >= maxRetry) return false;
+  return isInvalidTranslation(sourceText, output, targetLang);
+}
+
+// ── 目標語言決策（原本寫在 routes/webhook.js 裡）──────────────
+// 這段是「這則訊息要翻成哪幾種語言」的核心判斷，也是之前實際除錯過的地方
+// （中文訊息沒有翻成泰文、外文訊息又被翻回自己的語言），搬成純函式才測得到。
+//
+// 規則：
+//   - 中文為主的訊息：群組勾選的每個外語都要翻，不補 zh-TW。
+//   - 非中文為主的訊息：一定補 zh-TW，並跳過原文語言本身（避免泰文再翻泰文）。
+function analyzeChineseDominance(text = "") {
+  const normalized = normalizeTextForLangDetect(text);
+
+  const chineseLen = (normalized.match(/[\u4e00-\u9fff]/g) || []).length;
+  const thaiLen = (normalized.match(/[\u0E00-\u0E7F]/g) || []).length;
+  const viCharLen = (normalized.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  const latinLen = (normalized.match(/[a-zA-Z]/g) || []).length;
+
+  const totalMeaningfulLen = normalized.replace(/\s+/g, "").length || 1;
+  const chineseRatio = chineseLen / totalMeaningfulLen;
+  const foreignLen = thaiLen + viCharLen + latinLen;
+
+  const isChineseDominant =
+    (chineseLen >= 2 && chineseRatio >= 0.45) ||
+    (chineseLen >= 4 && foreignLen === 0);
+
+  return { chineseLen, thaiLen, viCharLen, latinLen, chineseRatio, foreignLen, isChineseDominant };
+}
+
+function resolveTargetLangs({ text = "", langSet = [], sourceLang = "" } = {}) {
+  const { isChineseDominant } = analyzeChineseDominance(text);
+  const targets = new Set();
+
+  if (!isChineseDominant) targets.add("zh-TW");
+
+  const isForeignSource = ["en", "th", "vi", "id"].includes(sourceLang);
+  const shouldSkipSourceLanguage = isForeignSource && !isChineseDominant;
+
+  for (const code of langSet) {
+    if (code === "zh-TW") continue;
+    if (shouldSkipSourceLanguage && code === sourceLang) continue;
+    targets.add(code);
+  }
+
+  return [...targets];
+}
+
+// 把各語言的翻譯結果組成要回覆的文字，同時算出「真的成功翻出來幾種語言」。
+// successCount 決定要不要計費，所以這裡必須把 translate.js 的失敗字串
+// （[xxx...翻譯失敗] / （xx翻譯異常...））也算成失敗，不能只看空字串。
+function summarizeTranslationOutputs({ targetLangs = [], outputs = {} } = {}) {
+  let replyText = "";
+  let successCount = 0;
+
+  for (const code of targetLangs) {
+    const label = LANG_LABELS[code] || code;
+    const result = outputs[code];
+
+    if (!result || !result.trim() || isTranslationFailureOutput(result)) {
+      replyText += `${label}：\n（翻譯失敗或逾時）\n\n`;
+      continue;
+    }
+
+    replyText += `${label}：\n${result.trim()}\n\n`;
+    successCount++;
+  }
+
+  return { replyText, successCount };
+}
+
 export {
   hasChinese,
   isOnlyEmojiOrWhitespace,
@@ -216,4 +366,13 @@ export {
   isValidLineUserId,
   isInvalidZhTwTranslation,
   isUnchangedChineseSource,
+  // 通用翻譯品質檢查與重試判斷
+  isInvalidTranslation,
+  shouldRetryTranslation,
+  buildTranslationErrorMessage,
+  isTranslationFailureOutput,
+  // 目標語言決策與回覆組裝
+  analyzeChineseDominance,
+  resolveTargetLangs,
+  summarizeTranslationOutputs,
 };

@@ -2,7 +2,7 @@
 import { db, admin } from "../lib/firestore.js";
 import { client } from "../lib/line.js";
 import { groupInviter, deletedGroups, saveInviterForGroup } from "../lib/state.js";
-import { ensureGroupSubscriptionDoc } from "./subscription.js";
+import { ensureGroupSubscriptionDoc, canBindMoreGroups } from "./subscription.js";
 import { addAdminLog } from "../lib/adminLog.js";
 
 function isAuthorizedOperator(gid, uid) {
@@ -44,6 +44,27 @@ async function ensureInviterIfMissing(gid, uid) {
       ok: false,
       code: "OWNER_MISMATCH",
       message: "此群組先前已由其他人綁定管理，如需更換管理者請聯絡客服協助。"
+    };
+  }
+
+  // ✅ 綁定數量上限（後台 trialMaxGroups / paidMaxGroups / manualMaxGroups）。
+  // 以前後端完全沒讀這三個設定，管理員以為有生效、實際上使用者可以無限綁定群組。
+  // 這裡是唯一會「新增一筆 groupInviters」的地方，所以檢查放在這裡就涵蓋
+  // !啟動 與所有 postback 觸發的自動綁定。
+  const bindCheck = await canBindMoreGroups(uid, gid);
+  if (!bindCheck.ok) {
+    await addAdminLog(
+      "BIND_LIMIT_REACHED",
+      `群組 ${gid} 綁定被拒：已達群組數量上限`,
+      "system",
+      { gid, uid, limit: bindCheck.limit, boundCount: bindCheck.boundCount, planSource: bindCheck.planSource }
+    );
+    return {
+      ok: false,
+      code: bindCheck.code,
+      limit: bindCheck.limit,
+      boundCount: bindCheck.boundCount,
+      message: bindCheck.message,
     };
   }
 
