@@ -606,6 +606,27 @@ document.getElementById("groups").innerHTML = groups.map(group => {
         </select>
       </div>
 
+      <div class="member-v2-setting-block">
+        <div class="member-v2-setting-label">
+          <span>解除綁定</span>
+          <small>會釋出一個群組名額</small>
+        </div>
+
+        <p style="font-size:13px;color:#6b7280;margin:0 0 10px;">
+          解除後這個群組會停止翻譯，訂閱期限與剩餘天數仍會保留。
+          之後在群組裡輸入「!啟動」就能接回原本的訂閱。
+        </p>
+
+        <button
+          type="button"
+          class="member-v2-primary-btn"
+          style="padding:6px 14px; font-size:13px; background:#ef4444;"
+          onclick="unbindGroup('${group.gid}', '${escapeHtml(group.groupName || group.gid).replaceAll("'", "&#39;")}')"
+        >
+          解除綁定
+        </button>
+      </div>
+
       <div id="save-${group.gid}" class="member-v2-save-state"></div>
     </article>
   `;
@@ -694,6 +715,35 @@ async function startCheckout(plan) {
     });
   }
 }
+    async function unbindGroup(gid, groupName) {
+      const ok = confirm(
+        `確定要解除「${groupName}」的綁定嗎？\n\n` +
+        `解除後這個群組會停止翻譯，並釋出一個可綁定名額。\n` +
+        `訂閱期限不會被取消，之後在群組裡輸入「!啟動」可以接回來。`
+      );
+      if (!ok) return;
+
+      const saveState = document.getElementById(`save-${gid}`);
+      saveState.className = "member-v2-save-state saving";
+      saveState.textContent = "解除中...";
+
+      try {
+        const response = await fetch(`/api/member/groups/${gid}`, { method: "DELETE" });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(data.error || "解除綁定失敗");
+        }
+
+        saveState.className = "member-v2-save-state saved";
+        saveState.textContent = "已解除綁定";
+        await loadGroups();
+      } catch (error) {
+        saveState.className = "member-v2-save-state error";
+        saveState.textContent = error.message || "解除綁定失敗";
+      }
+    }
+
     async function updateGroup(gid) {
      const saveState = document.getElementById(`save-${gid}`);
 

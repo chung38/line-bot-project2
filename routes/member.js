@@ -12,7 +12,7 @@ import {
   NEWEBPAY_MERCHANT_ID,
   NEWEBPAY_MPG_URL,
 } from "../lib/newebpay.js";
-import { groupInviter, groupLang, groupIndustry, updateGroupLangAndIndustry, getEnabledIndustryNames, isValidIndustry, loadIndustryMaster } from "../lib/state.js";
+import { groupInviter, groupLang, groupIndustry, updateGroupLangAndIndustry, getEnabledIndustryNames, isValidIndustry, loadIndustryMaster, leaveGroupCleanup } from "../lib/state.js";
 import { toDateSafe } from "../lib/utils.js";
 import { addAdminLog } from "../lib/adminLog.js";
 import {
@@ -22,6 +22,8 @@ import {
   getSubscriptionByGroupId,
   getGroupUsage,
   getBoundGroupsByInviter,
+  getPaidPlanConfig,
+  isValidPaidPlanKey,
   activateGroupPaidSubscription,
   markGroupPaymentFailed,
   normalizeSubscriptionStatus,
@@ -67,8 +69,21 @@ app.post("/api/member/session-login", async (req, res) => {
       }, { merge: true });
     }
 
+    // 換發一組新的 session id 再寫入登入狀態（session fixation 防護）：
+    // 攻擊者若事先讓受害者的瀏覽器帶著他指定的 session id，登入後那組 id 就會
+    // 變成已驗證的 session。regenerate() 會丟掉舊的、產生新的。
+    await new Promise((resolve, reject) => {
+      req.session.regenerate(err => (err ? reject(err) : resolve()));
+    });
+
     req.session.firebaseUid = firebaseUid;
     req.session.email = email;
+
+    // 明確等 session 寫回 store 再回應，避免前端拿到 200 之後立刻打下一支 API
+    // 卻因為 session 還沒存好而被判成未登入。
+    await new Promise((resolve, reject) => {
+      req.session.save(err => (err ? reject(err) : resolve()));
+    });
 
     res.json({ ok: true });
   } catch (e) {
@@ -84,7 +99,7 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
   try {
     const firebaseUid = req.session.firebaseUid;
     const { gid, plan } = req.body;
-    if (!gid || !["monthly", "yearly"].includes(plan)) {
+    if (!gid || !isValidPaidPlanKey(plan)) {
       return res.status(400).json({ error: "缺少 gid 或 plan 錯誤" });
     }
 
@@ -95,8 +110,13 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
     const isOwner = groupInviter.get(gid) === user.lineUserId;
     if (!isOwner) return res.status(403).json({ error: "非此群組管理者" });
 
-    const amount = plan === "yearly" ? 3000 : 300;
-    const months = plan === "yearly" ? 12 : 1;
+    // 金額／月數／月額度一律從後台的訂閱預設值算出來（services/subscription.js 的
+    // resolvePaidPlanConfig）。原本這裡是寫死 300/3000，後台的 paidMonthlyQuota
+    // 根本沒被讀到，導致月繳客戶拿到的額度跟試用一樣。
+    const planConfig = await getPaidPlanConfig(plan);
+    if (!planConfig) return res.status(400).json({ error: "plan 錯誤" });
+
+    const { amount, months, monthlyQuota, itemDesc } = planConfig;
     const orderNo = "ORD" + Date.now() + Math.floor(Math.random() * 1000);
     const now = admin.firestore.Timestamp.now();
     const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + ORDER_PENDING_TTL_MS);
@@ -108,6 +128,10 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
       plan,
       amount,
       months,
+      // 把成交當下的方案內容一起存進訂單：之後管理員改了後台預設值，
+      // 已經成立的訂單仍然按照使用者付款當下看到的條件開通。
+      monthlyQuota,
+      planName: planConfig.plan,
       status: ORDER_STATUS.PENDING,
       expiresAt,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
@@ -122,7 +146,7 @@ app.post("/api/member/checkout", express.json({ limit: "1mb" }), requireMemberSe
       Version: "2.0",
       MerchantOrderNo: orderNo,
       Amt: amount,
-      ItemDesc: plan === "yearly" ? "翻譯機器人年繳" : "翻譯機器人月繳",
+      ItemDesc: itemDesc,
       Email: user.email,
       ReturnURL: `${process.env.BASE_URL}/api/member/payment-return`,
       NotifyURL: `${process.env.BASE_URL}/api/member/payment-notify`,
@@ -176,6 +200,20 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
     const orderNo = result?.Result?.MerchantOrderNo;
     if (!orderNo) return res.status(400).send("0|MissingOrderNo");
 
+    // 商店代號檢查：簽章通過只代表「用同一組 HashKey/HashIV 算出來的」，
+    // 這裡再確認這筆通知確實是送給我們這個商店的，避免跨商店的通知被誤收。
+    const notifyMerchantId = result?.Result?.MerchantID;
+    if (notifyMerchantId && notifyMerchantId !== NEWEBPAY_MERCHANT_ID) {
+      console.error("藍新通知的 MerchantID 與本商店不符:", notifyMerchantId);
+      await addAdminLog(
+        "PAYMENT_MERCHANT_MISMATCH",
+        `訂單 ${orderNo} 的通知商店代號不符，已拒絕`,
+        "system",
+        { orderNo, notifyMerchantId }
+      );
+      return res.status(400).send("0|MerchantMismatch");
+    }
+
     const orderRef = db.collection("paymentOrders").doc(orderNo);
 
     if (result.Status === "SUCCESS") {
@@ -190,10 +228,20 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
           return { code: "ALREADY_PROCESSED", order };
         }
 
+        // 金額比對：實際入帳金額必須跟我們建立訂單時算出來的一致，
+        // 不一致就不開通（例如訂單被竄改、或對到了別筆單）。
+        const paidAmount = Number(result?.Result?.Amt);
+        const expectedAmount = Number(order.amount);
+        if (Number.isFinite(paidAmount) && paidAmount !== expectedAmount) {
+          return { code: "AMOUNT_MISMATCH", order, paidAmount, expectedAmount };
+        }
+
         await activateGroupPaidSubscription(order.gid, {
-          plan: order.plan,
+          // 用訂單成立當下記下來的方案內容，不是現在的後台設定，
+          // 也不是通知內容——使用者付的是他當時看到的那個方案。
+          plan: order.planName || order.plan,
           months: order.months,
-          monthlyQuota: order.plan === "yearly" ? 3000 : 300,
+          monthlyQuota: order.monthlyQuota,
           ownerUserId: order.userId || null,
         }, tx);
 
@@ -207,6 +255,17 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
 
       if (outcome.code === "ORDER_NOT_FOUND") {
         return res.status(404).send("0|OrderNotFound");
+      }
+
+      if (outcome.code === "AMOUNT_MISMATCH") {
+        console.error(`訂單 ${orderNo} 金額不符：通知 ${outcome.paidAmount}，訂單 ${outcome.expectedAmount}`);
+        await addAdminLog(
+          "PAYMENT_AMOUNT_MISMATCH",
+          `訂單 ${orderNo} 金額不符，未開通（通知 ${outcome.paidAmount} / 訂單 ${outcome.expectedAmount}）`,
+          "system",
+          { orderNo, gid: outcome.order.gid, paidAmount: outcome.paidAmount, expectedAmount: outcome.expectedAmount }
+        );
+        return res.status(400).send("0|AmountMismatch");
       }
 
       if (outcome.code === "ACTIVATED") {
@@ -470,6 +529,43 @@ app.get("/api/member/groups", requireMemberSession, async (req, res) => {
     res.json({ groups });
   } catch (e) {
     console.error("GET /api/member/groups:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 解除綁定：把群組從自己名下移除，釋出一個可綁定名額。
+//
+// 為什麼要連語言/行業別一起清掉：如果只刪 groupInviters、留著語言設定，
+// 這個群組會繼續翻譯、繼續吃額度，卻不再算進上限——等於留了一個繞過
+// maxGroups 的後門。所以這裡走跟「機器人被踢出群組」相同的清理流程。
+//
+// groupSubscriptions 會保留（付費期限、ownerUserId 都還在），
+// 所以之後在群組裡重新輸入「!啟動」就能接回原本的訂閱，
+// 而且因為 ownerUserId 還記著，別人也搶不走。
+app.delete("/api/member/groups/:gid", requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const { gid } = req.params;
+
+    const userDoc = await db.collection("memberUsers").doc(firebaseUid).get();
+    const user = userDoc.exists ? userDoc.data() : {};
+
+    if (!user.lineUserId || groupInviter.get(gid) !== user.lineUserId) {
+      return res.status(403).json({ error: "無權限解除此群組的綁定" });
+    }
+
+    await leaveGroupCleanup(gid);
+
+    await addAdminLog(
+      "MEMBER_UNBIND_GROUP",
+      `會員自行解除群組 ${gid} 的綁定`,
+      "member",
+      { gid, firebaseUid, lineUserId: user.lineUserId }
+    );
+
+    res.json({ ok: true, gid });
+  } catch (e) {
+    console.error("DELETE /api/member/groups/:gid:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

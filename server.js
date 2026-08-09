@@ -46,10 +46,17 @@ registerWebhookRoutes(app);
 app.get("/ping", (req, res) => res.sendStatus(200));
 
 // === PING 伺服器（避免 free-tier 平台把閒置服務睡眠掉） ===
-setInterval(() => {
-  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
-    .on("error", e => console.error("PING 失敗:", e.message));
-}, 10 * 60 * 1000);
+// PING_URL 是選填的。原本沒設定時 https.get(undefined) 會變成打自己的 localhost:443，
+// 每 10 分鐘噴一次 ECONNREFUSED 洗 log，所以這裡先確認有設定才啟動。
+if (process.env.PING_URL) {
+  const pingTimer = setInterval(() => {
+    https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
+      .on("error", e => console.error("PING 失敗:", e.message));
+  }, 10 * 60 * 1000);
+  pingTimer.unref?.();
+} else {
+  console.log("ℹ️ 未設定 PING_URL，略過保持喚醒的定期請求");
+}
 
 // ✅ 啟動時載入群組狀態（語言／邀請人／行業別／封鎖清單），完成後才開始收流量，
 // 避免服務剛啟動、還沒載入完成時就處理到 webhook 事件。

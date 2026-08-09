@@ -21,6 +21,11 @@ import {
   activateGroupPaidSubscription,
   getGroupUsage,
   isSubscriptionStillValid,
+  resolvePaidPlanConfig,
+  getPaidPlanConfig,
+  isValidPaidPlanKey,
+  getOwnedSubscriptions,
+  normalizeSubscriptionDefaults,
 } from "../services/subscription.js";
 import { getMonthKey } from "../lib/utils.js";
 
@@ -191,6 +196,7 @@ test("getMaxGroupsForOwner：只有試用群組時套用 trialMaxGroups", async 
   fake.seed("groupInviters", "G1", { userId: "Uowner" });
   fake.seed("groupSubscriptions", "G1", {
     gid: "G1",
+    ownerUserId: "Uowner",
     status: SUBSCRIPTION_STATUS.TRIAL,
     trialEndsAt: daysFromNow(5),
     manualOverride: MANUAL_OVERRIDE.NONE,
@@ -211,6 +217,7 @@ test("getMaxGroupsForOwner：名下有付費中的群組就升級成 paidMaxGrou
   fake.seed("groupInviters", "G1", { userId: "Uowner" });
   fake.seed("groupSubscriptions", "G1", {
     gid: "G1",
+    ownerUserId: "Uowner",
     status: SUBSCRIPTION_STATUS.ACTIVE,
     currentPeriodEnd: daysFromNow(30),
     manualOverride: MANUAL_OVERRIDE.NONE,
@@ -334,4 +341,110 @@ test("ensureGroupSubscriptionDoc：已存在時不會覆蓋既有資料", async 
   const sub = fake.read("groupSubscriptions", "Gkeep");
   assert.equal(sub.ownerUserId, "Uold");
   assert.equal(sub.monthlyQuota, 9999);
+});
+
+
+// ── 付費方案設定（回歸測試：以前價格與額度是寫死在 routes/member.js）──
+test("resolvePaidPlanConfig：月繳與年繳都從後台設定算出金額、月數、額度", () => {
+  const defaults = normalizeSubscriptionDefaults({
+    paidPlan: "monthly",
+    paidMonths: 1,
+    paidMonthlyQuota: 5000,
+    paidMonthlyPrice: 350,
+    paidYearlyPrice: 3600,
+    paidYearlyMonths: 12,
+  });
+
+  const monthly = resolvePaidPlanConfig("monthly", defaults);
+  assert.equal(monthly.amount, 350);
+  assert.equal(monthly.months, 1);
+  assert.equal(monthly.monthlyQuota, 5000);
+
+  const yearly = resolvePaidPlanConfig("yearly", defaults);
+  assert.equal(yearly.amount, 3600);
+  assert.equal(yearly.months, 12);
+  // 月額度是「每月」的量，月繳年繳一樣，差別只在買幾個月
+  assert.equal(yearly.monthlyQuota, 5000);
+});
+
+test("resolvePaidPlanConfig：月繳的額度不會再退回試用等級（回歸測試）", () => {
+  const defaults = normalizeSubscriptionDefaults({});
+  const monthly = resolvePaidPlanConfig("monthly", defaults);
+
+  assert.equal(monthly.monthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonthlyQuota);
+  assert.notEqual(monthly.monthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.trialMonthlyQuota);
+});
+
+test("resolvePaidPlanConfig / isValidPaidPlanKey：不認得的方案一律拒絕", () => {
+  const defaults = normalizeSubscriptionDefaults({});
+  assert.equal(isValidPaidPlanKey("monthly"), true);
+  assert.equal(isValidPaidPlanKey("free"), false);
+  assert.equal(resolvePaidPlanConfig("free", defaults), null);
+  assert.equal(resolvePaidPlanConfig("", defaults), null);
+});
+
+test("getPaidPlanConfig：讀得到後台已儲存的售價", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    paidMonthlyPrice: 450,
+    paidMonthlyQuota: 8000,
+  });
+
+  const config = await getPaidPlanConfig("monthly");
+  assert.equal(config.amount, 450);
+  assert.equal(config.monthlyQuota, 8000);
+});
+
+// ── 上限判定改看 groupSubscriptions.ownerUserId ──────────────
+test("getOwnedSubscriptions：用 ownerUserId 撈出名下的訂閱", async () => {
+  const fake = freshDb();
+  fake.seed("groupSubscriptions", "G1", { gid: "G1", ownerUserId: "Uowner" });
+  fake.seed("groupSubscriptions", "G2", { gid: "G2", ownerUserId: "Uother" });
+
+  const subs = await getOwnedSubscriptions("Uowner");
+  assert.equal(subs.length, 1);
+  assert.equal(subs[0].gid, "G1");
+});
+
+test("getMaxGroupsForOwner：機器人被踢出付費群組後，上限仍維持付費等級（回歸測試）", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 1,
+    paidMaxGroups: 5,
+  });
+  // 付費中的群組，但 groupInviters 已經被 leaveGroupCleanup 清掉了
+  fake.seed("groupSubscriptions", "Gpaid", {
+    gid: "Gpaid",
+    ownerUserId: "Uowner",
+    status: SUBSCRIPTION_STATUS.ACTIVE,
+    currentPeriodEnd: daysFromNow(300),
+    manualOverride: MANUAL_OVERRIDE.NONE,
+  });
+
+  const res = await getMaxGroupsForOwner("Uowner");
+  assert.equal(res.limit, 5);
+  assert.equal(res.planSource, "paid");
+  assert.equal(res.boundCount, 0, "數量仍以實際綁定中的群組計算");
+});
+
+test("getMaxGroupsForOwner：已到期的付費訂閱不會再撐高上限", async () => {
+  const fake = freshDb();
+  fake.seed("systemSettings", "subscriptionDefaults", {
+    ...FALLBACK_SUBSCRIPTION_DEFAULTS,
+    trialMaxGroups: 1,
+    paidMaxGroups: 5,
+  });
+  fake.seed("groupSubscriptions", "Gold", {
+    gid: "Gold",
+    ownerUserId: "Uowner",
+    status: SUBSCRIPTION_STATUS.ACTIVE,
+    currentPeriodEnd: daysFromNow(-1),
+    manualOverride: MANUAL_OVERRIDE.NONE,
+  });
+
+  const res = await getMaxGroupsForOwner("Uowner");
+  assert.equal(res.limit, 1);
+  assert.equal(res.planSource, "trial");
 });

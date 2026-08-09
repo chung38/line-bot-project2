@@ -3,6 +3,7 @@ import axios from "axios";
 import { load } from "cheerio";
 import rateLimit from "express-rate-limit";
 import { db, admin } from "../lib/firestore.js";
+import { debugLog } from "../lib/utils.js";
 import { client, lineConfig, middleware } from "../lib/line.js";
 import { i18n, SUPPORTED_LANGS, LANG_ICONS, LANG_LABELS, NAME_TO_CODE } from "../lib/i18n.js";
 import {
@@ -580,7 +581,9 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
 if (event.message?.mention) {
-  console.log("RAW official mention:", JSON.stringify(event.message.mention));
+  // 這裡會印出 LINE 的 userId，屬於使用者資料，所以跟其他除錯訊息一樣走 debugLog，
+  // 只有設了 DEBUG=1 才會輸出，平常不會一直外流到平台的 log 服務。
+  debugLog("RAW official mention:", JSON.stringify(event.message.mention));
 }
 
     const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(event.message);

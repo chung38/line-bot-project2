@@ -164,11 +164,14 @@ async function loadDefaults() {
     document.getElementById('paidMonths').value         = df.paidMonths??1;
     document.getElementById('paidMaxGroups').value      = df.paidMaxGroups??5;
     document.getElementById('paidMonthlyQuota').value   = df.paidMonthlyQuota??3000;
+    document.getElementById('paidMonthlyPrice').value   = df.paidMonthlyPrice??300;
+    document.getElementById('paidYearlyPrice').value    = df.paidYearlyPrice??3000;
+    document.getElementById('paidYearlyMonths').value   = df.paidYearlyMonths??12;
     document.getElementById('manualPlan').value         = df.manualPlan??'custom';
     document.getElementById('manualDays').value         = df.manualDays??30;
     document.getElementById('manualMaxGroups').value    = df.manualMaxGroups??5;
     document.getElementById('manualMonthlyQuota').value = df.manualMonthlyQuota??3000;
-    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入（每個群組加入時各自套用一次，之後不會互相影響）';
+    document.getElementById('defaultsHint').textContent = '✅ 預設値已載入（試用值在群組加入時套用一次；付費方案的售價/月數/額度是在使用者按下付款時才讀取，改了會影響之後的新訂單，不會動到已成立的訂單）';
   } catch(e) { document.getElementById('defaultsHint').textContent=`讀取失敗：${e.message}`; }
 }
 
@@ -183,6 +186,9 @@ async function saveDefaults(e) {
       paidMonths:        parseInt(document.getElementById('paidMonths').value),
       paidMaxGroups:     parseInt(document.getElementById('paidMaxGroups').value),
       paidMonthlyQuota:  parseInt(document.getElementById('paidMonthlyQuota').value),
+      paidMonthlyPrice:  parseInt(document.getElementById('paidMonthlyPrice').value),
+      paidYearlyPrice:   parseInt(document.getElementById('paidYearlyPrice').value),
+      paidYearlyMonths:  parseInt(document.getElementById('paidYearlyMonths').value),
       manualPlan:        document.getElementById('manualPlan').value.trim(),
       manualDays:        parseInt(document.getElementById('manualDays').value),
       manualMaxGroups:   parseInt(document.getElementById('manualMaxGroups').value),

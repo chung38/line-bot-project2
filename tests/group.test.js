@@ -37,6 +37,7 @@ function seedTrialGroup(fake, gid, userId) {
   fake.seed("groupInviters", gid, { userId });
   fake.seed("groupSubscriptions", gid, {
     gid,
+    ownerUserId: userId,
     status: SUBSCRIPTION_STATUS.TRIAL,
     trialEndsAt: daysFromNow(5),
     manualOverride: MANUAL_OVERRIDE.NONE,
@@ -137,6 +138,7 @@ test("ensureInviterIfMissing：付費群組的上限比試用高", async () => {
   fake.seed("groupInviters", "G1", { userId: "Uowner" });
   fake.seed("groupSubscriptions", "G1", {
     gid: "G1",
+    ownerUserId: "Uowner",
     status: SUBSCRIPTION_STATUS.ACTIVE,
     currentPeriodEnd: daysFromNow(30),
     manualOverride: MANUAL_OVERRIDE.NONE,

@@ -125,10 +125,10 @@ npm test
 | `tests/group.test.js` | `services/group.js` 綁定規則與回覆輔助函式 |
 | `tests/subscription.test.js` | `services/subscription.js` 訂閱狀態機、額度預扣/退回、群組數量上限 |
 | `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
+| `tests/member.test.js` | `routes/member.js` checkout 金額來源、藍新通知驗證、解除綁定 |
 
-`routes/admin.js` 與 `routes/member.js` 還沒有涵蓋——它們主要是 CRUD 與
-session/Firebase Auth 驗證，要測的話需要再包一層 express 的請求測試，
-是下一個可以補的地方。
+`routes/admin.js` 還沒有涵蓋——它主要是後台 CRUD 與 session 驗證，
+要測的話需要再包一層 express 的請求測試，是下一個可以補的地方。
 
 ## Firestore 安全規則
 
@@ -151,14 +151,19 @@ firebase deploy --only firestore:rules
 
 ## 已知待改進項目
 
-- `routes/admin.js` / `routes/member.js` 還沒有測試（見上方「測試」）。
-- 綁定數量上限的判定是「取名下所有有效群組對應方案上限的最大值」。同一個人
-  同時有付費與試用群組時，上限會以付費方案為準；如果之後要改成更精細的
-  規則（例如各方案分開計算配額），要改的是
-  `services/subscription.js` 的 `getMaxGroupsForOwner()`。
-- 額度預扣是以「一則訊息 = 1 次」計算，跟實際翻成幾種語言無關。若之後要按
-  語言數計費，`reserveGroupTranslation()` 已經支援傳入 `translationCount`，
-  但目標語言是在背景處理才算出來的，呼叫順序要一起調整。
+- `routes/admin.js` 還沒有測試（見上方「測試」）。
+- 綁定數量上限沒有交易保護：兩個群組同時輸入 `!啟動` 時可能同時通過檢查，
+  小幅超出上限。影響很小，暫時沒處理。
+- 過期的 session 文件（`expressSessions`）只在被讀取到時才刪除，沒有背景清理。
+  建議在 Firebase Console 對這個 collection 的 `expires` 欄位設一個 TTL 政策。
+- 逾期未付款的 `paymentOrders` 也不會被清掉，只是在查詢時被標成 `EXPIRED`。
+- `/api/member/session-login` 沒有檢查 `decoded.email_verified`。目前只開放
+  Email Link 登入（一定是 verified），但之後若加開密碼登入要記得補。
+- 會員端 API（`/api/member/*`）還沒有掛 rate limiter，後台與 webhook 都有。
+- `npm audit` 仍有一項 moderate（`uuid` 在 `google-gax` 依賴鏈裡），要修需要
+  major 版本升級 `firebase-admin`，且該漏洞只在呼叫 uuid 時傳入 `buf` 參數才會
+  觸發，本專案沒有這種用法。
+- 額度預扣是以「一則訊息 = 1 次」計算，跟實際翻成幾種語言無關。
 - PDF 翻譯（版面保留）仍在另一條線上處理，尚未併進這個 repo。
 
 ## 修正紀錄
@@ -176,6 +181,35 @@ firebase deploy --only firestore:rules
   會被序列化，不可能超用；翻譯成功只補記字元數（`commitGroupTranslation()`），
   失敗／逾時／沒有目標語言則退回（`releaseGroupTranslation()`）。
   `monthKey` 由預扣時決定並一路帶著，跨月不會退到下個月的計數上。
+### 第二批（安全性與計費）
+
+- **付費方案的價格／月數／額度不再寫死**：原本 `routes/member.js` 的 checkout 與
+  付款通知各自寫死 300／3000，後台的 `paidMonthlyQuota` 完全沒被讀取，導致月繳
+  客戶拿到的額度跟試用一樣是 300。現在統一由 `resolvePaidPlanConfig()` 從後台
+  設定算出來，後台也新增了「月繳售價／年繳售價／年繳月數」三個欄位。
+  訂單成立時會把當下的方案內容一起存進 `paymentOrders`，之後改設定不會影響
+  已成立的訂單。
+- **藍新付款通知加上商店代號與金額驗證**：`MerchantID` 不是本商店、或入帳金額
+  跟訂單金額不符時一律不開通，並各留一筆 `PAYMENT_MERCHANT_MISMATCH` /
+  `PAYMENT_AMOUNT_MISMATCH` 的後台紀錄。
+- **登入改為換發 session id（session fixation 防護）**：後台與會員端登入都先
+  `regenerate()` 再寫入登入狀態；後台登出也從「把旗標設 false」改成真的
+  `destroy()`。
+- **會員中心新增「解除綁定」**：`DELETE /api/member/groups/:gid`。原本上限提示
+  叫使用者去解除綁定，但根本沒有這個功能。解除時會連語言設定一起清掉（否則
+  群組會繼續翻譯吃額度卻不算進上限），訂閱期限保留，之後重新 `!啟動` 可接回。
+- **群組上限判定改看 `groupSubscriptions.ownerUserId`**：原本從 `groupInviters`
+  判斷方案等級，但機器人被踢出群組時那筆會被清掉，導致付費用戶的上限掉回試用
+  等級。數量計算仍以實際綁定中的群組為準。
+- **相依套件更新**：`npm audit fix` 修掉 4 個 high、6 個 moderate
+  （含 `jws` 的 JWT 簽章問題，在 `verifyIdToken` 的依賴鏈上）。
+- **移除 `incrementGroupUsage()`**：改成先扣再翻之後已無呼叫端，留著會跟預扣機制
+  打架造成重複計數。
+- **`RAW official mention` 的 log 改走 `debugLog()`**：那行會印出 LINE userId。
+- **`PING_URL` 未設定時不再每 10 分鐘打 localhost 洗 log。**
+
+### 第一批（功能與測試）
+
 - **retry 對非 zh-TW 無效、且失去產業脈絡**：改用
   `isInvalidTranslation(src, out, targetLang)`，每個目標語言都有對應的判斷規則
   （漢字/泰文/拉丁）；重試用的極簡 prompt 現在也會帶入 `industryContext`。

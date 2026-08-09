@@ -43,6 +43,14 @@ const FALLBACK_SUBSCRIPTION_DEFAULTS = {
   paidMonths: 1,
   paidMaxGroups: 5,
   paidMonthlyQuota: 3000,
+  // 售價與年繳設定。原本這幾個值是寫死在 routes/member.js 的 checkout 裡
+  // （月繳 300 元／月額度 300、年繳 3000 元／月額度 3000），後台的 paidMonthlyQuota
+  // 完全沒有被讀取，等於「月繳客戶付了錢卻只拿到跟試用一樣的 300 額度」。
+  // 現在價格與月數都改成後台可設定，額度一律用 paidMonthlyQuota（月繳、年繳相同，
+  // 因為它本來就是「每月」額度，差別只在買幾個月）。
+  paidMonthlyPrice: 300,
+  paidYearlyPrice: 3000,
+  paidYearlyMonths: 12,
 
   manualPlan: "custom",
   manualDays: 30,
@@ -60,6 +68,9 @@ function normalizeSubscriptionDefaults(raw = {}) {
     paidMonths: toSafeInt(raw.paidMonths, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonths, 1),
     paidMaxGroups: toSafeInt(raw.paidMaxGroups, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMaxGroups, 0),
     paidMonthlyQuota: toSafeInt(raw.paidMonthlyQuota, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonthlyQuota, 0),
+    paidMonthlyPrice: toSafeInt(raw.paidMonthlyPrice, FALLBACK_SUBSCRIPTION_DEFAULTS.paidMonthlyPrice, 1),
+    paidYearlyPrice: toSafeInt(raw.paidYearlyPrice, FALLBACK_SUBSCRIPTION_DEFAULTS.paidYearlyPrice, 1),
+    paidYearlyMonths: toSafeInt(raw.paidYearlyMonths, FALLBACK_SUBSCRIPTION_DEFAULTS.paidYearlyMonths, 1),
 
     manualPlan: String(raw.manualPlan ?? FALLBACK_SUBSCRIPTION_DEFAULTS.manualPlan).trim() || "custom",
     manualDays: toSafeInt(raw.manualDays, FALLBACK_SUBSCRIPTION_DEFAULTS.manualDays, 1),
@@ -86,6 +97,46 @@ async function getSubscriptionDefaults() {
   }
 
   return defaults;
+}
+
+// ── 付費方案的價格／月數／額度（單一來源）─────────────────────
+//
+// checkout 建立訂單、以及付款成功後開通訂閱，都必須用同一份設定算出
+// 金額、月數、月額度，否則會出現「收月繳的錢、給年繳的額度」這種對不起來的狀況。
+// 原本這些值分別寫死在 routes/member.js 的兩個地方，後台設定完全沒作用。
+//
+// planKey 只接受 monthly / yearly，其他值一律視為無效（呼叫端要回 400）。
+const PAID_PLAN_KEYS = ["monthly", "yearly"];
+
+function isValidPaidPlanKey(planKey) {
+  return PAID_PLAN_KEYS.includes(String(planKey || "").trim());
+}
+
+function resolvePaidPlanConfig(planKey, defaults) {
+  const key = String(planKey || "").trim();
+  if (!isValidPaidPlanKey(key)) return null;
+
+  const isYearly = key === "yearly";
+
+  return {
+    planKey: key,
+    // plan 是寫進 groupSubscriptions.plan 的字串，後台會顯示它
+    plan: isYearly ? "yearly" : (defaults.paidPlan || "monthly"),
+    months: isYearly
+      ? toSafeInt(defaults.paidYearlyMonths, 12, 1)
+      : toSafeInt(defaults.paidMonths, 1, 1),
+    amount: isYearly
+      ? toSafeInt(defaults.paidYearlyPrice, 3000, 1)
+      : toSafeInt(defaults.paidMonthlyPrice, 300, 1),
+    // 月額度不分月繳/年繳：它是「每個月」的額度，兩種方案的差別在買幾個月。
+    monthlyQuota: toSafeInt(defaults.paidMonthlyQuota, 3000, 0),
+    itemDesc: isYearly ? "翻譯機器人年繳" : "翻譯機器人月繳",
+  };
+}
+
+async function getPaidPlanConfig(planKey) {
+  const defaults = await getSubscriptionDefaults();
+  return resolvePaidPlanConfig(planKey, defaults);
 }
 
 function normalizeSubscriptionStatus(value, fallback = SUBSCRIPTION_STATUS.INACTIVE) {
@@ -159,23 +210,10 @@ async function getGroupUsage(gid, monthKey = getMonthKey()) {
   return doc.data();
 }
 
-async function incrementGroupUsage(gid, translationCount = 1, charCount = 0) {
-  if (!gid) return;
-  const monthKey = getMonthKey();
-  const ref = db.collection("usageMonthly").doc(`${gid}_${monthKey}`);
-
-  await ref.set(
-    {
-      gid,
-      monthKey,
-      translationCount: admin.firestore.FieldValue.increment(translationCount),
-      charCount: admin.firestore.FieldValue.increment(charCount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-}
+// 註：原本的 incrementGroupUsage()（事後才累加用量）已經移除。
+// 額度改成「先扣再翻」之後就沒有呼叫端了，留著只會讓人以為還能用它加用量，
+// 那會跟 reserveGroupTranslation() 的預扣互相打架、造成重複計數。
+// 需要手動調整用量請走後台，不要再加回這個函式。
 
 // 每個群組各自獨立的訂閱資料（試用期、額度、到期日都以「群組加入時間」各自起算）
 async function ensureGroupSubscriptionDoc(gid, ownerUserId) {
@@ -214,6 +252,23 @@ async function getBoundGroupsByInviter(userId) {
   const snap = await db
     .collection("groupInviters")
     .where("userId", "==", userId)
+    .get();
+
+  return snap.docs.map(doc => ({
+    gid: doc.id,
+    ...doc.data(),
+  }));
+}
+
+// 這個人「持有訂閱」的群組。跟 getBoundGroupsByInviter() 的差別很重要：
+// groupInviters 會在機器人被踢出群組時被清掉（leaveGroupCleanup），
+// groupSubscriptions 則會保留。所以判定方案等級（付費/手動/試用）要用這個，
+// 否則付了年費的人只要暫時把機器人移出群組，上限就會掉回試用等級。
+async function getOwnedSubscriptions(userId) {
+  if (!userId) return [];
+  const snap = await db
+    .collection("groupSubscriptions")
+    .where("ownerUserId", "==", userId)
     .get();
 
   return snap.docs.map(doc => ({
@@ -297,13 +352,13 @@ function isSubscriptionStillValid(sub, now = new Date()) {
 async function getMaxGroupsForOwner(userId, options = {}) {
   const defaults = options.defaults || (await getSubscriptionDefaults());
   const boundGroups = options.boundGroups || (await getBoundGroupsByInviter(userId));
+  const ownedSubs = options.ownedSubs || (await getOwnedSubscriptions(userId));
   const now = options.now || new Date();
 
   let limit = toSafeInt(defaults.trialMaxGroups, 0, 0);
   let planSource = "trial";
 
-  for (const g of boundGroups) {
-    const sub = await getSubscriptionByGroupId(g.gid);
+  for (const sub of ownedSubs) {
     if (!isSubscriptionStillValid(sub, now)) continue;
 
     const status = normalizeSubscriptionStatus(sub.status);
@@ -345,13 +400,16 @@ async function canBindMoreGroups(userId, gid = null) {
   }
 
   const defaults = await getSubscriptionDefaults();
-  const boundGroups = await getBoundGroupsByInviter(userId);
+  const [boundGroups, ownedSubs] = await Promise.all([
+    getBoundGroupsByInviter(userId),
+    getOwnedSubscriptions(userId),
+  ]);
 
   if (gid && boundGroups.some(g => g.gid === gid)) {
     return { ok: true, code: "ALREADY_BOUND", boundCount: boundGroups.length };
   }
 
-  const { limit, unlimited, planSource } = await getMaxGroupsForOwner(userId, { defaults, boundGroups });
+  const { limit, unlimited, planSource } = await getMaxGroupsForOwner(userId, { defaults, boundGroups, ownedSubs });
 
   if (unlimited || boundGroups.length < limit) {
     return { ok: true, code: "WITHIN_LIMIT", boundCount: boundGroups.length, limit, unlimited, planSource };
@@ -363,7 +421,7 @@ async function canBindMoreGroups(userId, gid = null) {
     boundCount: boundGroups.length,
     limit,
     planSource,
-    message: `❌ 已達可綁定的群組數量上限（${limit} 個）。請先在會員中心解除其他群組的綁定，或升級方案後再試。`,
+    message: `❌ 已達可綁定的群組數量上限（${limit} 個）。請先到會員中心把其他群組解除綁定，或升級方案後再試。`,
   };
 }
 
@@ -584,9 +642,12 @@ export {
   parseOptionalDateInput,
   getSubscriptionByGroupId,
   getGroupUsage,
-  incrementGroupUsage,
   ensureGroupSubscriptionDoc,
   getBoundGroupsByInviter,
+  getOwnedSubscriptions,
+  isValidPaidPlanKey,
+  resolvePaidPlanConfig,
+  getPaidPlanConfig,
   isSubscriptionStillValid,
   getMaxGroupsForOwner,
   canBindMoreGroups,

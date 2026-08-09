@@ -96,14 +96,39 @@ app.post("/admin/login", adminLoginLimiter, express.json({ limit: "10kb" }), (re
   const { username = "", password = "" } = req.body || {};
   const ok = safeEqual(username, process.env.ADMIN_USER) && safeEqual(password, process.env.ADMIN_PASS);
   if (!ok) return res.status(401).json({ success: false, error: "帳號或密碼錯誤" });
-  req.session.isAdmin = true;
-  req.session.adminUser = username;
-  res.json({ success: true });
+
+  // 換發一組新的 session id 再標記為已登入（session fixation 防護）：
+  // 攻擊者若事先讓瀏覽器帶著他指定的 session id，登入後那組 id 就會變成後台管理員。
+  // regenerate() 會丟掉舊的、產生一組新的，舊 id 立刻失效。
+  req.session.regenerate(err => {
+    if (err) {
+      console.error("admin login: session regenerate 失敗:", err.message);
+      return res.status(500).json({ success: false, error: "登入失敗，請稍後再試" });
+    }
+
+    req.session.isAdmin = true;
+    req.session.adminUser = username;
+
+    // 等 session 真的寫回 store 再回應，避免前端立刻打下一支 API 卻被判成未登入。
+    req.session.save(saveErr => {
+      if (saveErr) {
+        console.error("admin login: session save 失敗:", saveErr.message);
+        return res.status(500).json({ success: false, error: "登入失敗，請稍後再試" });
+      }
+      res.json({ success: true });
+    });
+  });
 });
 
 app.post("/admin/logout", (req, res) => {
-  if (req.session) req.session.isAdmin = false;
-  res.json({ success: true });
+  // 原本只是把 isAdmin 設成 false，session 文件還留在 Firestore 裡，
+  // 那組 cookie 也還有效。改成整個銷毀，登出才是真的登出。
+  if (!req.session) return res.json({ success: true });
+  req.session.destroy(err => {
+    if (err) console.error("admin logout: session destroy 失敗:", err.message);
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  });
 });
 
 const adminRouter = express.Router();
