@@ -891,7 +891,6 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
 
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
-        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
@@ -924,7 +923,6 @@ adminRouter.put("/subscriptions/:gid/manual", async (req, res) => {
       if (!snap.exists) {
         payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
         payload.status = SUBSCRIPTION_STATUS.MANUAL_ACTIVE;
-        payload.usedQuota = 0;
       }
 
       await ref.set(payload, { merge: true });
