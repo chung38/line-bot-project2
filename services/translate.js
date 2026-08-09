@@ -28,31 +28,35 @@ const translationCache = new LRUCache({
 });
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
-  // 取得目標語言名稱
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
-  // 取得產業／工作類型專用設定
+  // retry 時換成極簡 prompt，避免長規則讓模型「校對原文」而非翻譯
+  if (forceStrict) {
+    return `你是專業翻譯引擎，任務只有一件事：把輸入的文字翻譯成「${langLabel}」。
+
+嚴格禁止：
+- 只修正原文錯字或縮寫後直接輸出（那是校對，不是翻譯）
+- 輸出與輸入相同語言的內容
+- 輸出解釋、摘要、前後綴、標題或語言名稱
+
+自我檢查（輸出前必做）：
+- 我輸出的內容是「${langLabel}」嗎？
+- 如果我只是把原文的錯字改掉，那我做錯了，必須重新翻成「${langLabel}」。
+
+只輸出「${langLabel}」譯文，不要有任何其他文字。`.trim();
+  }
+
   const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
-
-  // 建立工作情境
   const industryContext =
     industryDoc?.promptContext ||
     (industry
       ? `工作類型：${industry}。優先使用此工作領域的專業術語及自然用語。`
       : "未指定工作類型，請根據原文語境選擇適當的日常或工作用語。");
 
-  // 繁體中文嚴格模式
-  const strictRule =
-    forceStrict && targetLang === "zh-TW"
-      ? "8. 必須輸出符合台灣用語習慣的繁體中文，不可直接照抄原文。"
-      : "";
-
   return `你是台灣的專業多語口譯員，協助主管、雇主、外籍工作者及家庭成員進行日常生活與工作溝通。
-
 ${industryContext}
-
 翻譯規則：
 1. 先理解原文的實際情境，再進行自然、準確的翻譯。
 2. 若涉及特定工作領域，優先使用該領域常用的專業術語；若為日常生活對話，使用自然、簡單、容易理解的口語表達。
@@ -61,14 +65,8 @@ ${industryContext}
 5. 型號、批號、料號、工單號、ERP 代碼、URL、Email、數字、日期及時間均須保留，不得任意修改。
 6. 保留原文的換行格式，只輸出翻譯結果，不提供額外說明。
 7. 忠實傳達原文語意，不得自行增加、刪除或改變原文未明確表達的主詞、受詞、代詞、對象、人稱或其他重要資訊。
-${strictRule}
-
-請翻譯成：${langLabel}`;
+請翻譯成：${langLabel}`.trim();
 }
-
-
-
-
 async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, customPrompt = "") {
   if (!text?.trim()) return text;
   if (isOnlyEmojiOrWhitespace(text)) return text;
@@ -86,13 +84,9 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4.1-mini",
-        temperature: 0.1,
+        temperature: retry > 0 ? 0.3 : 0.1,
         max_tokens: 1000,
         messages: [
-          {
-            role: "system",
-            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。禁止腦補原文未出現的主詞、代詞、對象、人稱或語氣。"
-          },
           {
             role: "system",
             content: systemPrompt
