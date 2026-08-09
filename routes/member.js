@@ -190,6 +190,22 @@ app.post("/api/member/checkout", checkoutLimiter, express.json({ limit: "1mb" })
       Amt: amount,
       ItemDesc: itemDesc,
       Email: user.email,
+
+      // 只開放信用卡，其他付款方式明確關掉。
+      //
+      // 不指定的話，藍新會把商店後台開通的所有方式都列出來，而 ATM 轉帳、超商代碼
+      // 這類「非即時付款」目前這套系統沒有處理：
+      //   1. 取號結果走的是 CustomerURL（我們沒設），使用者會被丟到藍新的預設畫面。
+      //   2. 訂單的付款期限是 30 分鐘（ORDER_PENDING_TTL_MS），但 ATM 通常給好幾天，
+      //      會出現「使用者的虛擬帳號還有效、後台卻已經標成逾期」的狀況。
+      // 之後真的要支援 ATM，要先補上 CustomerURL 的處理並把付款期限拉長，
+      // 不要只是把下面的 0 改成 1。
+      CREDIT: 1,
+      WEBATM: 0,
+      VACC: 0,
+      CVS: 0,
+      BARCODE: 0,
+
       ReturnURL: `${process.env.BASE_URL}/api/member/payment-return`,
       NotifyURL: `${process.env.BASE_URL}/api/member/payment-notify`,
       ClientBackURL: `${process.env.BASE_URL}/member.html`

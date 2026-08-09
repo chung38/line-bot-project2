@@ -13,6 +13,7 @@ import https from "node:https";
 import { db, FirestoreSessionStore } from "./lib/firestore.js";
 import { loadAllGroupState, startGroupStateSync } from "./lib/state.js";
 import { startMaintenanceJobs } from "./services/maintenance.js";
+import { startExpiryReminderJob } from "./services/reminder.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerMemberRoutes } from "./routes/member.js";
 import { registerWebhookRoutes } from "./routes/webhook.js";
@@ -70,6 +71,10 @@ loadAllGroupState()
 
     // 背景清理：過期 session、逾期未付款的訂單。細節與取捨見 services/maintenance.js。
     startMaintenanceJobs();
+
+    // 訂閱到期提醒（到期前 7/3/1 天與到期當下）。會用到 LINE 推播額度，
+    // 設 EXPIRY_REMINDER=off 可以關閉。細節見 services/reminder.js。
+    startExpiryReminderJob();
 
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {

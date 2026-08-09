@@ -58,6 +58,7 @@ services/           跟平台無關的商業邏輯
                        —— 不依賴 Firebase，可以直接寫單元測試
   translate.js        呼叫 OpenAI 的翻譯邏輯，組裝 prompt，重用 translateLogic.js 的純函式
   maintenance.js      背景清理（過期 session、逾期未付款訂單），由 server.js 定期呼叫
+  reminder.js         訂閱到期提醒（到期前 7/3/1 天與到期當下），由 server.js 每天呼叫
 routes/             把 services/ 組裝成實際的路由，各自匯出一個 register*Routes(app) 函式
   webhook.js          LINE webhook：事件處理、指令（!啟動 / !設定 / !文宣）
   admin.js            後台管理 API（/admin/*，session 登入）
@@ -129,11 +130,68 @@ npm test
 | `tests/member.test.js` | `routes/member.js` 登入把關、checkout 金額來源、藍新通知驗證、解除綁定 |
 | `tests/admin.test.js` | `routes/admin.js` 登入/權限/群組設定/訂閱設定（真的起一個 express server） |
 | `tests/maintenance.test.js` | `services/maintenance.js` 背景清理該刪什麼、不該刪什麼 |
+| `tests/reminder.test.js` | `services/reminder.js` 到期提醒該發給誰、發幾次、何時不該發 |
 
 `tests/admin.test.js` 跟其他測試不一樣：它會真的用 express + express-session
 起一個伺服器（監聽隨機埠）再用 fetch 打進去。因為後台的權限判斷是靠 middleware
 串起來的，直接呼叫 handler 測不到「沒登入會不會被擋」這種真正重要的行為。
 這兩個套件本來就是專案的相依，不需要額外裝 supertest。
+
+## 正式上線（藍新金流）
+
+測試環境與正式環境是**完全不同的兩組**商店代號與金鑰，切換時這四個都要改：
+
+| 變數 | 正式環境的值 |
+| --- | --- |
+| `NEWEBPAY_MPG_URL` | `https://core.newebpay.com/MPG/mpg_gateway`（測試站是 `ccore`，只差開頭一個 c） |
+| `NEWEBPAY_MERCHANT_ID` | 正式商店的商店代號 |
+| `NEWEBPAY_HASHKEY` | 正式商店的 HashKey（32 字元） |
+| `NEWEBPAY_HASHIV` | 正式商店的 HashIV（16 字元） |
+
+正式環境的金鑰要到 `https://www.newebpay.com`（不是 `cwww`）的商店後台另外申請。
+另外 `NODE_ENV=production` 要記得設，否則 session cookie 不會加上 `secure` 旗標。
+
+`BASE_URL` 現在是必要環境變數，啟動時會檢查格式（要有 `http(s)://`、結尾不要加
+斜線）。它是用來組出藍新的 `ReturnURL` / `NotifyURL` 的，沒設會送出
+`undefined/api/member/payment-notify`——付款頁面照樣開得起來、使用者照樣刷得
+下去，但通知永遠回不來、訂閱不會開通。這種「錢收了系統沒反應」的錯很難查，
+所以直接擋在啟動階段。
+
+### 付款方式目前限定信用卡
+
+checkout 明確送出 `CREDIT: 1` 並把 `WEBATM` / `VACC` / `CVS` / `BARCODE` 設成 0。
+不指定的話藍新會列出商店後台開通的所有方式，而 ATM 轉帳、超商代碼這類非即時
+付款目前沒有處理：取號結果走的是 `CustomerURL`（沒設，使用者會被丟到藍新的預設
+畫面），而且訂單付款期限寫死 30 分鐘、ATM 通常給好幾天。之後要支援的話，要先
+補 `CustomerURL` 的處理並把 `ORDER_PENDING_TTL_MS` 拉長，不要只把 0 改成 1。
+
+### 收真錢之前還沒有的東西
+
+- **電子發票**：在台灣賣訂閱服務要開統一發票，系統目前沒有這塊。
+- **自動續約**：目前是一次性付款，到期後使用者要自己回會員中心再刷一次。
+- **退款**：只能到藍新後台手動處理，訂閱狀態要另外用後台的「手動停用」調整。
+- **對帳**：藍新的交易查詢 API 沒串。如果 Notify 剛好在服務重啟時送達而遺失，
+  那筆訂單會一直卡在 pending，目前只能人工從藍新後台核對。
+
+## 訂閱到期提醒
+
+到期前 7/3/1 天與到期當下，各推播一則訊息到該群組（`services/reminder.js`，
+每天執行一次）。設 `EXPIRY_REMINDER=off` 可以完全關閉。
+
+⚠️ 用的是 LINE 的 **推播** 訊息，會計入官方帳號的訊息額度（翻譯用的回覆訊息
+不計費）。每個群組每個訂閱週期最多 4 則，群組多的時候請先確認方案額度。
+
+設計上最重要的是「不能重複發」。這個排程會在三種情況下被重複觸發：多台
+instance 各自執行、free-tier 平台重啟服務、以及同一個里程碑連續好幾天都符合
+條件。所以「有沒有發過」寫在 Firestore 的 `subscriptionReminders`，而且是用
+交易寫入的，兩台 instance 同時判斷時不會都認為自己是第一個。
+
+去重的鍵是 `${gid}_${到期日}_${里程碑}`——到期日在鍵裡面，所以續約之後會自然
+重新開始提醒，不需要清除舊紀錄。推播失敗時會把佔位紀錄刪掉，下一輪再試。
+
+不會發提醒的情況：機器人已不在群組（推了也只會拿到 403）、後台強制停用的訂閱、
+以及到期超過 3 天的——最後這條是為了避免功能剛上線或服務停很久才恢復時，
+一口氣對一堆早就過期的舊群組發訊息。
 
 ## Firestore 安全規則
 
@@ -156,10 +214,14 @@ firebase deploy --only firestore:rules
 
 ## 已知待改進項目
 
+- **電子發票、自動續約、退款、對帳**（見上方「收真錢之前還沒有的東西」）。
 - **額度預扣是以「一則訊息 = 1 次」計算**，跟實際翻成幾種語言無關。要改成按語言
   數計費的話，`reserveGroupTranslation()` 已經支援傳入 `translationCount`，但目標
   語言是在背景處理才算出來的，呼叫順序要一起調整。這是計價方式的商業決定，
   沒有動它。
+- **`subscriptionReminders` 沒有清理機制**。一個群組一個訂閱週期最多 4 筆，
+  量很小，暫時沒放進 `services/maintenance.js`；如果之後群組數量大幅成長，
+  可以照那邊的模式加一個刪除一年前紀錄的工作。
 - **`npm audit` 剩一項 moderate**：`uuid` 在 `google-gax` 的依賴鏈裡。已實測過
   升級到 `firebase-admin@13` 也不會解掉（google-gax 自己鎖著舊版 uuid），
   所以沒有做這個 major 升級。該漏洞只在呼叫 uuid 時傳入 `buf` 參數才會觸發，
@@ -181,6 +243,14 @@ firebase deploy --only firestore:rules
   會被序列化，不可能超用；翻譯成功只補記字元數（`commitGroupTranslation()`），
   失敗／逾時／沒有目標語言則退回（`releaseGroupTranslation()`）。
   `monthKey` 由預扣時決定並一路帶著，跨月不會退到下個月的計數上。
+### 第五批（上線前）
+
+- **`BASE_URL` 改為必要環境變數**，並在啟動時檢查格式。
+- **修正 `.env.example` 的錯誤註解**：原本寫「`NEWEBPAY_MPG_URL` 預設是正式環境
+  網址」，但程式的預設值其實是測試站 `ccore`。照原註解操作會一直在打測試環境。
+- **checkout 限定信用卡**（見上方「正式上線」）。
+- **新增訂閱到期提醒**（見上方「訂閱到期提醒」）。
+
 ### 第四批（後台可用性）
 
 - **封鎖清單顯示群組名稱**：以前只顯示一串 gid，看不出是哪個群組。名稱在「封鎖

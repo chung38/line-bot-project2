@@ -23,7 +23,7 @@ import {
   SUBSCRIPTION_STATUS,
   MANUAL_OVERRIDE,
 } from "../services/subscription.js";
-import { aesEncrypt, shaEncrypt, NEWEBPAY_MERCHANT_ID } from "../lib/newebpay.js";
+import { aesEncrypt, aesDecrypt, shaEncrypt, NEWEBPAY_MERCHANT_ID } from "../lib/newebpay.js";
 
 // ── 極簡的假 express app：只把 handler 依 method + path 收起來 ──
 function createFakeApp() {
@@ -170,6 +170,41 @@ test("checkout：年繳用年繳售價與年繳月數", async () => {
   const order = fake.all("paymentOrders")[0];
   assert.equal(order.amount, 3600);
   assert.equal(order.months, 12);
+});
+
+test("checkout：只開放信用卡，非即時付款方式明確關閉（目前系統沒處理取號流程）", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+
+  const res = await app.call("POST /api/member/checkout", {
+    session,
+    body: { gid: GID, plan: "monthly" },
+  });
+
+  // 送給藍新的參數是加密的，這裡解回來確認內容真的有帶付款方式限制
+  const params = new URLSearchParams(aesDecrypt(res.body.tradeInfo));
+  assert.equal(params.get("CREDIT"), "1");
+  assert.equal(params.get("VACC"), "0");
+  assert.equal(params.get("WEBATM"), "0");
+  assert.equal(params.get("CVS"), "0");
+  assert.equal(params.get("BARCODE"), "0");
+});
+
+test("checkout：ReturnURL / NotifyURL 會用 BASE_URL 組出完整網址", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+
+  const res = await app.call("POST /api/member/checkout", {
+    session,
+    body: { gid: GID, plan: "monthly" },
+  });
+
+  const params = new URLSearchParams(aesDecrypt(res.body.tradeInfo));
+  // 這是「收得到錢卻不會開通」的經典原因：BASE_URL 沒設會變成 undefined/api/...
+  for (const key of ["ReturnURL", "NotifyURL", "ClientBackURL"]) {
+    assert.match(params.get(key), /^https?:\/\//, `${key} 必須是完整網址`);
+    assert.doesNotMatch(params.get(key), /undefined/, `${key} 不能含有 undefined`);
+  }
 });
 
 test("checkout：不是群組管理者時拒絕", async () => {
