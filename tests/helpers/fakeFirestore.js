@@ -1,7 +1,8 @@
 // 記憶體版的假 Firestore，只實作這個專案實際會用到的 API 子集：
 //
 //   collection(name).doc(id).get() / set(data, {merge}) / update(data) / delete()
-//   collection(name).get() / where(field, "==" | "<" | "<=" | ">" | ">=", value) / limit(n) / add(data)
+//   collection(name).get() / where(field, "==" | "<" | "<=" | ">" | ">=", value)
+//   collection(name).orderBy(field, "asc" | "desc") / limit(n) / add(data)
 //   collection(name).onSnapshot(onNext, onError)   ← lib/state.js 的即時同步
 //   db.runTransaction(fn)                          ← 額度預扣、綁定碼交易
 //   admin.firestore.FieldValue.increment / serverTimestamp
@@ -164,7 +165,7 @@ function createFakeFirestore() {
     };
   }
 
-  function buildQuerySnapshot(collectionName, filters = [], limitCount = null) {
+  function buildQuerySnapshot(collectionName, filters = [], limitCount = null, orders = []) {
     let entries = [...col(collectionName).entries()];
 
     for (const f of filters) {
@@ -188,6 +189,20 @@ function createFakeFirestore() {
       });
     }
 
+    // orderBy：真的 Firestore 會把「沒有這個欄位」的文件整個排除在結果之外，
+    // 這裡照做，否則測試會看到正式環境查不到的資料。
+    for (const o of [...orders].reverse()) {
+      entries = entries.filter(([, data]) => data?.[o.field] !== undefined);
+      entries.sort(([, a], [, b]) => {
+        const left = comparableValue(a?.[o.field]);
+        const right = comparableValue(b?.[o.field]);
+        if (left === null || right === null) return 0;
+        if (left === right) return 0;
+        const asc = left < right ? -1 : 1;
+        return o.direction === "desc" ? -asc : asc;
+      });
+    }
+
     if (limitCount !== null) entries = entries.slice(0, limitCount);
 
     const docs = entries.map(([id]) => makeSnapshot(collectionName, id));
@@ -200,16 +215,19 @@ function createFakeFirestore() {
     };
   }
 
-  function queryRef(collectionName, filters = [], limitCount = null) {
+  function queryRef(collectionName, filters = [], limitCount = null, orders = []) {
     return {
       where(field, op, value) {
-        return queryRef(collectionName, [...filters, { field, op, value }], limitCount);
+        return queryRef(collectionName, [...filters, { field, op, value }], limitCount, orders);
+      },
+      orderBy(field, direction = "asc") {
+        return queryRef(collectionName, filters, limitCount, [...orders, { field, direction }]);
       },
       limit(n) {
-        return queryRef(collectionName, filters, n);
+        return queryRef(collectionName, filters, n, orders);
       },
       async get() {
-        return buildQuerySnapshot(collectionName, filters, limitCount);
+        return buildQuerySnapshot(collectionName, filters, limitCount, orders);
       },
     };
   }
@@ -222,6 +240,9 @@ function createFakeFirestore() {
       },
       where(field, op, value) {
         return queryRef(name, [{ field, op, value }]);
+      },
+      orderBy(field, direction = "asc") {
+        return queryRef(name, [], null, [{ field, direction }]);
       },
       limit(n) {
         return queryRef(name, [], n);

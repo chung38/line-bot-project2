@@ -259,19 +259,28 @@ function renderBlockedGroups() {
         const deletedAt = item.deletedAt?._seconds
           ? new Date(item.deletedAt._seconds * 1000).toLocaleString("zh-TW")
           : "未知";
+        // 名稱是封鎖當下存下來的；舊資料若機器人已離開群組就查不到了，
+        // 這時只能退回顯示 gid，並標示名稱無法取得，避免看起來像資料壞掉。
+        const hasName = !!item.groupName;
+        const title = hasName ? item.groupName : "（名稱無法取得）";
+        const restoreLabel = hasName ? item.groupName : item.gid;
+
         return `
           <div class="group-card" style="border-left: 3px solid #ef4444;">
             <div class="group-card-head">
               <div>
-                <div class="group-title" style="color:#ef4444;">⛔ 已封鎖</div>
+                <div class="group-title" style="color:#ef4444;">
+                  ⛔ ${escapeHtml(title)}
+                  ${hasName ? "" : `<span class="muted" style="font-size:12px;font-weight:normal;">（機器人已不在此群組）</span>`}
+                </div>
                 <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
               </div>
               <div class="group-actions">
-                <button onclick="restoreGroup('${escapeHtml(item.gid)}')" class="btn-primary">♻️ 恢復群組</button>
+                <button onclick="restoreGroup('${escapeHtml(item.gid)}', '${escapeHtml(restoreLabel)}')" class="btn-primary">♻️ 恢復群組</button>
               </div>
             </div>
             <div class="group-row">
-              <span class="label">刪除時間</span>
+              <span class="label">封鎖時間</span>
               <div>${escapeHtml(deletedAt)}</div>
             </div>
           </div>
@@ -317,7 +326,10 @@ async function saveGroupSettings(e) {
 }
 
 async function deleteGroupSettings(gid) {
-  if (!confirm(`確定刪除 ${gid} 的整組設定？刪除後群組會進入封鎖清單，可從下方「已刪除群組」恢復。`)) return;
+  // 用群組列表裡已經查到的名稱做提示，避免管理員對著一串 gid 猜是哪個群組。
+  const known = groupItems.find(item => item.gid === gid);
+  const label = known?.groupName ? `「${known.groupName}」` : gid;
+  if (!confirm(`確定刪除 ${label} 的整組設定？刪除後群組會進入封鎖清單，可從下方「已刪除群組」恢復。`)) return;
 
   try {
     await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
@@ -333,8 +345,9 @@ async function deleteGroupSettings(gid) {
   }
 }
 
-async function restoreGroup(gid) {
-  if (!confirm(`確定要恢復群組 ${gid} 嗎？\n這會解除封鎖，讓群組可重新綁定，但不會還原原本設定。`)) return;
+async function restoreGroup(gid, groupName) {
+  const label = groupName || gid;
+  if (!confirm(`確定要恢復群組「${label}」嗎？\n這會解除封鎖，讓群組可重新綁定，但不會還原原本設定。`)) return;
 
   try {
     await api(`/admin/groups/${encodeURIComponent(gid)}/blocked`, {

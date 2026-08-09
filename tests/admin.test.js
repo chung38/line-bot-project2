@@ -25,10 +25,10 @@ const ADMIN_PASS = process.env.ADMIN_PASS;
 
 // 起一個一次性的伺服器，測完就關掉。回傳一個小小的 client，
 // 會自己記住 Set-Cookie，這樣才能模擬「登入後再打 API」。
-async function startServer() {
+async function startServer(lineOptions = {}) {
   const fake = createFakeFirestore();
   setFirestoreForTesting(fake.db, fake.admin);
-  const line = createFakeLineClient();
+  const line = createFakeLineClient(lineOptions);
   setLineClientForTesting(line);
 
   groupLang.clear();
@@ -232,6 +232,72 @@ test("更新群組設定：不支援的語言代碼會被過濾掉", async t => 
   });
 
   assert.deepEqual(srv.fake.read("groupLanguages", "G1").langs, ["th"]);
+});
+
+test("封鎖群組時會把群組名稱一起存下來（機器人離開後就查不到了）", async t => {
+  const srv = await startServer({ groupName: "台中二廠外籍同仁群" });
+  t.after(() => srv.close());
+  await srv.login();
+
+  await srv.request("/admin/groups/G1/settings", { method: "DELETE" });
+
+  const blocked = srv.fake.read("deletedGroups", "G1");
+  assert.equal(blocked.groupName, "台中二廠外籍同仁群");
+});
+
+test("封鎖清單會回傳群組名稱", async t => {
+  const srv = await startServer({ groupName: "台中二廠外籍同仁群" });
+  t.after(() => srv.close());
+  await srv.login();
+
+  await srv.request("/admin/groups/G1/settings", { method: "DELETE" });
+  const res = await srv.request("/admin/groups-blocked");
+
+  assert.equal(res.status, 200);
+  const item = res.json.items.find(x => x.gid === "G1");
+  assert.equal(item.groupName, "台中二廠外籍同仁群");
+});
+
+test("機器人已不在群組時仍能封鎖，只是沒有名稱", async t => {
+  const srv = await startServer({ failGroupSummary: true });
+  t.after(() => srv.close());
+  await srv.login();
+
+  const res = await srv.request("/admin/groups/G1/settings", { method: "DELETE" });
+
+  assert.equal(res.status, 200, "查不到名稱不能影響封鎖本身");
+  assert.ok(srv.fake.read("deletedGroups", "G1"), "還是要進封鎖清單");
+  assert.equal(srv.fake.read("deletedGroups", "G1").groupName, undefined);
+});
+
+test("舊的封鎖紀錄沒有名稱時會補查一次並回寫", async t => {
+  const srv = await startServer({ groupName: "舊的群組" });
+  t.after(() => srv.close());
+  await srv.login();
+
+  // 模擬這個功能上線前就已經存在的封鎖紀錄：只有 deletedAt，沒有 groupName
+  srv.fake.seed("deletedGroups", "Gold", { deletedAt: new Date() });
+
+  const res = await srv.request("/admin/groups-blocked");
+  const item = res.json.items.find(x => x.gid === "Gold");
+  assert.equal(item.groupName, "舊的群組");
+
+  // 回寫之後，下次就不用再打 LINE API
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(srv.fake.read("deletedGroups", "Gold").groupName, "舊的群組");
+});
+
+test("補查名稱失敗時封鎖清單照樣列得出來", async t => {
+  const srv = await startServer({ failGroupSummary: true });
+  t.after(() => srv.close());
+  await srv.login();
+
+  srv.fake.seed("deletedGroups", "Gold", { deletedAt: new Date() });
+
+  const res = await srv.request("/admin/groups-blocked");
+  assert.equal(res.status, 200);
+  const item = res.json.items.find(x => x.gid === "Gold");
+  assert.equal(item.groupName, null, "前端會顯示「名稱無法取得」");
 });
 
 test("刪除群組設定會寫入封鎖清單，解除封鎖會拿掉", async t => {

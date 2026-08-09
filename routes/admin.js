@@ -517,9 +517,24 @@ adminRouter.put("/groups/:gid/settings", async (req, res) => {
 adminRouter.delete("/groups/:gid/settings", async (req, res) => {
   try {
     const { gid } = req.params;
-    await deleteGroupSettings(gid);
-    await addAdminLog("DELETE_GROUP_SETTINGS", `刪除群組 ${gid} 設定`, req.auth.user, { gid });
-    res.json({ success: true, gid });
+
+    // 趁機器人還在群組裡先把名稱抓下來存進封鎖紀錄。封鎖之後機器人多半會被移出
+    // 群組，那時 getGroupSummary() 就查不到了，後台的封鎖清單會只剩 gid。
+    // 查不到（已經被踢出、或 LINE 暫時有問題）就當作沒有，不影響刪除本身。
+    let groupName = null;
+    try {
+      const summary = await client.getGroupSummary(gid);
+      groupName = summary?.groupName || null;
+    } catch {}
+
+    await deleteGroupSettings(gid, groupName ? { groupName } : {});
+    await addAdminLog(
+      "DELETE_GROUP_SETTINGS",
+      `刪除群組 ${groupName ? `${groupName}（${gid}）` : gid} 設定`,
+      req.auth.user,
+      { gid, groupName }
+    );
+    res.json({ success: true, gid, groupName });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -529,10 +544,34 @@ adminRouter.get("/groups-blocked", async (req, res) => {
     const snapshot = await db.collection("deletedGroups")
       .orderBy("deletedAt", "desc")
       .get();
-    const items = snapshot.docs.map(doc => ({
-      gid: doc.id,
-      ...doc.data()
-    }));
+
+    const items = await Promise.all(
+      snapshot.docs.map(async doc => {
+        const data = doc.data() || {};
+        const gid = doc.id;
+
+        // 封鎖當下就存好的名稱，直接用。
+        if (data.groupName) return { gid, ...data };
+
+        // 舊資料（這個功能上線前封鎖的）沒有存名稱，補查一次。
+        // 機器人還在群組裡就查得到；查到了就回寫，之後不用再查。
+        // 查不到就回 null，前端會顯示「名稱無法取得」。
+        let groupName = null;
+        try {
+          const summary = await client.getGroupSummary(gid);
+          groupName = summary?.groupName || null;
+        } catch {}
+
+        if (groupName) {
+          db.collection("deletedGroups").doc(gid)
+            .set({ groupName }, { merge: true })
+            .catch(() => {});
+        }
+
+        return { gid, ...data, groupName };
+      })
+    );
+
     res.json({ success: true, items });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
