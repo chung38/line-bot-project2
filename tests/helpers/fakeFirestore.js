@@ -38,6 +38,7 @@ class FakeTimestamp {
 
 function comparableValue(v) {
   if (v instanceof FakeTimestamp) return v.toMillis();
+  if (v && typeof v.toMillis === "function") return v.toMillis();
   if (v instanceof Date) return v.getTime();
   if (typeof v === "number") return v;
   if (typeof v === "string") return v;
@@ -71,6 +72,12 @@ function resolveSentinel(sentinel, existingValue) {
 function cloneValue(v) {
   if (v instanceof Date) return new Date(v.getTime());
   if (v instanceof FakeTimestamp) return v;
+
+  // 正式程式碼有些地方是直接用 firebase-admin 的 Timestamp（不是透過注入的假 admin），
+  // 那種物件如果被下面的「一般物件」分支展開，原型就沒了，讀回來會變成
+  // { _seconds, _nanoseconds } 而不是 Timestamp，測試會看到 toDate is not a function。
+  // 這裡用鴨子型別 認出任何 Timestamp-like 的物件並原樣保留。
+  if (v && typeof v.toDate === "function" && typeof v.toMillis === "function") return v;
   if (Array.isArray(v)) return v.map(cloneValue);
   if (v && typeof v === "object") {
     const out = {};

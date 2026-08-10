@@ -59,6 +59,7 @@
       <div class="member-v2-content">
         <!-- 付款完成後的訂單確認訊息（依實際查詢到的訂單狀態顯示，不是單看網址參數） -->
         <div id="orderStatusBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:14px;"></div>
+        <div id="atmPaymentInfo" style="display:none;margin-bottom:16px;padding:16px;border-radius:8px;border:2px solid #1d4ed8;background:#f8faff;"></div>
 
         <!-- 未登入畫面 -->
         <section id="loginSection" class="member-v2-login-wrap" style="display:none;">
@@ -274,6 +275,7 @@
       const presets = {
         paid: { bg: "#e6f7ee", color: "#0a7a3d", text: "✅ 付款成功，訂閱已開通。" },
         pending: { bg: "#fff8e6", color: "#8a6300", text: "⏳ 訂單處理中，通常幾秒內就會完成，可稍後重新整理查看最新狀態。" },
+        awaiting_payment: { bg: "#eef4ff", color: "#1d4ed8", text: "🏦 已取得轉帳帳號，完成轉帳後訂閱就會自動開通。" },
         failed: { bg: "#fdecec", color: "#b3261e", text: "❌ 付款失敗或已取消，尚未扣款成功，可重新選擇方案付款。" },
         expired: { bg: "#fdecec", color: "#b3261e", text: "⌛ 這筆訂單已逾期未完成付款，請重新選擇方案付款。" },
         unknown: { bg: "#f0f0f0", color: "#555", text: "找不到對應的訂單資訊。" },
@@ -286,12 +288,69 @@
       el.textContent = preset.text;
     }
 
+    // ATM 轉帳的繳費資訊。這一區存在的理由：虛擬帳號是使用者「稍後」才會去用的，
+    // 他一定會關掉分頁、之後再回來看。如果只在取號當下顯示一次，那組號碼就只剩
+    // 藍新寄的那封信了。
+    function renderAtmPaymentInfo(order) {
+      const el = document.getElementById("atmPaymentInfo");
+      if (!el) return;
+
+      if (!order || order.status !== "awaiting_payment" || !order.atmCodeNo) {
+        el.style.display = "none";
+        return;
+      }
+
+      const expire = order.paymentExpireDate
+        ? String(order.paymentExpireDate).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1/$2/$3")
+        : null;
+
+      el.style.display = "block";
+      el.innerHTML = `
+        <h3 style="margin:0 0 12px;font-size:15px;color:#1d4ed8;">🏦 ATM 轉帳資訊</h3>
+        <div style="display:grid;gap:10px;font-size:14px;">
+          <div>
+            <div style="color:#6b7280;font-size:12px;">銀行代碼</div>
+            <strong style="font-size:18px;letter-spacing:1px;">${escapeHtml(order.atmBankCode || "-")}</strong>
+          </div>
+          <div>
+            <div style="color:#6b7280;font-size:12px;">轉帳帳號（僅限本筆訂單使用）</div>
+            <strong style="font-size:20px;letter-spacing:2px;">${escapeHtml(order.atmCodeNo)}</strong>
+          </div>
+          <div>
+            <div style="color:#6b7280;font-size:12px;">轉帳金額</div>
+            <strong style="font-size:18px;">NT$ ${Number(order.amount || 0).toLocaleString()}</strong>
+          </div>
+          ${expire ? `
+          <div>
+            <div style="color:#6b7280;font-size:12px;">繳費期限</div>
+            <strong style="font-size:16px;color:#b3261e;">${escapeHtml(expire)}</strong>
+          </div>` : ""}
+        </div>
+        <p style="margin:14px 0 0;font-size:13px;color:#6b7280;line-height:1.6;">
+          轉帳完成後訂閱會自動開通，通常幾分鐘內生效（銀行作業時間可能較久）。<br>
+          這組帳號只對應這一筆訂單，金額必須完全一致。<br>
+          繳費資訊也會寄到你的信箱一份。
+        </p>
+      `;
+    }
+
+    // 有未完成的 ATM 訂單就把繳費資訊撈回來顯示，不需要使用者記得訂單編號。
+    async function loadPendingAtmOrder() {
+      try {
+        const res = await fetch("/api/member/orders?status=awaiting_payment");
+        if (!res.ok) return;
+        const data = await res.json();
+        const order = (data.orders || [])[0];
+        if (order) renderAtmPaymentInfo(order);
+      } catch {}
+    }
+
     // 付款完成從銀行導回後，實際狀態一律以伺服器查到的訂單資料為準；
     // 如果銀行端的 Notify 還沒到（訂單仍是 pending），就等一下再查一次，而不是相信網址參數。
     async function checkPaymentReturnStatus() {
       const params = new URLSearchParams(window.location.search);
       const orderNo = params.get("orderNo");
-      if (!orderNo) return;
+      if (!orderNo) return false;
 
       window.history.replaceState({}, document.title, "/member.html");
 
@@ -299,20 +358,22 @@
         try {
           const res = await fetch(`/api/member/orders/${encodeURIComponent(orderNo)}`);
           if (!res.ok) return null;
-          const data = await res.json();
-          return data.status || null;
+          return await res.json();
         } catch {
           return null;
         }
       };
 
-      let status = await fetchStatus();
-      if (status === "pending") {
+      let order = await fetchStatus();
+      if (order?.status === "pending") {
         // 給 NotifyURL 一點緩衝時間再查一次，避免使用者剛好卡在「銀行已扣款、通知還沒到」的空窗期。
+        // ATM 不需要等——它本來就是「稍後才付款」，取號完成就是正常結果。
         await new Promise(r => setTimeout(r, 3000));
-        status = (await fetchStatus()) || status;
+        order = (await fetchStatus()) || order;
       }
-      renderOrderStatusBanner(status || "unknown");
+      renderOrderStatusBanner(order?.status || "unknown");
+      renderAtmPaymentInfo(order);
+      return true;
     }
 
     async function init() {
@@ -369,7 +430,10 @@
         showMember();
         renderProfile(data);
         await loadGroups();
-        await checkPaymentReturnStatus();
+        // 先處理剛從藍新導回的那筆（網址上有 orderNo）；沒有的話再看看名下有沒有
+        // 還沒轉帳的 ATM 訂單要顯示。順序不能反，不然剛取號的那筆會被舊訂單蓋掉。
+        const handled = await checkPaymentReturnStatus();
+        if (!handled) await loadPendingAtmOrder();
       } catch (error) {
         showLogin();
         setLoginMessage("系統暫時無法連線，請稍後再試。", true);

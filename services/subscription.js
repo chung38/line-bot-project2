@@ -20,16 +20,35 @@ const MANUAL_OVERRIDE = {
 };
 const ORDER_STATUS = {
   PENDING: "pending",
+  // ATM 轉帳專用的中間狀態：藍新已經配發虛擬帳號，但使用者還沒去轉帳。
+  // 信用卡不會經過這個狀態（授權是即時的，直接 pending → paid）。
+  AWAITING_PAYMENT: "awaiting_payment",
   PAID: "paid",
   FAILED: "failed",
   EXPIRED: "expired",
 };
-const ORDER_PENDING_TTL_MS = 30 * 60 * 1000; // 訂單建立後 30 分鐘內須完成付款，否則視為逾期
 
-// 訂單建立後超過 expiresAt 仍是 pending，視為逾期未付款（僅影響顯示與是否允許再開新單，
-// 不會主動擋掉銀行端稍後才送達的成功通知——真的有扣款就還是要開通，只是會補記一筆警示 log）。
+// 訂單的付款期限。
+//
+// 這個值從 30 分鐘改成 3 天，是因為開放了 ATM 轉帳：虛擬帳號的繳費期限是以「天」
+// 計算的，如果訂單 30 分鐘就過期，會出現「使用者的虛擬帳號還有效、後台卻已經
+// 標成逾期」這種對不起來的狀況。
+//
+// 信用卡的訂單也會套用同一個期限。副作用只是「使用者中途放棄結帳」的訂單會在
+// 列表裡多留幾天，沒有實質影響——狀態的權威來源一直都是 payment-notify。
+//
+// ⚠️ 這個天數必須 >= 你在藍新後台設定的「虛擬帳號繳費期限」，
+//    否則訂單會比虛擬帳號早失效。
+const ORDER_PENDING_DAYS = Number(process.env.ORDER_PENDING_DAYS || 3);
+const ORDER_PENDING_TTL_MS = Math.max(1, ORDER_PENDING_DAYS) * 24 * 60 * 60 * 1000;
+
+// 還在等付款的狀態（尚未成交、也還沒被判定失敗）。
+const OPEN_ORDER_STATUSES = [ORDER_STATUS.PENDING, ORDER_STATUS.AWAITING_PAYMENT];
+
+// 訂單超過 expiresAt 仍未完成付款，視為逾期（僅影響顯示與是否允許再開新單，
+// 不會主動擋掉銀行端稍後才送達的成功通知——真的有收到錢就還是要開通，只是會補記一筆警示 log）。
 function isOrderExpired(order) {
-  if (!order || order.status !== ORDER_STATUS.PENDING) return false;
+  if (!order || !OPEN_ORDER_STATUSES.includes(order.status)) return false;
   const expiresAt = toDateSafe(order.expiresAt);
   return !!expiresAt && expiresAt.getTime() < Date.now();
 }
@@ -693,6 +712,8 @@ export {
   MANUAL_OVERRIDE,
   ORDER_STATUS,
   ORDER_PENDING_TTL_MS,
+  ORDER_PENDING_DAYS,
+  OPEN_ORDER_STATUSES,
   isOrderExpired,
   FALLBACK_SUBSCRIPTION_DEFAULTS,
   normalizeSubscriptionDefaults,

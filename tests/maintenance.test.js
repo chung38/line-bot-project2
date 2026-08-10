@@ -169,3 +169,44 @@ test("runMaintenanceOnce：某一項壞掉不會拖垮其他項", async () => {
   assert.equal(res.sessions.deleted, 1, "session 那條照樣要跑完");
   assert.ok(res.staleOrders.error, "壞掉的那條要回報錯誤而不是丟出去");
 });
+
+
+test("expireStaleOrders：ATM 已取號但一直沒轉帳的訂單也會被標成逾期", async () => {
+  const fake = freshDb();
+  fake.seed("paymentOrders", "ORD_ATM_STALE", {
+    gid: "G1",
+    status: ORDER_STATUS.AWAITING_PAYMENT,
+    atmCodeNo: "9103522175887271",
+    expiresAt: hoursFromNow(-2),
+  });
+  fake.seed("paymentOrders", "ORD_ATM_LIVE", {
+    gid: "G2",
+    status: ORDER_STATUS.AWAITING_PAYMENT,
+    atmCodeNo: "9103522175887272",
+    expiresAt: hoursFromNow(48),
+  });
+
+  const res = await expireStaleOrders();
+
+  assert.equal(res.expired, 1);
+  assert.equal(fake.read("paymentOrders", "ORD_ATM_STALE").status, ORDER_STATUS.EXPIRED);
+  assert.equal(
+    fake.read("paymentOrders", "ORD_ATM_LIVE").status,
+    ORDER_STATUS.AWAITING_PAYMENT,
+    "繳費期限還沒到的不能動——使用者的虛擬帳號還有效"
+  );
+});
+
+test("expireStaleOrders：pending 與 awaiting_payment 會一起處理", async () => {
+  const fake = freshDb();
+  fake.seed("paymentOrders", "ORD_P", {
+    gid: "G1", status: ORDER_STATUS.PENDING, expiresAt: hoursFromNow(-1),
+  });
+  fake.seed("paymentOrders", "ORD_A", {
+    gid: "G2", status: ORDER_STATUS.AWAITING_PAYMENT, expiresAt: hoursFromNow(-1),
+  });
+
+  const res = await expireStaleOrders();
+
+  assert.equal(res.expired, 2);
+});

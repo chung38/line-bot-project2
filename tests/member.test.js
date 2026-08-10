@@ -25,6 +25,25 @@ import {
 } from "../services/subscription.js";
 import { aesEncrypt, aesDecrypt, shaEncrypt, NEWEBPAY_MERCHANT_ID } from "../lib/newebpay.js";
 
+// 組出一份「ATM 取號結果」的 CustomerURL body
+function buildCustomerBody({ orderNo, amount, bankCode = "812", codeNo = "9103522175887271", expireDate = "20260815", merchantId = NEWEBPAY_MERCHANT_ID }) {
+  const payload = JSON.stringify({
+    Status: "SUCCESS",
+    Result: {
+      MerchantOrderNo: orderNo,
+      Amt: amount,
+      MerchantID: merchantId,
+      PaymentType: "VACC",
+      BankCode: bankCode,
+      CodeNo: codeNo,
+      ExpireDate: expireDate,
+      TradeNo: "25010100000001",
+    },
+  });
+  const TradeInfo = aesEncrypt(payload);
+  return { TradeInfo, TradeSha: shaEncrypt(TradeInfo) };
+}
+
 // ── 極簡的假 express app：只把 handler 依 method + path 收起來 ──
 function createFakeApp() {
   const routes = new Map();
@@ -172,7 +191,7 @@ test("checkout：年繳用年繳售價與年繳月數", async () => {
   assert.equal(order.months, 12);
 });
 
-test("checkout：只開放信用卡，非即時付款方式明確關閉（目前系統沒處理取號流程）", async () => {
+test("checkout：開放信用卡與 ATM，其餘付款方式明確關閉", async () => {
   const { fake, app } = reset();
   seedMember(fake);
 
@@ -181,13 +200,53 @@ test("checkout：只開放信用卡，非即時付款方式明確關閉（目前
     body: { gid: GID, plan: "monthly" },
   });
 
-  // 送給藍新的參數是加密的，這裡解回來確認內容真的有帶付款方式限制
+  // 送給藍新的參數是加密的，這裡解回來確認內容真的有帶付款方式設定
   const params = new URLSearchParams(aesDecrypt(res.body.tradeInfo));
   assert.equal(params.get("CREDIT"), "1");
-  assert.equal(params.get("VACC"), "0");
+  assert.equal(params.get("VACC"), "1");
   assert.equal(params.get("WEBATM"), "0");
   assert.equal(params.get("CVS"), "0");
   assert.equal(params.get("BARCODE"), "0");
+});
+
+test("checkout：ATM 需要的 ExpireDate 與 CustomerURL 都有帶上", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+
+  const res = await app.call("POST /api/member/checkout", {
+    session,
+    body: { gid: GID, plan: "monthly" },
+  });
+
+  const params = new URLSearchParams(aesDecrypt(res.body.tradeInfo));
+
+  // 沒有 CustomerURL 的話，使用者會被丟到藍新的預設畫面，我們也拿不到虛擬帳號
+  assert.match(params.get("CustomerURL"), /\/api\/member\/payment-customer$/);
+  // ExpireDate 是 YYYYMMDD
+  assert.match(params.get("ExpireDate"), /^\d{8}$/);
+});
+
+test("checkout：訂單的 expiresAt 不早於藍新的繳費期限", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+
+  const res = await app.call("POST /api/member/checkout", {
+    session,
+    body: { gid: GID, plan: "monthly" },
+  });
+
+  const params = new URLSearchParams(aesDecrypt(res.body.tradeInfo));
+  const expireDate = params.get("ExpireDate");
+
+  const order = fake.all("paymentOrders")[0];
+  const orderExpiry = order.expiresAt instanceof Date ? order.expiresAt : order.expiresAt.toDate();
+
+  // 訂單如果比虛擬帳號早失效，會出現「帳號還能轉、後台已標逾期」的矛盾
+  const y = orderExpiry.getFullYear();
+  const m = String(orderExpiry.getMonth() + 1).padStart(2, "0");
+  const d = String(orderExpiry.getDate()).padStart(2, "0");
+  assert.equal(`${y}${m}${d}`, expireDate);
+  assert.equal(orderExpiry.getHours(), 23, "要算到當天結束");
 });
 
 test("checkout：ReturnURL / NotifyURL 會用 BASE_URL 組出完整網址", async () => {
@@ -429,4 +488,155 @@ test("session-login：沒有 idToken 時回 400", async () => {
     session: makeFakeSession(),
   });
   assert.equal(res.statusCode, 400);
+});
+
+
+// ── ATM 取號（CustomerURL）─────────────────────────────────
+
+test("取號結果會存下虛擬帳號，訂單轉成等待繳費", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 300 });
+
+  const res = await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 300 }),
+  });
+
+  assert.equal(res.statusCode, 303);
+  assert.match(res.redirectedTo, /orderStatus=awaiting_payment/);
+
+  const order = fake.read("paymentOrders", orderNo);
+  assert.equal(order.status, "awaiting_payment");
+  assert.equal(order.atmBankCode, "812");
+  assert.equal(order.atmCodeNo, "9103522175887271");
+  assert.equal(order.paymentExpireDate, "20260815");
+  assert.equal(order.paymentType, "VACC");
+});
+
+test("取號不代表付款成功，訂閱這時還不能開通", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 300 });
+
+  await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 300 }),
+  });
+
+  assert.equal(fake.read("groupSubscriptions", GID), null, "錢還沒到，不能開通");
+});
+
+test("取號後真的轉帳，付款通知會把訂閱開通", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 300, monthlyQuota: 5000 });
+
+  await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 300 }),
+  });
+  // 幾天後使用者去 ATM 轉帳，藍新才打 NotifyURL
+  const res = await app.call("POST /api/member/payment-notify", {
+    body: buildNotifyBody({ orderNo, amount: 300 }),
+  });
+
+  assert.equal(res.sentText, "1|OK");
+  assert.equal(fake.read("paymentOrders", orderNo).status, "paid");
+  assert.equal(fake.read("groupSubscriptions", GID).monthlyQuota, 5000);
+});
+
+test("取號結果的簽章不符時拒絕", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake);
+  const body = buildCustomerBody({ orderNo, amount: 300 });
+
+  const res = await app.call("POST /api/member/payment-customer", {
+    body: { ...body, TradeSha: "DEADBEEF" },
+  });
+
+  assert.match(res.redirectedTo, /orderStatus=error/);
+  assert.equal(fake.read("paymentOrders", orderNo).status, "pending");
+});
+
+test("取號金額與訂單不符時不寫入帳號", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 3000 });
+
+  const res = await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 1 }),
+  });
+
+  assert.match(res.redirectedTo, /orderStatus=error/);
+  assert.equal(fake.read("paymentOrders", orderNo).atmCodeNo, undefined);
+});
+
+test("已付款的訂單不會被取號結果退回等待繳費", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 300 });
+
+  // 先付款成功
+  await app.call("POST /api/member/payment-notify", {
+    body: buildNotifyBody({ orderNo, amount: 300 }),
+  });
+  // 使用者重新整理那個取號導轉頁面
+  await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 300 }),
+  });
+
+  assert.equal(fake.read("paymentOrders", orderNo).status, "paid");
+});
+
+test("訂單列表：查得到自己還沒轉帳的 ATM 訂單", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  const orderNo = seedPendingOrder(fake, { amount: 300 });
+  await app.call("POST /api/member/payment-customer", {
+    body: buildCustomerBody({ orderNo, amount: 300 }),
+  });
+
+  const res = await app.call("GET /api/member/orders", {
+    session,
+    query: { status: "awaiting_payment" },
+  });
+
+  assert.equal(res.body.orders.length, 1);
+  assert.equal(res.body.orders[0].atmCodeNo, "9103522175887271");
+});
+
+test("訂單列表：查不到別人的訂單", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  fake.seed("paymentOrders", "ORD_OTHER", {
+    firebaseUid: "someone-else",
+    gid: "Gx",
+    status: "awaiting_payment",
+    amount: 300,
+    atmCodeNo: "0000000000000000",
+    expiresAt: daysFromNow(1),
+  });
+
+  const res = await app.call("GET /api/member/orders", { session, query: {} });
+
+  assert.equal(res.body.orders.length, 0);
+});
+
+test("訂單列表：已逾期的 ATM 訂單回 expired，不會顯示失效的帳號", async () => {
+  const { fake, app } = reset();
+  seedMember(fake);
+  fake.seed("paymentOrders", "ORD_OLD", {
+    firebaseUid: FUID,
+    gid: GID,
+    status: "awaiting_payment",
+    amount: 300,
+    atmCodeNo: "9103522175887271",
+    expiresAt: daysFromNow(-1),
+  });
+
+  const res = await app.call("GET /api/member/orders", {
+    session,
+    query: { status: "awaiting_payment" },
+  });
+
+  assert.equal(res.body.orders.length, 0, "逾期的不該再被當成待繳費");
 });

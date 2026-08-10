@@ -19,6 +19,8 @@ import { addAdminLog } from "../lib/adminLog.js";
 import {
   ORDER_STATUS,
   ORDER_PENDING_TTL_MS,
+  ORDER_PENDING_DAYS,
+  OPEN_ORDER_STATUSES,
   isOrderExpired,
   getSubscriptionByGroupId,
   getGroupUsage,
@@ -62,6 +64,20 @@ const checkoutLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// 藍新的 ExpireDate 是 YYYYMMDD 格式（繳費期限，只到「日」的精度）。
+function formatExpireDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
 
 function requireMemberSession(req, res, next) {
   if (!req.session?.firebaseUid) {
@@ -161,7 +177,10 @@ app.post("/api/member/checkout", checkoutLimiter, express.json({ limit: "1mb" })
     const { amount, months, monthlyQuota, itemDesc } = planConfig;
     const orderNo = "ORD" + Date.now() + Math.floor(Math.random() * 1000);
     const now = admin.firestore.Timestamp.now();
-    const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + ORDER_PENDING_TTL_MS);
+    // 訂單的付款期限。ATM 的虛擬帳號有效到 ExpireDate 當天結束，所以這裡也算到
+    // 那一天的 23:59:59，兩邊才會一致（不然會出現帳號還能用、訂單已逾期的狀況）。
+    const expiresAtDate = endOfDay(new Date(now.toMillis() + ORDER_PENDING_TTL_MS));
+    const expiresAt = admin.firestore.Timestamp.fromDate(expiresAtDate);
 
     await db.collection("paymentOrders").doc(orderNo).set({
       userId: user.lineUserId,
@@ -191,20 +210,26 @@ app.post("/api/member/checkout", checkoutLimiter, express.json({ limit: "1mb" })
       ItemDesc: itemDesc,
       Email: user.email,
 
-      // 只開放信用卡，其他付款方式明確關掉。
-      //
-      // 不指定的話，藍新會把商店後台開通的所有方式都列出來，而 ATM 轉帳、超商代碼
-      // 這類「非即時付款」目前這套系統沒有處理：
-      //   1. 取號結果走的是 CustomerURL（我們沒設），使用者會被丟到藍新的預設畫面。
-      //   2. 訂單的付款期限是 30 分鐘（ORDER_PENDING_TTL_MS），但 ATM 通常給好幾天，
-      //      會出現「使用者的虛擬帳號還有效、後台卻已經標成逾期」的狀況。
-      // 之後真的要支援 ATM，要先補上 CustomerURL 的處理並把付款期限拉長，
-      // 不要只是把下面的 0 改成 1。
+      // 開放信用卡與 ATM 轉帳（虛擬帳號）。其餘方式明確關掉——
+      // 超商代碼是每筆固定手續費，在月繳這種小額訂單上不划算；
+      // WebATM 需要讀卡機，工廠端幾乎不會用。
+      // 這幾個旗標只是「允許顯示」，實際上能不能用還是要看商店後台有沒有開通。
       CREDIT: 1,
+      VACC: 1,
       WEBATM: 0,
-      VACC: 0,
       CVS: 0,
       BARCODE: 0,
+
+      // ATM 是非即時付款，藍新會先配發一組虛擬帳號給使用者，之後才真的收到錢。
+      // 這三個參數缺一不可：
+      //   ExpireDate    繳費期限（YYYYMMDD）。沒設的話用藍新後台的預設值，
+      //                 但那樣程式就不知道期限是哪天，訂單的 expiresAt 會對不上。
+      //   CustomerURL   取號完成後藍新會把使用者的瀏覽器導到這裡，並帶上虛擬帳號。
+      //                 沒設的話使用者會被丟到藍新的預設畫面，我們也拿不到帳號。
+      //   LangType      付款頁語系。
+      ExpireDate: formatExpireDate(expiresAtDate),
+      CustomerURL: `${process.env.BASE_URL}/api/member/payment-customer`,
+      LangType: "zh-tw",
 
       ReturnURL: `${process.env.BASE_URL}/api/member/payment-return`,
       NotifyURL: `${process.env.BASE_URL}/api/member/payment-notify`,
@@ -285,6 +310,9 @@ app.post("/api/member/payment-notify", express.urlencoded({ extended: true }), a
         if (order.status === ORDER_STATUS.PAID) {
           return { code: "ALREADY_PROCESSED", order };
         }
+
+        // ATM 的訂單在取號時已經變成 awaiting_payment，這裡照樣要開通——
+        // 真正代表「錢到了」的是這支 NotifyURL，不是取號那一步。
 
         // 金額比對：實際入帳金額必須跟我們建立訂單時算出來的一致，
         // 不一致就不開通（例如訂單被竄改、或對到了別筆單）。
@@ -402,6 +430,100 @@ app.post("/api/member/line-link-code", memberAuthLimiter, requireMemberSession, 
     res.status(500).json({ error: "無法產生綁定碼" });
   }
 });
+// ── ATM 取號結果（CustomerURL）─────────────────────────────
+//
+// ATM 轉帳的流程跟信用卡不一樣：使用者在藍新選了 ATM 之後，藍新會馬上配發一組
+// 虛擬帳號，然後把使用者的瀏覽器導到這裡（POST，內容跟 NotifyURL 一樣是加密的
+// TradeInfo）。真正的付款是使用者稍後自己去 ATM 轉帳，那時才會打 NotifyURL。
+//
+// 所以這支路由「不代表付款成功」，只是把虛擬帳號存下來給會員中心顯示。
+//
+// ⚠️ 這是瀏覽器導轉，不是 server-to-server 通知——使用者如果在看到帳號前就關掉
+// 分頁，我們就收不到。藍新同時會把繳費資訊寄到訂單的 Email，所以錢還是收得到、
+// 付款通知也照樣會進來；差別只在會員中心查不到那組帳號。這是 CustomerURL 的
+// 先天限制，不是可以靠重試解決的問題。
+async function handlePaymentCustomer(req, res) {
+  try {
+    const { TradeInfo, TradeSha } = req.body || {};
+
+    if (!TradeInfo || shaEncrypt(TradeInfo) !== TradeSha) {
+      console.error("payment-customer 簽章驗證失敗");
+      return res.redirect(303, "/member.html?orderStatus=error");
+    }
+
+    const result = JSON.parse(aesDecrypt(TradeInfo));
+    const info = result?.Result || {};
+    const orderNo = info.MerchantOrderNo;
+
+    if (!orderNo) return res.redirect(303, "/member.html?orderStatus=unknown");
+
+    if (info.MerchantID && info.MerchantID !== NEWEBPAY_MERCHANT_ID) {
+      console.error("payment-customer 的 MerchantID 與本商店不符:", info.MerchantID);
+      return res.redirect(303, "/member.html?orderStatus=error");
+    }
+
+    const orderRef = db.collection("paymentOrders").doc(orderNo);
+    const snap = await orderRef.get();
+    if (!snap.exists) return res.redirect(303, "/member.html?orderStatus=unknown");
+
+    const order = snap.data();
+
+    // 金額比對：跟 payment-notify 同樣的道理，取號結果也要對得上原本的訂單。
+    const quoted = Number(info.Amt);
+    if (Number.isFinite(quoted) && quoted !== Number(order.amount)) {
+      console.error(`訂單 ${orderNo} 取號金額不符：${quoted} / ${order.amount}`);
+      return res.redirect(303, "/member.html?orderStatus=error");
+    }
+
+    // 已經付款完成的訂單不要被取號結果覆蓋回「等待繳費」。
+    // 正常不會發生，但使用者重新整理那個導轉頁面就有可能。
+    if (order.status === ORDER_STATUS.PAID) {
+      return res.redirect(303, `/member.html?orderNo=${encodeURIComponent(orderNo)}&orderStatus=${ORDER_STATUS.PAID}`);
+    }
+
+    await orderRef.set(
+      {
+        status: ORDER_STATUS.AWAITING_PAYMENT,
+        paymentType: info.PaymentType || null,
+        // ATM 的虛擬帳號資訊。欄位名稱照藍新的回傳內容：
+        //   BankCode 轉帳銀行代碼、CodeNo 虛擬帳號、ExpireDate 繳費期限
+        atmBankCode: info.BankCode || null,
+        atmCodeNo: info.CodeNo || null,
+        paymentExpireDate: info.ExpireDate || null,
+        newebpayTradeNo: info.TradeNo || null,
+        quotedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await addAdminLog(
+      "PAYMENT_CODE_ISSUED",
+      `訂單 ${orderNo} 已取號（${info.PaymentType || "unknown"}），等待使用者繳費`,
+      "system",
+      { orderNo, gid: order.gid, paymentType: info.PaymentType || null }
+    );
+
+    return res.redirect(
+      303,
+      `/member.html?orderNo=${encodeURIComponent(orderNo)}&orderStatus=${ORDER_STATUS.AWAITING_PAYMENT}`
+    );
+  } catch (e) {
+    console.error("payment-customer 錯誤:", e.message);
+    return res.redirect(303, "/member.html?orderStatus=error");
+  }
+}
+
+app.post(
+  "/api/member/payment-customer",
+  express.urlencoded({ extended: true }),
+  handlePaymentCustomer
+);
+
+// 藍新有些情況會用 GET 導回，補一個讓使用者至少不會看到 404。
+app.get("/api/member/payment-customer", (req, res) =>
+  res.redirect(303, "/member.html")
+);
+
 async function handlePaymentReturn(req, res) {
   try {
     const src = req.method === "POST" ? req.body : req.query;
@@ -444,6 +566,53 @@ app.post(
 
 // 讓會員頁在導回後可以主動輪詢訂單目前狀態（銀行端 Notify 有時會比使用者瀏覽器晚幾秒到），
 // 只允許查自己名下的訂單。
+// 列出自己名下「還在等付款」的訂單。
+//
+// 會員中心需要這支的原因：ATM 的虛擬帳號是使用者稍後才會用的，他一定會關掉分頁、
+// 之後再回來。如果只能用訂單編號查（orders/:orderNo），使用者根本不會記得那串編號。
+app.get("/api/member/orders", memberApiLimiter, requireMemberSession, async (req, res) => {
+  try {
+    const firebaseUid = req.session.firebaseUid;
+    const wanted = String(req.query.status || "").trim();
+
+    const snap = await db
+      .collection("paymentOrders")
+      .where("firebaseUid", "==", firebaseUid)
+      .get();
+
+    const orders = snap.docs
+      .map(doc => {
+        const order = doc.data() || {};
+        return {
+          orderNo: doc.id,
+          // 逾期的訂單即使 Firestore 裡還寫著 awaiting_payment，也要當成 expired 回，
+          // 不然前端會顯示一組已經失效的虛擬帳號。
+          status: isOrderExpired(order) ? ORDER_STATUS.EXPIRED : order.status,
+          gid: order.gid,
+          plan: order.plan,
+          amount: order.amount,
+          createdAt: order.createdAt || null,
+          expiresAt: order.expiresAt || null,
+          paymentType: order.paymentType || null,
+          atmBankCode: order.atmBankCode || null,
+          atmCodeNo: order.atmCodeNo || null,
+          paymentExpireDate: order.paymentExpireDate || null,
+        };
+      })
+      .filter(order => (wanted ? order.status === wanted : true))
+      .sort((a, b) => {
+        const at = toDateSafe(a.createdAt)?.getTime() || 0;
+        const bt = toDateSafe(b.createdAt)?.getTime() || 0;
+        return bt - at;
+      });
+
+    res.json({ orders });
+  } catch (e) {
+    console.error("查詢訂單列表失敗:", e.message);
+    res.status(500).json({ error: "查詢訂單失敗" });
+  }
+});
+
 app.get("/api/member/orders/:orderNo", memberApiLimiter, requireMemberSession, async (req, res) => {
   try {
     const { orderNo } = req.params;
@@ -466,6 +635,12 @@ app.get("/api/member/orders/:orderNo", memberApiLimiter, requireMemberSession, a
       paidAt: order.paidAt || null,
       failedAt: order.failedAt || null,
       failReason: order.failReason || null,
+      // ATM 取號後的繳費資訊。使用者關掉分頁後回來還是要查得到，
+      // 不然那組虛擬帳號就只剩藍新寄的那封信了。
+      paymentType: order.paymentType || null,
+      atmBankCode: order.atmBankCode || null,
+      atmCodeNo: order.atmCodeNo || null,
+      paymentExpireDate: order.paymentExpireDate || null,
     });
   } catch (e) {
     console.error("查詢訂單失敗:", e.message);

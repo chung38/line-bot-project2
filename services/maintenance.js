@@ -18,7 +18,7 @@
 // expressSessions 的 expires 欄位設一個 TTL 會比這裡的清理更省錢，
 // 那時可以把 SESSION_CLEANUP 關掉（見 startMaintenanceJobs 的參數）。
 import { db, admin } from "../lib/firestore.js";
-import { ORDER_STATUS } from "./subscription.js";
+import { ORDER_STATUS, OPEN_ORDER_STATUSES } from "./subscription.js";
 
 const DEFAULT_BATCH_SIZE = 200;
 
@@ -61,16 +61,23 @@ async function cleanupExpiredSessions({ batchSize = DEFAULT_BATCH_SIZE, collecti
 async function expireStaleOrders({ batchSize = DEFAULT_BATCH_SIZE } = {}) {
   try {
     const now = admin.firestore.Timestamp.now();
-    const snap = await db
-      .collection("paymentOrders")
-      .where("status", "==", ORDER_STATUS.PENDING)
-      .limit(batchSize)
-      .get();
 
-    if (snap.empty) return { scanned: 0, expired: 0 };
+    // 要掃兩種狀態：pending（還沒選付款方式就跑掉）與 awaiting_payment
+    // （ATM 已取號但一直沒去轉帳）。分開查是因為 Firestore 的 "in" 查詢
+    // 在這個專案沒有用到別處，維持單一運算子比較單純。
+    const snaps = await Promise.all(
+      OPEN_ORDER_STATUSES.map(status =>
+        db.collection("paymentOrders").where("status", "==", status).limit(batchSize).get()
+      )
+    );
+
+    const docs = snaps.flatMap(s => s.docs);
+    if (!docs.length) return { scanned: 0, expired: 0 };
+
+    const snap = { docs, size: docs.length, empty: false };
 
     // expiresAt 的比較放在記憶體裡做，避免「status == + expiresAt <」這種
-    // 複合條件需要另外去 Firebase Console 建索引。pending 訂單本來就不多。
+    // 複合條件需要另外去 Firebase Console 建索引。未成交訂單本來就不多。
     const stale = snap.docs.filter(doc => {
       const expiresAt = doc.data()?.expiresAt;
       const millis = typeof expiresAt?.toMillis === "function"
