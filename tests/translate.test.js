@@ -246,3 +246,90 @@ test("setChatCompletionForTesting 傳 null 時會還原成真正的實作", asyn
   // 只驗證不會丟錯；還原後不再呼叫任何翻譯，避免真的打到 OpenAI。
   assert.doesNotThrow(() => setChatCompletionForTesting(null));
 });
+
+
+// ── prompt 結構 ─────────────────────────────────────────────
+//
+// 這幾個測試不驗「翻得好不好」（那要靠人看），而是驗 prompt 本身的結構有沒有壞。
+// 加這一組的直接原因：先前手動編輯 prompt 時，${industryContext} 被貼了兩次而沒人
+// 發現——重複的指令會被模型當成特別強調，可能讓日常對話也被硬套產業術語。
+// 這種錯誤在翻譯結果上不會立刻看出來，只能從 prompt 本身檢查。
+
+test("prompt：industryContext 只會出現一次（回歸測試：曾經重複貼了兩次）", () => {
+  reset();
+  const industry = "電子廠";
+  const context = buildIndustryContext(industry);
+
+  for (const strict of [false, true]) {
+    const prompt = buildTranslationPrompt("th", industry, strict);
+    const occurrences = prompt.split(context).length - 1;
+    assert.equal(occurrences, 1, `${strict ? "極簡" : "一般"} prompt 的產業脈絡出現 ${occurrences} 次`);
+  }
+});
+
+test("prompt：規則編號連續且不重複", () => {
+  reset();
+  const prompt = buildTranslationPrompt("th", "電子廠");
+  const numbers = [...prompt.matchAll(/^(\d+)\. /gm)].map(m => Number(m[1]));
+
+  assert.ok(numbers.length >= 4, "規則數量看起來不對");
+  assert.deepEqual(numbers, [...numbers].sort((a, b) => a - b), "編號要遞增");
+  assert.equal(new Set(numbers).size, numbers.length, "編號不能重複");
+  assert.deepEqual(numbers, Array.from({ length: numbers.length }, (_, i) => i + 1), "編號要從 1 開始連續");
+});
+
+test("prompt：保留人名地名的規則沒有掉（工廠群組高頻情境）", () => {
+  reset();
+  const prompt = buildTranslationPrompt("th", "電子廠");
+  // 中文姓氏與地名的字本身有意義，沒有這條規則的話
+  // 「林先生」「大甲廠」會被照字面翻成「森林」「大盔甲」
+  assert.match(prompt, /人名/);
+  assert.match(prompt, /地名/);
+});
+
+test("prompt：代碼類保留規則沒有掉", () => {
+  reset();
+  const prompt = buildTranslationPrompt("th", "");
+  for (const keyword of ["機台代號", "料號", "工單號", "URL", "Email"]) {
+    assert.match(prompt, new RegExp(keyword), `少了「${keyword}」的保留規則`);
+  }
+});
+
+test("prompt：不會出現整段重複的規則行", () => {
+  reset();
+  const prompt = buildTranslationPrompt("vi", "食品廠");
+  const lines = prompt
+    .split("\n")
+    .map(l => l.trim())
+    .filter(l => l.length > 10);
+
+  const seen = new Set();
+  for (const line of lines) {
+    assert.equal(seen.has(line), false, `這一行重複了：${line.slice(0, 40)}`);
+    seen.add(line);
+  }
+});
+
+test("prompt：目標語言名稱有正確帶入，不是語言代碼", () => {
+  reset();
+  const prompt = buildTranslationPrompt("th", "");
+  assert.match(prompt, /泰/, "應該用語言名稱而不是 th");
+});
+
+test("prompt：沒有指定行業時不會出現空白的產業段落", () => {
+  reset();
+  const prompt = buildTranslationPrompt("th", "");
+  assert.doesNotMatch(prompt, /工作類型：\s*。/, "行業是空的時候不該產生「工作類型：。」");
+  assert.match(prompt, /未指定工作類型/);
+});
+
+test("prompt：極簡版本比一般版本短，但仍保留核心約束", () => {
+  reset();
+  const normal = buildTranslationPrompt("th", "紡織廠");
+  const strict = buildTranslationPrompt("th", "紡織廠");
+  const strictPrompt = buildTranslationPrompt("th", "紡織廠", true);
+
+  assert.ok(strictPrompt.length < normal.length);
+  assert.match(strictPrompt, /紡織廠/, "重試時不能失去產業脈絡");
+  assert.match(strictPrompt, /校對/, "要明確禁止「只改錯字」這種行為");
+});
