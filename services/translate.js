@@ -97,7 +97,7 @@ async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature 
   const res = await axios.post(
     "https://api.openai.com/v1/chat/completions",
     {
-      model: "gpt-4.1-mini",
+      model: "gpt-5.4-mini",
       temperature,
       max_tokens: 1000,
       messages: [
