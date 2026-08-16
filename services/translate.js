@@ -80,7 +80,6 @@ ${industryContext}
 2. 只翻譯原文寫出來的內容。不要補上原文沒有的動作、指示、原因或結論——名詞就翻成名詞，除非原文本身有動詞。
 3. 忠實傳達原文語意，不得自行增加、刪除或改變原文未明確表達的主詞、受詞、代詞、對象或人稱。
 4. 以下內容一律原樣保留，不翻譯也不改寫：
-   - 人名、地名、公司名、廠區與部門名稱
    - 機台代號、房號、床號、型號、批號、料號、工單號、ERP 代碼
    - 英文縮寫、全大寫英文詞、英數混合代碼、單一英文字母代號（A、B、C）
    - 數字、日期、時間、URL、Email、@提及 placeholder
@@ -91,8 +90,11 @@ ${industryContext}
 }
 
 // 使用哪個模型。改成環境變數，之後要換模型不用動程式碼。
-const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
-
+const OPENAI_MODEL = (process.env.OPENAI_MODEL || "").trim();
+if (!OPENAI_MODEL) {
+  console.error("❌ 缺少環境變數: OPENAI_MODEL");
+  process.exit(1);
+}
 // GPT-5 系列（以及 o 系列）是「推理模型」，Chat Completions 的參數規格跟 GPT-4.x 不同：
 //
 //   1. max_tokens 不能用，要改成 max_completion_tokens。
