@@ -90,28 +90,111 @@ ${industryContext}
 請翻譯成：${langLabel}`.trim();
 }
 
-// 實際打 OpenAI 的那一層抽成獨立函式，並允許測試注入替身。
-// 這樣 translateWithChatGPT 的重試邏輯（哪些語言會重試、重試幾次、
-// 重試時用哪個 prompt）才能在單元測試裡驗證，不需要真的呼叫 OpenAI。
-async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature }) {
-  const res = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: "gpt-5.4-mini",
-      temperature,
-      max_tokens: 1000,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: text }
-      ]
-    },
-    {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeout: 25000
-    }
-  );
+// 使用哪個模型。改成環境變數，之後要換模型不用動程式碼。
+const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
-  return res.data?.choices?.[0]?.message?.content?.trim() || "";
+// GPT-5 系列（以及 o 系列）是「推理模型」，Chat Completions 的參數規格跟 GPT-4.x 不同：
+//
+//   1. max_tokens 不能用，要改成 max_completion_tokens。
+//      送 max_tokens 會直接被打回 400：
+//        "Unsupported parameter: 'max_tokens' is not supported with this model."
+//
+//   2. 部分推理模型不接受 temperature（只能用預設值）。
+//      各版本行為不一致，所以下面用「被拒絕就自動拿掉重送」的方式處理，
+//      不寫死哪個模型支援哪個參數——OpenAI 每隔幾個月就會改一次。
+//
+//   3. reasoning_effort 預設值因版本而異。翻譯這種任務不需要推理，
+//      而且推理會吃掉 max_completion_tokens 的額度：如果推理用掉 1000 token，
+//      真正的譯文就沒有空間了，回來的 content 會是空字串。
+//      所以這裡明確設成 "none"。
+function isReasoningModel(model) {
+  return /^(gpt-5|o[1-9])/i.test(model);
+}
+
+function buildRequestPayload({ model, systemPrompt, text, temperature }) {
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: text }
+  ];
+
+  if (isReasoningModel(model)) {
+    return {
+      model,
+      messages,
+      max_completion_tokens: 1000,
+      reasoning_effort: "none",
+      temperature,
+    };
+  }
+
+  return { model, messages, max_tokens: 1000, temperature };
+}
+
+// OpenAI 回傳「這個參數不支援」時，從 payload 拿掉那個參數再送一次。
+//
+// 為什麼要做這件事：這個專案會換模型（4.1-mini → 5.4-mini → 之後還會再換），
+// 而每一代對 temperature / reasoning_effort 的支援都不一樣。沒有這層的話，
+// 換模型當下整個翻譯功能會直接停擺，而且錯誤訊息只會出現在伺服器 log 裡，
+// 群組裡的使用者只看到「翻譯失敗」，很難聯想到是參數問題。
+const UNSUPPORTED_PARAM_RETRY_LIMIT = 3;
+
+function extractUnsupportedParam(err) {
+  const data = err?.response?.data?.error;
+  if (!data) return null;
+
+  const code = data.code || "";
+  const message = data.message || "";
+
+  if (code !== "unsupported_parameter" && code !== "unsupported_value" && !/is not supported with this model/i.test(message)) {
+    return null;
+  }
+
+  // 優先用 API 明講的 param 欄位，取不到再從訊息裡撈引號內的參數名
+  if (data.param) return String(data.param);
+  const m = message.match(/'([a-z_]+)'/i);
+  return m ? m[1] : null;
+}
+
+async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature }) {
+  let payload = buildRequestPayload({ model: OPENAI_MODEL, systemPrompt, text, temperature });
+
+  for (let attempt = 0; attempt <= UNSUPPORTED_PARAM_RETRY_LIMIT; attempt++) {
+    try {
+      const res = await axios.post(
+        "https://api.openai.com/v1/chat/completions",
+        payload,
+        {
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          timeout: 25000
+        }
+      );
+
+      const choice = res.data?.choices?.[0];
+      const content = choice?.message?.content?.trim() || "";
+
+      // 推理模型如果把 token 額度用在推理上，content 會是空的、finish_reason 是 length。
+      // 這種情況要講清楚，不然只會看到「翻譯失敗」而查不出原因。
+      if (!content && choice?.finish_reason === "length") {
+        console.error(
+          `❌ ${OPENAI_MODEL} 回傳空內容（finish_reason=length）。` +
+          `推理模型可能把 token 額度用在推理上，請確認 reasoning_effort 設定或調高 max_completion_tokens。`
+        );
+      }
+
+      return content;
+    } catch (e) {
+      const badParam = extractUnsupportedParam(e);
+
+      // 不是參數問題，或那個參數本來就不在 payload 裡 → 交給外層的重試/錯誤處理
+      if (!badParam || !(badParam in payload)) throw e;
+
+      console.warn(`⚠️ ${OPENAI_MODEL} 不支援參數「${badParam}」，已自動移除後重試`);
+      const { [badParam]: _removed, ...rest } = payload;
+      payload = rest;
+    }
+  }
+
+  throw new Error(`${OPENAI_MODEL} 連續回報不支援的參數，已超過重試上限`);
 }
 
 let requestChatCompletion = requestChatCompletionViaOpenAI;
@@ -263,6 +346,12 @@ return restored;
 }
 
 export {
+  // 模型設定與參數相容性（GPT-5 系列的參數規格跟 GPT-4.x 不同）
+  OPENAI_MODEL,
+  isReasoningModel,
+  buildRequestPayload,
+  extractUnsupportedParam,
+
   // 從 translateLogic.js re-export，讓其他模組不用改 import 路徑
   hasChinese,
   isOnlyEmojiOrWhitespace,

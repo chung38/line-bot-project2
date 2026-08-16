@@ -269,6 +269,29 @@ firebase deploy --only firestore:rules
   會被序列化，不可能超用；翻譯成功只補記字元數（`commitGroupTranslation()`），
   失敗／逾時／沒有目標語言則退回（`releaseGroupTranslation()`）。
   `monthKey` 由預扣時決定並一路帶著，跨月不會退到下個月的計數上。
+### 第八批（模型切換相容性）
+
+換成 `gpt-5.4-mini` 之後翻譯全部失敗，原因不是模型名稱打錯，而是 GPT-5 系列是
+**推理模型**，Chat Completions 的參數規格跟 GPT-4.x 不同：
+
+| | GPT-4.x | GPT-5 系列 |
+| --- | --- | --- |
+| 輸出長度上限 | `max_tokens` | `max_completion_tokens`（送 `max_tokens` 會回 400） |
+| `temperature` | 支援 | 部分版本不支援 |
+| 推理 | 無 | 會消耗 token 額度，需要 `reasoning_effort` |
+
+改動：
+
+- **模型改用 `OPENAI_MODEL` 環境變數**（預設 `gpt-4.1-mini`），換模型不用動程式碼。
+- **依模型自動切換參數**：`isReasoningModel()` 判斷後由 `buildRequestPayload()` 組出
+  對的欄位名稱。
+- **明確設 `reasoning_effort: "none"`**：翻譯不需要推理，而且推理會吃掉
+  `max_completion_tokens` 的額度——用完的話回來的 `content` 是空字串，
+  只會看到「翻譯失敗」卻查不出原因。這種情況現在會印出明確的 log。
+- **被拒絕的參數會自動移除後重試**：OpenAI 每隔幾個月就會改一次參數規格，
+  寫死「哪個模型支援哪個參數」遲早會過期。現在收到
+  `unsupported_parameter` 就把那個參數拿掉再送一次，並留一筆 warning。
+
 ### 第七批（翻譯 prompt 整理）
 
 - **移除重複的 `${industryContext}`**：一般版 prompt 裡產業脈絡被貼了兩次。

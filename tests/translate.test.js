@@ -16,6 +16,9 @@ import {
   buildIndustryContext,
   setChatCompletionForTesting,
   isTranslationFailureOutput,
+  isReasoningModel,
+  buildRequestPayload,
+  extractUnsupportedParam,
 } from "../services/translate.js";
 
 // 每個測試用不同的原文，避免模組層級的 LRU 快取跨測試互相影響。
@@ -332,4 +335,116 @@ test("prompt：極簡版本比一般版本短，但仍保留核心約束", () =>
   assert.ok(strictPrompt.length < normal.length);
   assert.match(strictPrompt, /紡織廠/, "重試時不能失去產業脈絡");
   assert.match(strictPrompt, /校對/, "要明確禁止「只改錯字」這種行為");
+});
+
+
+// ── 模型參數相容性 ──────────────────────────────────────────
+//
+// GPT-5 系列是推理模型，Chat Completions 的參數規格跟 GPT-4.x 不同。
+// 換模型時如果沒跟著改參數，OpenAI 會直接回 400，整個翻譯功能會停擺——
+// 而使用者只會看到「翻譯失敗」，很難聯想到是參數問題。
+
+test("isReasoningModel：認得 GPT-5 與 o 系列", () => {
+  reset();
+  for (const model of ["gpt-5", "gpt-5-mini", "gpt-5.4-mini", "gpt-5.6-terra", "o3-mini", "o4-mini"]) {
+    assert.equal(isReasoningModel(model), true, `${model} 應該被當成推理模型`);
+  }
+  for (const model of ["gpt-4.1-mini", "gpt-4o", "gpt-4-turbo"]) {
+    assert.equal(isReasoningModel(model), false, `${model} 不是推理模型`);
+  }
+});
+
+test("payload：GPT-5 用 max_completion_tokens，不能送 max_tokens", () => {
+  reset();
+  const payload = buildRequestPayload({
+    model: "gpt-5.4-mini",
+    systemPrompt: "翻譯",
+    text: "測試",
+    temperature: 0.1,
+  });
+
+  // 送 max_tokens 會被打回 400：
+  // "Unsupported parameter: 'max_tokens' is not supported with this model."
+  assert.equal("max_tokens" in payload, false);
+  assert.equal(payload.max_completion_tokens, 1000);
+});
+
+test("payload：GPT-5 會明確關掉推理", () => {
+  reset();
+  const payload = buildRequestPayload({
+    model: "gpt-5.4-mini",
+    systemPrompt: "翻譯",
+    text: "測試",
+    temperature: 0.1,
+  });
+
+  // 翻譯不需要推理，而且推理會吃掉 token 額度，用完的話譯文會是空字串
+  assert.equal(payload.reasoning_effort, "none");
+});
+
+test("payload：GPT-4.x 維持原本的 max_tokens", () => {
+  reset();
+  const payload = buildRequestPayload({
+    model: "gpt-4.1-mini",
+    systemPrompt: "翻譯",
+    text: "測試",
+    temperature: 0.1,
+  });
+
+  assert.equal(payload.max_tokens, 1000);
+  assert.equal("max_completion_tokens" in payload, false);
+  assert.equal("reasoning_effort" in payload, false);
+});
+
+test("payload：兩種模型都會帶上 system 與 user 訊息", () => {
+  reset();
+  for (const model of ["gpt-4.1-mini", "gpt-5.4-mini"]) {
+    const payload = buildRequestPayload({ model, systemPrompt: "SYS", text: "USER", temperature: 0.1 });
+    assert.equal(payload.messages.length, 2);
+    assert.equal(payload.messages[0].role, "system");
+    assert.equal(payload.messages[0].content, "SYS");
+    assert.equal(payload.messages[1].content, "USER");
+  }
+});
+
+test("extractUnsupportedParam：從 OpenAI 的錯誤裡認出被拒絕的參數", () => {
+  reset();
+
+  // OpenAI 實際回傳的格式
+  const err = {
+    response: {
+      data: {
+        error: {
+          message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+          type: "invalid_request_error",
+          param: "max_tokens",
+          code: "unsupported_parameter",
+        },
+      },
+    },
+  };
+  assert.equal(extractUnsupportedParam(err), "max_tokens");
+
+  // 沒有 param 欄位時從訊息裡撈
+  const err2 = {
+    response: {
+      data: {
+        error: {
+          message: "Unsupported parameter: 'temperature' is not supported with this model.",
+          code: "unsupported_parameter",
+        },
+      },
+    },
+  };
+  assert.equal(extractUnsupportedParam(err2), "temperature");
+});
+
+test("extractUnsupportedParam：一般錯誤不會被誤判成參數問題", () => {
+  reset();
+  assert.equal(extractUnsupportedParam(new Error("timeout")), null);
+  assert.equal(
+    extractUnsupportedParam({ response: { data: { error: { message: "Rate limit reached", code: "rate_limit_exceeded" } } } }),
+    null
+  );
+  assert.equal(extractUnsupportedParam({ response: { status: 503 } }), null);
 });
