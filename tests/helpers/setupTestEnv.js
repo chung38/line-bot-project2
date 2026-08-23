@@ -10,6 +10,10 @@ process.env.NODE_ENV = "test";
 
 // 這些值只是為了讓需要讀環境變數的模組不要拿到 undefined，測試不會真的用到它們。
 process.env.OPENAI_API_KEY ||= "test-openai-key";
+// ⚠️ 這個一定要設。services/translate.js 讀不到 OPENAI_MODEL 會直接 process.exit(1)，
+// 而 node --test 只會把整個測試檔記成一個 fail，不會告訴你「裡面那 N 個測試根本沒跑」。
+// 少了這行，admin / translate / webhook 三個測試檔會靜默消失（64 個測試）。
+process.env.OPENAI_MODEL ||= "gpt-4.1-mini";
 process.env.DEBUG = "";
 
 // 藍新金流：AES-256-CBC 要求 HashKey 剛好 32 bytes、HashIV 剛好 16 bytes。

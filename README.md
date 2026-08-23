@@ -2,7 +2,7 @@
 
 LINE 多語言翻譯機器人 + 會員中心（付費訂閱、藍新金流）+ 後台管理面板。
 
-支援語言：英文、泰文、越南文、印尼文、繁體中文。翻譯呼叫 OpenAI（gpt-4.1-mini），
+支援語言：英文、泰文、越南文、印尼文、繁體中文。翻譯呼叫 OpenAI（模型由 `OPENAI_MODEL` 指定），
 資料儲存在 Firebase Firestore。
 
 ## 環境需求
@@ -49,6 +49,7 @@ lib/                跟外部服務對接的基礎設施
   i18n.js             語言常數與回覆文案
   utils.js            日期/月份/數字轉換、debugLog
   adminLog.js         後台操作紀錄（adminLogs collection）
+  lifecycle.js        追蹤背景工作、SIGTERM 時排乾，見下方「優雅關閉」
   state.js            群組層級的共用狀態（語言/邀請人/行業別/封鎖清單），
                        含 Firestore 即時監聽的多 instance 同步，細節見檔案內註解
 services/           跟平台無關的商業邏輯
@@ -58,7 +59,7 @@ services/           跟平台無關的商業邏輯
                        —— 不依賴 Firebase，可以直接寫單元測試
   translate.js        呼叫 OpenAI 的翻譯邏輯，組裝 prompt，重用 translateLogic.js 的純函式
   maintenance.js      背景清理（過期 session、逾期未付款訂單），由 server.js 定期呼叫
-  reminder.js         訂閱到期提醒（到期前 7/3/1 天與到期當下），由 server.js 每天呼叫
+  reminder.js         訂閱到期提醒（到期前 7 天與到期當下，推給管理者 1:1），由 server.js 每天呼叫
 routes/             把 services/ 組裝成實際的路由，各自匯出一個 register*Routes(app) 函式
   webhook.js          LINE webhook：事件處理、指令（!啟動 / !設定 / !文宣）
   admin.js            後台管理 API（/admin/*，session 登入）
@@ -201,13 +202,45 @@ ATM 的流程跟信用卡不一樣，牽涉到三個地方：
 
 ## 訂閱到期提醒
 
-到期前 7/3/1 天與到期當下，各推播一則訊息到該群組（`services/reminder.js`，
+到期前 7 天與到期當下，各推播一則訊息**給群組管理者本人**（`services/reminder.js`，
 每天執行一次）。設 `EXPIRY_REMINDER=off` 可以完全關閉。
 
-⚠️ 用的是 LINE 的 **推播** 訊息，會計入官方帳號的訊息額度（翻譯用的回覆訊息
-不計費）。每個群組每個訂閱週期最多 4 則，群組多的時候請先確認方案額度。
+### 為什麼推給管理者而不是群組
 
-設計上最重要的是「不能重複發」。這個排程會在三種情況下被重複觸發：多台
+LINE 的推播訊息**是按「接收者人數」計費的**：對一個 20 人的群組推一則，會被
+算成 20 則（翻譯用的 `replyMessage` 完全不計費）。
+
+原本的設計是「4 個里程碑 × 推到群組」：
+
+| | 舊設計 | 現在 |
+| --- | --- | --- |
+| 里程碑 | 7 / 3 / 1 天 + 到期 | 7 天 + 到期 |
+| 收件人 | 群組（N 人 = N 則） | 管理者 1:1（1 則） |
+| 20 人群組一輪 | 80 則 | **2 則** |
+| 中用量方案 3,000 則可養 | 37 個群組 | **1,500 個群組** |
+
+而且續約通知本來就該給付錢的人，不是洗整個產線群組的版——外籍移工看到
+「訂閱剩 3 天」也不知道要做什麼。
+
+### 推不到管理者的時候
+
+1:1 推播的前提是對方跟官方帳號有過對話。判斷依據是 `lineUsers/{userId}` 存不
+存在——那筆只有在使用者私訊「綁定 <碼>」給官方帳號時才會寫入，所以它存在就
+代表 1:1 通道是通的。
+
+只用 `!啟動` 綁定、從沒私訊過官方帳號的管理者推不到，這時 `resolveReminderTarget()`
+回 `channel: "group"`，由呼叫端決定：
+
+- **D7**：跳過，留一筆 `EXPIRY_REMINDER_OWNER_UNREACHABLE` 後台紀錄。提早通知
+  不值得為了少數人付整個群組的成本。
+- **到期當下**：照樣推到群組。這一則沒收到等於直接流失客戶，值得那個成本，
+  並且會附一句話請管理者去綁定，之後就能改走 1:1。
+
+略過的情況也會寫去重紀錄，否則排程每天跑一次就會每天寫一筆一模一樣的 log。
+
+### 不能重複發
+
+這個排程會在三種情況下被重複觸發：多台
 instance 各自執行、free-tier 平台重啟服務、以及同一個里程碑連續好幾天都符合
 條件。所以「有沒有發過」寫在 Firestore 的 `subscriptionReminders`，而且是用
 交易寫入的，兩台 instance 同時判斷時不會都認為自己是第一個。
@@ -237,6 +270,45 @@ firebase deploy --only firestore:rules
 或是直接到 Firebase Console → Firestore Database → 規則，把 `firestore.rules`
 的內容貼上去、按發布。建議部署後去 Console 確認一下線上規則不是新專案常見的
 「測試模式」（帶到期日、過期前完全公開讀寫）。
+
+## 優雅關閉（SIGTERM）
+
+部署、擴縮、平台回收 instance 都是先送 `SIGTERM`，之後通常給 30 秒才 `SIGKILL`。
+這件事對本專案特別重要，因為 webhook 的流程是：
+
+```
+reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉」
+  → res.sendStatus(200)
+  → processTranslationInBackground()   ← 背景，可能跑 20 秒以上
+      → commitGroupTranslation() / releaseGroupTranslation()
+```
+
+中間那段被砍掉的話，額度已經扣了、譯文沒送出、退回也不會執行——使用者付了錢
+卻什麼都沒拿到，而且不會留下任何錯誤紀錄。`processTranslationInBackground()`
+內部的 `finally` 擋得住例外，擋不住 process 直接消失。
+
+`lib/lifecycle.js` 追蹤所有「已回 200、還在背景跑」的工作，`server.js` 收到
+`SIGTERM` / `SIGINT` 時：
+
+1. `beginShutdown()` — webhook 不再受理新翻譯（已預扣的不受影響）
+2. `server.close()` — 停止接受新連線，處理中的請求不會被切斷
+3. `waitForDrain()` — 等背景翻譯結清額度，預設最多 25 秒
+
+25 秒的來源：翻譯本身逾時是 28 秒，平台寬限期通常 30 秒。寧可讓最後幾則逾時
+走正常的退回流程，也不要被 `SIGKILL` 砍在半路。平台寬限期不同時用
+`SHUTDOWN_DRAIN_MS` 調整。
+
+排乾逾時會印一則 `⚠️ 排乾逾時` 的 error log——那代表可能有人的額度被扣了卻
+沒收到譯文，客訴時要查得到是哪一次部署。
+
+## 單則訊息長度上限
+
+額度是「一則訊息 = 1 次」，跟訊息長度、翻成幾種語言都無關。LINE 單則文字訊息
+可以到 5000 字，勾 4 種語言就是一次 20000+ 字的 API 呼叫，帳單上卻只算一次額度。
+
+`MAX_TRANSLATE_CHARS`（預設 1500）超過就直接回覆提示，**不扣額度、不呼叫
+OpenAI**。長度檢查刻意放在 `reserveGroupTranslation()` 之前——使用者不該為一則
+被我們拒絕處理的訊息付錢。
 
 ## 已知待改進項目
 

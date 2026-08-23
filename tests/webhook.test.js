@@ -21,6 +21,12 @@ import { setChatCompletionForTesting } from "../services/translate.js";
 import { SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
 import { handleEvent, processTranslationInBackground } from "../routes/webhook.js";
 import { getMonthKey } from "../lib/utils.js";
+import {
+  beginShutdown,
+  waitForDrain,
+  inFlightCount,
+  resetLifecycleForTesting,
+} from "../lib/lifecycle.js";
 
 const GID = "Ggroup1";
 const UID = "Uowner1";
@@ -339,4 +345,101 @@ test("沒有 reservation 時（例如舊呼叫路徑）不會亂動用量", asyn
   );
 
   assert.equal(usageOf(fake), null);
+});
+
+// ── 訊息長度上限 ───────────────────────────────────────────
+//
+// 額度是「一則訊息 = 1 次」，跟長度與目標語言數無關，所以長度上限是成本控制的
+// 唯一防線。這裡要驗的是「擋下來的訊息不會被計費」——如果先扣再擋，使用者等於
+// 為一則我們拒絕處理的訊息付錢。
+
+test("超過長度上限的訊息不翻譯、不扣額度，並回覆提示", async () => {
+  const { fake, line } = reset({
+    translateWith: async () => {
+      throw new Error("超長訊息不該呼叫 OpenAI");
+    },
+  });
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("長".repeat(1501)));
+  await settle();
+
+  assert.ok(!usageOf(fake), "被擋下來的訊息不該產生任何用量紀錄");
+  const replied = [...line.calls.replies, ...line.calls.pushes]
+    .map(c => c.message?.text || c.text || "")
+    .join("\n");
+  assert.match(replied, /太長/, "要告訴使用者為什麼沒翻譯");
+});
+
+test("剛好在長度上限內的訊息照常翻譯並扣額度", async () => {
+  const { fake } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("長".repeat(1500)));
+  await settle();
+
+  assert.equal(usageOf(fake).translationCount, 1);
+});
+
+// ── 關閉流程 ───────────────────────────────────────────────
+//
+// 回歸測試：以前沒有 SIGTERM 處理，部署時正在跑的背景翻譯會被砍掉，
+// 而額度在進背景之前就已經扣了 —— 扣了錢、沒給譯文、也不會退回。
+
+test("關閉中不再受理新翻譯，也不會扣額度", async () => {
+  const { fake, line } = reset({
+    translateWith: async () => {
+      throw new Error("關閉中不該呼叫 OpenAI");
+    },
+  });
+  seedActiveGroup(fake);
+
+  beginShutdown();
+  try {
+    await handleEvent(textEvent("關閉期間送進來的訊息"));
+    await settle();
+
+    assert.ok(!usageOf(fake), "關閉中不該預扣額度");
+    assert.equal(line.calls.replies.length, 0);
+  } finally {
+    resetLifecycleForTesting();
+  }
+});
+
+test("waitForDrain 會等到已經預扣的背景翻譯結清才回來", async () => {
+  const { fake } = reset();
+  seedActiveGroup(fake);
+
+  // 卡住翻譯，模擬「SIGTERM 進來時翻譯還在跑」
+  let releaseTranslation;
+  const blocked = new Promise(resolve => {
+    releaseTranslation = resolve;
+  });
+  setChatCompletionForTesting(async () => {
+    await blocked;
+    return "ข้อความแปล";
+  });
+
+  await handleEvent(textEvent("這則會卡在翻譯中"));
+
+  assert.equal(inFlightCount() > 0, true, "背景任務要被登記進 lifecycle");
+
+  let drained = false;
+  const draining = waitForDrain(5000).then(remaining => {
+    drained = true;
+    return remaining;
+  });
+
+  await settle();
+  assert.equal(drained, false, "背景任務還沒完成前不該提早結束");
+
+  releaseTranslation();
+  const remaining = await draining;
+
+  assert.equal(remaining, 0, "排乾之後不該有殘留任務");
+  // 額度結清了：預扣的 1 次還在，而且補記了字元數（沒有被中途砍掉）
+  assert.equal(usageOf(fake).translationCount, 1);
+  assert.equal(usageOf(fake).charCount > 0, true, "翻譯完成要補記字元數");
+
+  resetLifecycleForTesting();
 });

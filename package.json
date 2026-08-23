@@ -18,7 +18,7 @@
     "express-rate-limit": "^7.3.0",
     "firebase-admin": "^12.1.0",
     "lru-cache": "^10.2.1",
-    "express-session": "*",
+    "express-session": "^1.18.0",
     "@google-cloud/connect-firestore": "^3.0.0"
   },
   "devDependencies": {

@@ -4,6 +4,7 @@ import { load } from "cheerio";
 import rateLimit from "express-rate-limit";
 import { db, admin } from "../lib/firestore.js";
 import { debugLog } from "../lib/utils.js";
+import { isShuttingDown, trackInFlight } from "../lib/lifecycle.js";
 import { client, lineConfig, middleware } from "../lib/line.js";
 import { i18n, SUPPORTED_LANGS, LANG_ICONS, LANG_LABELS, NAME_TO_CODE } from "../lib/i18n.js";
 import {
@@ -39,6 +40,15 @@ const webhookLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+// ── 單則訊息長度上限 ────────────────────────────────────────
+// 額度是以「一則訊息 = 1 次」計算的，跟翻成幾種語言、訊息多長都無關。
+// LINE 單則文字訊息可以到 5000 字，勾了 4 種語言就是一次 20000+ 字的 API 呼叫，
+// 帳單上卻只算一次額度——有人把一份規格書貼進群組，成本就完全失控。
+//
+// 1500 字是實務上的取捨：工廠群組的正常訊息通常在 200 字以內，會超過 1500 的
+// 幾乎都是整份貼上來的文件，那種本來就該用文件翻譯而不是群組即時翻譯。
+const MAX_TRANSLATE_CHARS = Number(process.env.MAX_TRANSLATE_CHARS) || 1500;
 
 // reservation 是 handleEvent 事先用 reserveGroupTranslation() 預扣下來的額度。
 // 這個函式負責在結束時「結清」：有翻出東西就補記字元數，沒有就把預扣的次數退回去。
@@ -598,16 +608,39 @@ if (event.message?.mention) {
     const rawLines = masked.split("\n");
     if (!rawLines.length) return null;
 
+    // 長度檢查放在預扣之前：太長的訊息根本不該進入計費流程，
+    // 使用者也不該為一則被我們擋下來的訊息被扣額度。
+    if (masked.length > MAX_TRANSLATE_CHARS) {
+      console.log(`⏭️ 訊息長度 ${masked.length} 超過上限 ${MAX_TRANSLATE_CHARS}，不翻譯`);
+      await safeReplyOrPush(
+        replyToken,
+        gid,
+        `⚠️ 這則訊息太長（${masked.length} 字，上限 ${MAX_TRANSLATE_CHARS} 字），無法翻譯。\n請分成幾則傳送。`
+      );
+      return null;
+    }
+
+    // 服務正在關閉時不要再開新的翻譯：額度會扣下去，但背景任務很可能來不及
+    // 跑完就被平台 SIGKILL。寧可這幾則不翻，也不要扣了額度卻沒東西給人家。
+    if (isShuttingDown()) {
+      console.log("⏹️ 服務關閉中，略過這則訊息的翻譯（未扣額度）");
+      return null;
+    }
+
     // 額度改成「先扣再翻」：預扣是在 Firestore 交易裡完成的，
     // 所以就算同一瞬間湧入大量訊息也不會超用（原本事後才累加，3000 的額度可能衝到 3010）。
     // 翻譯失敗或沒有任何目標語言時，processTranslationInBackground 會把預扣退回去。
     const reservation = await reserveGroupTranslation(gid);
     if (!reservation.ok) return null;
 
-    processTranslationInBackground(
-      replyToken, gid, uid, masked, segments, rawLines,
-      langSet, sourceLang, hasOfficialMentionData, reservation
-    ).catch(e => console.error("背景翻譯失敗:", e));
+    // 登記進 lifecycle：額度已經扣掉了，關閉服務前一定要等這段跑完結清，
+    // 否則就是「扣了額度、沒給譯文、也沒退回」。
+    trackInFlight(
+      processTranslationInBackground(
+        replyToken, gid, uid, masked, segments, rawLines,
+        langSet, sourceLang, hasOfficialMentionData, reservation
+      ).catch(e => console.error("背景翻譯失敗:", e))
+    );
   }
 
   return null;
@@ -623,13 +656,18 @@ function registerWebhookRoutes(app) {
     async (req, res) => {
       res.sendStatus(200);
       const events = req.body.events || [];
-      for (const event of events) {
-        try {
-          await handleEvent(event);
-        } catch (e) {
-          console.error("handleEvent error:", e);
+
+      // 這個迴圈是在回應之後才跑的，一樣屬於「背景工作」——關閉時要等它，
+      // 不然可能停在「已預扣、還沒開始翻」這個最糟的中間狀態。
+      trackInFlight((async () => {
+        for (const event of events) {
+          try {
+            await handleEvent(event);
+          } catch (e) {
+            console.error("handleEvent error:", e);
+          }
         }
-      }
+      })());
     }
   );
 }

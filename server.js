@@ -11,6 +11,7 @@ import session from "express-session";
 import https from "node:https";
 
 import { db, FirestoreSessionStore } from "./lib/firestore.js";
+import { beginShutdown, waitForDrain, inFlightCount, DRAIN_TIMEOUT_MS } from "./lib/lifecycle.js";
 import { loadAllGroupState, startGroupStateSync } from "./lib/state.js";
 import { startMaintenanceJobs } from "./services/maintenance.js";
 import { startExpiryReminderJob } from "./services/reminder.js";
@@ -77,9 +78,49 @@ loadAllGroupState()
     startExpiryReminderJob();
 
     const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`✅ Server running on port ${PORT}`);
     });
+
+    // === 優雅關閉 ===
+    // 部署、擴縮、平台回收 instance 都是送 SIGTERM，之後通常給 30 秒才 SIGKILL。
+    // 沒有這段的話，每次部署都會把正在跑的背景翻譯砍掉——而那些訊息的額度
+    // 在進背景之前就已經扣掉了（見 lib/lifecycle.js 檔頭）。
+    let shutdownStarted = false;
+
+    async function shutdown(signal) {
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+
+      console.log(`⏹️ 收到 ${signal}，開始優雅關閉…`);
+
+      // 1. 先讓 webhook 停止接受新的翻譯（已經預扣但還沒翻的不受影響）
+      beginShutdown();
+
+      // 2. 停止接受新連線。已建立的連線會等它自己結束，
+      //    所以正在處理的 HTTP 請求不會被中途切掉。
+      server.close(() => console.log("🔌 已停止接受新連線"));
+
+      // 3. 等背景翻譯結清額度
+      const pending = inFlightCount();
+      if (pending > 0) {
+        console.log(`⏳ 等待 ${pending} 個背景任務結清（最多 ${DRAIN_TIMEOUT_MS / 1000} 秒）…`);
+      }
+      const remaining = await waitForDrain();
+
+      if (remaining > 0) {
+        // 這種情況代表有人的額度可能被扣了卻沒收到譯文。留一筆明確的 log，
+        // 客訴時才查得到是哪一次部署造成的。
+        console.error(`⚠️ 排乾逾時，仍有 ${remaining} 個背景任務未完成就要退出`);
+      } else {
+        console.log("✅ 背景任務都已結清");
+      }
+
+      process.exit(0);
+    }
+
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
   })
   .catch(e => {
     console.error("❌ 初始化失敗:", e);
