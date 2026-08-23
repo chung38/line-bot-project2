@@ -6,12 +6,16 @@ function createFakeLineClient({
   // 機器人已經被移出群組時，getGroupSummary 會失敗。設成 true 可以模擬這個情況。
   failGroupSummary = false,
   groupName = null,
+  // 語音測試用：模擬「音檔抓不回來」，以及控制假音檔的內容
+  failMessageContent = false,
+  audioContent = "fake-audio-bytes",
 } = {}) {
   const calls = {
     replies: [],
     pushes: [],
     profileLookups: [],
     groupSummaryLookups: [],
+    contentFetches: [],
   };
 
   return {
@@ -32,6 +36,16 @@ function createFakeLineClient({
     async getGroupMemberProfile(gid, uid) {
       calls.profileLookups.push({ gid, uid });
       return { displayName };
+    },
+    // 語音訊息的音檔。回一個 Readable，內容是什麼不重要——
+    // 真正的轉錄那一層在測試裡是被 setTranscriberForTesting() 換掉的。
+    async getMessageContent(messageId) {
+      calls.contentFetches.push({ messageId });
+      if (failMessageContent) {
+        throw new Error("get content failed");
+      }
+      const { Readable } = await import("node:stream");
+      return Readable.from([Buffer.from(audioContent)]);
     },
     async getGroupSummary(gid) {
       calls.groupSummaryLookups.push({ gid });

@@ -24,6 +24,11 @@ import {
   releaseGroupTranslation,
 } from "../services/subscription.js";
 import {
+  MAX_AUDIO_SECONDS,
+  checkAudioMessage,
+  transcribeAudioMessage,
+} from "../services/transcribe.js";
+import {
   translateLineSegments,
   extractMentionsFromLineMessage,
   normalizeTextForLangDetect,
@@ -63,7 +68,11 @@ async function processTranslationInBackground(
   langSet,
   sourceLang,
   hasOfficialMentionData = false,
-  reservation = null
+  reservation = null,
+  // sourceKind 只影響回覆的開頭：文字訊息是「【某某】說：」，語音訊息則要
+  // 把逐字稿一起附上（「【某某】語音：」+ 原文 + 譯文），讓聽錯或講錯的時候
+  // 當場就能更正。翻譯、逾時、額度結算的邏輯兩邊完全共用。
+  { sourceKind = "text" } = {}
 ) {
   let billable = false;
 
@@ -131,7 +140,10 @@ async function processTranslationInBackground(
       : body;
 
     const userName = await getGroupMemberDisplayName(gid, uid);
-    await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
+    const header = sourceKind === "audio"
+      ? `【${userName}】語音：\n${mergedText}\n\n`
+      : `【${userName}】說：\n`;
+    await safeReply(replyToken, `${header}${replyText.trim()}`);
 
     // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、服務異常等）時
     // 使用者其實什麼都沒拿到，不應該扣他的額度。
@@ -157,8 +169,73 @@ async function processTranslationInBackground(
   }
 }
 
-async function fetchImageUrlsByDate(gid, dateStr) {
+// 語音訊息：先轉逐字稿，再交給上面那個共用的翻譯流程。
+//
+// 額度在 handleEvent 就預扣好了（跟文字訊息一樣，一則算 1 次），所以這裡的
+// 責任是「要嘛把 reservation 交棒出去，要嘛自己退回」——轉錄失敗、被判定成
+// 幻覺、或轉出來根本沒有可翻的內容時，使用者什麼都沒拿到，不該扣他的額度。
+async function processVoiceTranslationInBackground(
+  replyToken, gid, uid, messageId, langSet, reservation
+) {
+  // 交棒之後額度由 processTranslationInBackground 的 finally 負責結算，
+  // 這裡就不能再退，否則會退兩次。
+  let handedOff = false;
+
   try {
+    const result = await transcribeAudioMessage(messageId);
+    if (!result.ok) {
+      // 這些原因（幻覺、無語音、內容為空）都不回覆使用者：群組裡冒出
+      // 「你剛剛那則語音我聽不懂」比安靜跳過更擾人，而且工廠噪音誤觸的
+      // 頻率會很高。真正的失敗（抓不到音檔、OpenAI 掛掉）在
+      // services/transcribe.js 裡已經用 console.error 記錄過了。
+      //
+      // ⚠️ 這裡刻意用 debugLog 而不是 console.log。這段程式跑在「已經回過
+      // 200、脫離請求生命週期」的背景任務裡，而 node --test 是用子行程的
+      // stdout 傳測試協定的——背景任務在測試結束之後才寫 stdout，會把那條
+      // 串流打亂，整個測試檔會以 "Unable to deserialize cloned data" 失敗，
+      // 而且看起來完全不像是這行造成的。stderr（console.error）不受影響。
+      debugLog("語音未採用", result.reason, gid);
+      return;
+    }
+
+    const transcript = result.text;
+    const normalizedForDetect = normalizeTextForLangDetect(transcript);
+
+    if (!normalizedForDetect.trim()) return;
+    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return;
+    if (isSymbolOrNum(normalizedForDetect)) return;
+
+    const sourceLang = detectLang(normalizedForDetect);
+
+    handedOff = true;
+    await processTranslationInBackground(
+      replyToken,
+      gid,
+      uid,
+      transcript,
+      [], // 語音沒有 mention，不需要遮罩/還原
+      transcript.split("\n"),
+      langSet,
+      sourceLang,
+      false,
+      reservation,
+      { sourceKind: "audio" }
+    );
+  } finally {
+    if (!handedOff && reservation?.ok) {
+      try {
+        await releaseGroupTranslation(gid, {
+          monthKey: reservation.monthKey,
+          translationCount: reservation.reserved,
+        });
+      } catch (e) {
+        console.error("❌ 語音額度退回失敗:", e.message);
+      }
+    }
+  }
+}
+
+async function fetchImageUrlsByDate(gid, dateStr) {  try {
     const res = await axios.get("https://fw.wda.gov.tw/wda-employer/home/file", { timeout: 20000 });
     const $ = load(res.data);
     const detailUrls = [];
@@ -643,6 +720,45 @@ if (event.message?.mention) {
     );
   }
 
+  // ── 語音訊息 ────────────────────────────────────────────
+  // 走跟文字一樣的把關順序：先確認有語言設定，再檢查這則值不值得處理，
+  // 最後才預扣額度。所有「不會產出翻譯」的情況都必須擋在預扣之前。
+  if (event.type === "message" && event.message?.type === "audio" && gid && uid) {
+    const langSet = groupLang.get(gid);
+    if (!langSet || langSet.size === 0) return null;
+
+    const check = checkAudioMessage(event.message);
+
+    if (!check.ok) {
+      if (check.reason === "TOO_LONG") {
+        await safeReplyOrPush(
+          replyToken,
+          gid,
+          `⚠️ 這則語音太長（${Math.round(check.durationMs / 1000)} 秒，上限 ${MAX_AUDIO_SECONDS} 秒），無法翻譯。\n請分段錄製。`
+        );
+      }
+      // TOO_SHORT（誤觸）與 EXTERNAL_CONTENT（音檔不在 LINE 上、拿不到）
+      // 都安靜跳過，不佔額度也不回覆。
+      return null;
+    }
+
+    if (isShuttingDown()) {
+      console.log("⏹️ 服務關閉中，略過這則語音的翻譯（未扣額度）");
+      return null;
+    }
+
+    const reservation = await reserveGroupTranslation(gid);
+    if (!reservation.ok) return null;
+
+    trackInFlight(
+      processVoiceTranslationInBackground(
+        replyToken, gid, uid, event.message.id, langSet, reservation
+      ).catch(e => console.error("背景語音翻譯失敗:", e))
+    );
+
+    return null;
+  }
+
   return null;
 }
 
@@ -680,4 +796,5 @@ export {
   // 不需要真的起一個 HTTP server 或通過 LINE 的簽章驗證。
   handleEvent,
   processTranslationInBackground,
+  processVoiceTranslationInBackground,
 };

@@ -18,6 +18,7 @@ import { setFirestoreForTesting } from "../lib/firestore.js";
 import { setLineClientForTesting } from "../lib/line.js";
 import { groupLang, groupInviter, groupIndustry, deletedGroups } from "../lib/state.js";
 import { setChatCompletionForTesting } from "../services/translate.js";
+import { MAX_AUDIO_SECONDS, setTranscriberForTesting } from "../services/transcribe.js";
 import { SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
 import { handleEvent, processTranslationInBackground } from "../routes/webhook.js";
 import { getMonthKey } from "../lib/utils.js";
@@ -44,6 +45,11 @@ function reset({ line = createFakeLineClient(), translateWith = null } = {}) {
 
   // 預設讓「翻譯」直接回一段泰文，測試不關心譯文品質時就不用每次都寫
   setChatCompletionForTesting(translateWith || (async () => "ข้อความแปล"));
+
+  // 轉錄也要每次重設，否則上一個語音測試注入的替身會殘留到後面的測試裡。
+  setTranscriberForTesting(async () => {
+    throw new Error("這個測試沒有預期會呼叫轉錄，請用 setTranscriberForTesting() 明確注入");
+  });
 
   return { fake, line };
 }

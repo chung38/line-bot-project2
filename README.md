@@ -58,6 +58,7 @@ services/           跟平台無關的商業邏輯
   translateLogic.js   翻譯相關的純函式（語言偵測、mention 遮罩/還原、zh-TW 輸出驗證）
                        —— 不依賴 Firebase，可以直接寫單元測試
   translate.js        呼叫 OpenAI 的翻譯邏輯，組裝 prompt，重用 translateLogic.js 的純函式
+  transcribe.js       語音訊息轉逐字稿（OpenAI）與幻覺過濾，見下方「語音訊息翻譯」
   maintenance.js      背景清理（過期 session、逾期未付款訂單），由 server.js 定期呼叫
   reminder.js         訂閱到期提醒（到期前 7 天與到期當下，只推管理者 1:1），由 server.js 每天呼叫
 routes/             把 services/ 組裝成實際的路由，各自匯出一個 register*Routes(app) 函式
@@ -128,6 +129,8 @@ npm test
 | `tests/group.test.js` | `services/group.js` 綁定規則與回覆輔助函式 |
 | `tests/subscription.test.js` | `services/subscription.js` 訂閱狀態機、額度預扣/退回、群組數量上限 |
 | `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
+| `tests/webhook-audio.test.js` | `routes/webhook.js` 語音路徑：轉錄失敗/幻覺時的額度退回 |
+| `tests/transcribe.test.js` | `services/transcribe.js` 長度把關與三層幻覺過濾 |
 | `tests/member.test.js` | `routes/member.js` 登入把關、checkout 金額來源、藍新通知驗證、解除綁定 |
 | `tests/admin.test.js` | `routes/admin.js` 登入/權限/群組設定/訂閱設定（真的起一個 express server） |
 | `tests/maintenance.test.js` | `services/maintenance.js` 背景清理該刪什麼、不該刪什麼 |
@@ -304,6 +307,65 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 
 排乾逾時會印一則 `⚠️ 排乾逾時` 的 error log——那代表可能有人的額度被扣了卻
 沒收到譯文，客訴時要查得到是哪一次部署。
+
+## 語音訊息翻譯
+
+群組裡的語音訊息會先轉成逐字稿，再走**跟文字訊息完全一樣**的翻譯流程
+（`detectLang` → `resolveTargetLangs` → `translateLineSegments`）。回覆會同時
+附上逐字稿與譯文，聽錯或講錯的時候當場就能更正：
+
+```
+【張三】語音：
+明天早上八點到現場集合
+
+🇹🇭 (泰文譯文)
+🇻🇳 (越南文譯文)
+```
+
+額度跟文字一樣「一則算 1 次」，跟長度、翻幾種語言都無關。
+
+### 過濾 Whisper 幻覺（`services/transcribe.js`）
+
+這是這個功能最重要的部分。Whisper 這類模型在**沒有語音內容**的音檔上不會回空
+字串，它會生出完全不存在的句子——中文最典型的是「謝謝觀看」「字幕由 XXX 提供」
+這種從大量影片字幕訓練資料殘留下來的內容。
+
+工廠群組正是高頻情境：背景機台噪音、誤觸錄音鍵、收音失敗。而失敗的樣子很糟——
+群組裡冒出一句沒人講過的話，還被翻成四種語言推給所有人，使用者完全無從判斷。
+
+所以有三層防護：
+
+| 層 | 做什麼 | 擋不掉什麼 |
+| --- | --- | --- |
+| 長度 | `MIN_AUDIO_MS`（預設 1 秒）以下不送轉錄 | 有長度但全是噪音的 |
+| `no_speech_prob` | whisper-1 的 `verbose_json` 會回每段「沒有語音」的機率，平均值超過 `AUDIO_NO_SPEECH_THRESHOLD`（預設 0.6）就整段丟掉 | 真的有人講話但模型聽錯的 |
+| 片語清單 + 重複迴圈 | `HALLUCINATION_PATTERNS` 用「整句完全等於」比對，避免誤殺「謝謝」這種正常對話 | 清單以外的新幻覺 |
+
+第三層一定會有遺漏，發現新的就往 `HALLUCINATION_PATTERNS` 加。比對刻意用
+「整句等於」而不是「包含」——`tests/transcribe.test.js` 有專門的案例確認
+「謝謝你幫忙」「謝謝觀看這台機器的操作示範」不會被誤殺。
+
+被過濾掉的語音**不回覆、不扣額度**（預扣會退回）。群組裡冒出「你剛剛那則語音
+我聽不懂」比安靜跳過更擾人。
+
+### 為什麼有長度上限
+
+`MAX_AUDIO_SECONDS`（預設 60）同時是成本與延遲的護欄。轉錄是**按秒計費**的額外
+成本，而額度只算 1 次；同時轉錄要花幾秒，疊在翻譯的 28 秒逾時上，太長的語音容易
+撞到 LINE `replyToken` 過期——過期就整則靜靜消失（回覆免費、推播要錢，所以
+`safeReply` 刻意不退回 push）。
+
+超過上限會回覆說明並請使用者分段，不扣額度。
+
+### ⚠️ 背景任務不要用 `console.log`
+
+`processVoiceTranslationInBackground()` 裡的診斷訊息走 `debugLog()`（stderr／
+只在 `DEBUG` 開啟時輸出），不是 `console.log()`。
+
+原因是 `node --test` 用子行程的 **stdout** 傳測試協定。語音的背景任務會在
+「測試已經結束之後」才寫 stdout，那會打亂協定串流，整個測試檔以
+`Unable to deserialize cloned data due to invalid or unsupported version.` 失敗，
+而且錯誤訊息完全看不出跟那行 log 有關。`console.error`（stderr）不受影響。
 
 ## 單則訊息長度上限
 
