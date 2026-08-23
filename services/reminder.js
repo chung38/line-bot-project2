@@ -31,7 +31,15 @@
 //
 // 1:1 推播的前提是管理者跟官方帳號有過對話。判斷依據是 lineUsers 集合——
 // 那筆資料只有在使用者私訊「綁定 <碼>」給官方帳號時才會寫入，所以它存在
-// 就代表 1:1 通道是通的。沒有的話見下方 resolveReminderTarget()。
+// 就代表 1:1 通道是通的。
+//
+// **推不到就跳過，不會退回推群組。** 群組推播按人數計費，一則就是 N 則，
+// 這條路徑一旦留著，成本上限就完全不受控（而且是在你最不會注意的地方）。
+// 推不到的群組會留一筆 EXPIRY_REMINDER_OWNER_UNREACHABLE 後台紀錄，
+// 由管理員自己去追。
+//
+// ⚠️ 代價是：沒綁定的管理者收不到任何到期通知，群組會直接停掉翻譯。
+// 緩解方式是在 !啟動 成功時就請他完成綁定，而不是靠這裡補救。
 //
 // 設 EXPIRY_REMINDER=off 可以整個關掉。
 import { db, admin } from "../lib/firestore.js";
@@ -109,23 +117,18 @@ function memberPageUrl() {
   return base ? `${base}/member.html` : "";
 }
 
-// 訊息內容。收件對象是群組管理者，所以固定用繁中，不跟著群組的翻譯語言設定走。
-//
-// viaGroup 代表這則是退而求其次推到群組的（管理者沒跟官方帳號私訊過）。
-// 這種情況多附一句話請他加好友，之後就能改走成本低很多的 1:1。
-function buildReminderMessage({ milestone, expiresAt, isTrial, groupName, viaGroup = false }) {
+// 訊息內容。收件對象一定是群組管理者本人（1:1），所以固定用繁中，
+// 不跟著群組的翻譯語言設定走。
+function buildReminderMessage({ milestone, expiresAt, isTrial, groupName }) {
   const url = memberPageUrl();
   const tail = url ? `\n\n前往續約：${url}` : "";
-  const hint = viaGroup
-    ? "\n\n（提醒：請群組管理者私訊本官方帳號完成會員綁定，之後續約通知會直接發給您，不再打擾群組。）"
-    : "";
   const label = groupName ? `「${groupName}」` : "此群組";
   const kind = isTrial ? "試用期" : "訂閱";
 
   if (milestone === "EXPIRED") {
     return (
       `⚠️ ${label}的${kind}已於 ${formatDate(expiresAt)} 到期，翻譯功能已停止。\n\n` +
-      `完成付款後會立即恢復，群組設定與語言選擇都會保留。${tail}${hint}`
+      `完成付款後會立即恢復，群組設定與語言選擇都會保留。${tail}`
     );
   }
 
@@ -133,19 +136,20 @@ function buildReminderMessage({ milestone, expiresAt, isTrial, groupName, viaGro
 
   return (
     `🔔 ${label}的${kind}將於 ${formatDate(expiresAt)} 到期（約剩 ${daysLeft} 天）。\n\n` +
-    `到期後翻譯功能會暫停，完成付款即可繼續使用。${tail}${hint}`
+    `到期後翻譯功能會暫停，完成付款即可繼續使用。${tail}`
   );
 }
 
-// 這一則提醒要推給誰。
+// 這一則提醒推得到管理者本人嗎。
 //
-// 優先推給群組管理者的 1:1（1 個接收者 = 1 則）。判斷「推得到嗎」的依據是
-// lineUsers/{userId} 存不存在——那筆只有在使用者私訊「綁定 <碼>」給官方帳號時
-// 才會寫入，所以它存在就代表對方跟官方帳號有過對話、1:1 推播不會拿到 403。
+// 提醒一律只推給管理者的 1:1（1 個接收者 = 1 則），不推群組。
+// 判斷「推得到嗎」的依據是 lineUsers/{userId} 存不存在——那筆只有在使用者
+// 私訊「綁定 <碼>」給官方帳號時才會寫入，所以它存在就代表對方跟官方帳號
+// 有過對話、1:1 推播不會拿到 403。
 //
-// 推不到的情況（只用 !啟動 綁定、從沒私訊過官方帳號）回 channel: "group"，
-// 由呼叫端決定要不要花那個成本 —— 目前只有 EXPIRED 那一則值得。
-async function resolveReminderTarget(gid, sub) {
+// 回傳 { ownerUserId, reachable }。reachable=false 代表這位管理者只用過
+// !啟動、從沒私訊過官方帳號——這種情況直接跳過，不會退回推群組。
+async function resolveReminderRecipient(gid, sub) {
   let ownerUserId = sub?.ownerUserId || null;
 
   if (!ownerUserId) {
@@ -158,16 +162,16 @@ async function resolveReminderTarget(gid, sub) {
     }
   }
 
-  if (ownerUserId) {
-    try {
-      const snap = await db.collection("lineUsers").doc(ownerUserId).get();
-      if (snap.exists) return { to: ownerUserId, channel: "owner", ownerUserId };
-    } catch {
-      // 讀失敗就當成推不到，走群組那條路徑判斷，不要因此整個跳過提醒
-    }
-  }
+  if (!ownerUserId) return { ownerUserId: null, reachable: false };
 
-  return { to: gid, channel: "group", ownerUserId };
+  try {
+    const snap = await db.collection("lineUsers").doc(ownerUserId).get();
+    return { ownerUserId, reachable: snap.exists };
+  } catch {
+    // 讀失敗就當成推不到。寧可漏發一次（下一輪的去重鍵一樣，不會補發），
+    // 也不要在不確定的狀態下亂推。
+    return { ownerUserId, reachable: false };
+  }
 }
 
 // 用交易搶下「這一則提醒由我來發」。
@@ -194,7 +198,7 @@ async function releaseReminder(reminderId) {
 }
 
 async function sendExpiryReminders({ now = new Date(), dryRun = false } = {}) {
-  const result = { checked: 0, sent: 0, skipped: 0, failed: 0, viaGroup: 0 };
+  const result = { checked: 0, sent: 0, skipped: 0, failed: 0, unreachable: 0 };
 
   let snapshot;
   try {
@@ -246,17 +250,14 @@ async function sendExpiryReminders({ now = new Date(), dryRun = false } = {}) {
 
     const reminderId = `${gid}_${dateKey(expiresAt)}_${milestone}`;
 
-    const target = await resolveReminderTarget(gid, sub);
+    const recipient = await resolveReminderRecipient(gid, sub);
 
-    // 只能推群組、而且不是最後一則的話就跳過。
+    // 推不到管理者本人就跳過，任何里程碑都一樣，不會退回推群組。
+    // 群組推播按人數計費，留這條路徑等於把成本上限交給群組人數決定。
     //
-    // 群組推播是按人數計費的，D7 這種「提早通知」不值得為了推不到的少數管理者
-    // 付整個群組的成本；EXPIRED 是最後一哩，沒收到就等於直接流失客戶，那一則
-    // 才值得。留一筆後台紀錄讓管理員看得到是哪些群組的管理者還沒綁定。
-    //
-    // 這裡刻意「先佔位再判斷」：跳過的情況也會留下去重紀錄，否則每天跑一次
-    // 就會每天寫一筆一模一樣的 log。
-    if (target.channel === "group" && milestone !== "EXPIRED") {
+    // 這裡刻意「先佔位再判斷」：跳過的情況也會留下去重紀錄，否則排程每天
+    // 跑一次就會每天寫一筆一模一樣的 log。
+    if (!recipient.reachable) {
       const claimedSkip = await claimReminder(reminderId, {
         gid,
         milestone,
@@ -268,12 +269,13 @@ async function sendExpiryReminders({ now = new Date(), dryRun = false } = {}) {
       if (claimedSkip) {
         await addAdminLog(
           "EXPIRY_REMINDER_OWNER_UNREACHABLE",
-          `群組 ${gid} 的管理者尚未私訊官方帳號，略過 ${milestone} 提醒（到期當下仍會通知群組）`,
+          `群組 ${gid} 的管理者尚未私訊官方帳號，${milestone} 提醒無法送達`,
           "system",
-          { gid, milestone, ownerUserId: target.ownerUserId || null }
+          { gid, milestone, ownerUserId: recipient.ownerUserId || null }
         );
       }
 
+      result.unreachable += 1;
       result.skipped += 1;
       continue;
     }
@@ -314,32 +316,25 @@ async function sendExpiryReminders({ now = new Date(), dryRun = false } = {}) {
       expiresAt,
       isTrial: normalizeSubscriptionStatus(sub.status) === SUBSCRIPTION_STATUS.TRIAL,
       groupName,
-      viaGroup: target.channel === "group",
     });
 
     try {
-      await client.pushMessage(target.to, { type: "text", text });
+      await client.pushMessage(recipient.ownerUserId, { type: "text", text });
       result.sent += 1;
-      if (target.channel === "group") result.viaGroup += 1;
-
-      const where = target.channel === "owner"
-        ? `管理者 ${target.to}`
-        : `群組 ${groupName ? `${groupName}（${gid}）` : gid}`;
 
       await addAdminLog(
         "EXPIRY_REMINDER_SENT",
-        `已推播到期提醒（${milestone}）給${where}`,
+        `已推播到期提醒（${milestone}）給 ${groupName ? `${groupName}（${gid}）` : gid} 的管理者`,
         "system",
         {
           gid,
           milestone,
-          channel: target.channel,
-          ownerUserId: target.ownerUserId || null,
+          ownerUserId: recipient.ownerUserId,
           expiresAt: expiresAt.toISOString(),
         }
       );
     } catch (e) {
-      console.error(`❌ 到期提醒：推播到 ${target.to} 失敗:`, e.response?.data || e.message);
+      console.error(`❌ 到期提醒：推播給管理者 ${recipient.ownerUserId} 失敗:`, e.response?.data || e.message);
       result.failed += 1;
       // 沒發成功就把佔位刪掉，下一輪再試
       await releaseReminder(reminderId);
@@ -374,7 +369,7 @@ function startExpiryReminderJob({
   }, startupDelayMs);
   startTimer.unref?.();
 
-  console.log("✅ 已啟用訂閱到期提醒（到期前 7 天與到期當下各一則，優先推給管理者 1:1）");
+  console.log("✅ 已啟用訂閱到期提醒（到期前 7 天與到期當下各一則，只推管理者 1:1）");
 
   return () => {
     clearTimeout(startTimer);
@@ -387,7 +382,7 @@ export {
   EXPIRED_GRACE_DAYS,
   resolveExpiryDate,
   resolveMilestone,
-  resolveReminderTarget,
+  resolveReminderRecipient,
   buildReminderMessage,
   sendExpiryReminders,
   startExpiryReminderJob,

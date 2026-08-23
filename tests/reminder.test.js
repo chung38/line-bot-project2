@@ -12,7 +12,7 @@ import { setLineClientForTesting } from "../lib/line.js";
 import {
   resolveExpiryDate,
   resolveMilestone,
-  resolveReminderTarget,
+  resolveReminderRecipient,
   buildReminderMessage,
   sendExpiryReminders,
 } from "../services/reminder.js";
@@ -132,7 +132,7 @@ test("到期前 7 天推播一則提醒給管理者本人，不是群組（按�
   assert.equal(res.sent, 1);
   assert.equal(line.calls.pushes.length, 1);
   assert.equal(line.calls.pushes[0].to, "Uowner", "收件人要是管理者的 userId，不是 gid");
-  assert.equal(res.viaGroup, 0);
+  assert.equal(res.unreachable, 0);
   assert.match(line.lastPushText(), /到期/);
 });
 
@@ -307,53 +307,65 @@ test("提醒發送會留下後台紀錄", async () => {
 // ── 收件對象的選擇 ──────────────────────────────────────────
 //
 // 群組推播是「按接收者人數」計費的：對 20 人的群組推一則會被算成 20 則。
-// 所以預設一律推給管理者 1:1；推不到的時候才有條件地退回群組。
+// 所以提醒一律只推給管理者的 1:1，推不到就跳過——沒有「退回推群組」這條路。
+// 下面幾個案例的重點就是守住這條護欄。
 
-test("resolveReminderTarget：管理者私訊過官方帳號時走 1:1", async () => {
+test("resolveReminderRecipient：管理者私訊過官方帳號時 reachable", async () => {
   const { fake } = reset();
   seedGroup(fake, "G1", activeSub(7));
 
-  const target = await resolveReminderTarget("G1", { ownerUserId: "Uowner" });
+  const r = await resolveReminderRecipient("G1", { ownerUserId: "Uowner" });
 
-  assert.equal(target.channel, "owner");
-  assert.equal(target.to, "Uowner");
+  assert.equal(r.reachable, true);
+  assert.equal(r.ownerUserId, "Uowner");
 });
 
-test("resolveReminderTarget：管理者沒私訊過就回 group，不會漏掉 ownerUserId", async () => {
+test("resolveReminderRecipient：管理者沒私訊過就 unreachable，但仍帶回 ownerUserId", async () => {
   const { fake } = reset();
   seedGroup(fake, "G1", activeSub(7), { reachableOwner: false });
 
-  const target = await resolveReminderTarget("G1", { ownerUserId: "Uowner" });
+  const r = await resolveReminderRecipient("G1", { ownerUserId: "Uowner" });
 
-  assert.equal(target.channel, "group");
-  assert.equal(target.to, "G1");
-  assert.equal(target.ownerUserId, "Uowner", "還是要帶著 ownerUserId 供後台紀錄使用");
+  assert.equal(r.reachable, false);
+  assert.equal(r.ownerUserId, "Uowner", "後台紀錄要查得到是誰");
 });
 
-test("resolveReminderTarget：舊資料沒有 ownerUserId 時退回看 groupInviters", async () => {
+test("resolveReminderRecipient：舊資料沒有 ownerUserId 時退回看 groupInviters", async () => {
   const { fake } = reset();
   seedGroup(fake, "G1", activeSub(7), { owner: "Ulegacy" });
 
-  const target = await resolveReminderTarget("G1", {});
+  const r = await resolveReminderRecipient("G1", {});
 
-  assert.equal(target.channel, "owner");
-  assert.equal(target.to, "Ulegacy");
+  assert.equal(r.reachable, true);
+  assert.equal(r.ownerUserId, "Ulegacy");
 });
 
-test("管理者推不到時：D7 直接跳過，不花群組推播的成本", async () => {
+test("推不到管理者時：D7 跳過，絕對不推群組", async () => {
   const { fake, line } = reset();
   seedGroup(fake, "G1", activeSub(7), { reachableOwner: false });
 
   const res = await sendExpiryReminders();
 
   assert.equal(res.sent, 0);
-  assert.equal(line.calls.pushes.length, 0, "20 人群組的 D7 不值得花 20 則");
+  assert.equal(res.unreachable, 1);
+  assert.equal(line.calls.pushes.length, 0);
 
   const log = fake.all("adminLogs").find(l => l.action === "EXPIRY_REMINDER_OWNER_UNREACHABLE");
   assert.ok(log, "要留紀錄讓管理員知道這個群組的管理者還沒綁定");
 });
 
-test("管理者推不到時：D7 的略過紀錄每輪只寫一次，不會每天洗一筆 log", async () => {
+test("推不到管理者時：到期當下也不推群組（回歸測試：這條退路已經拿掉）", async () => {
+  const { fake, line } = reset();
+  seedGroup(fake, "G1", activeSub(-0.5), { reachableOwner: false });
+
+  const res = await sendExpiryReminders();
+
+  assert.equal(res.sent, 0);
+  assert.equal(res.unreachable, 1);
+  assert.equal(line.calls.pushes.length, 0, "群組推播按人數計費，任何里程碑都不走這條");
+});
+
+test("推不到管理者時：略過紀錄每個里程碑只寫一次，不會每天洗 log", async () => {
   const { fake } = reset();
   seedGroup(fake, "G1", activeSub(7), { reachableOwner: false });
 
@@ -365,36 +377,38 @@ test("管理者推不到時：D7 的略過紀錄每輪只寫一次，不會每�
   assert.equal(logs.length, 1);
 });
 
-test("管理者推不到時：到期當下仍會通知群組（沒收到等於直接流失客戶）", async () => {
+test("完全沒有 ownerUserId 也沒有 groupInviters 資料時安靜跳過，不會炸掉", async () => {
   const { fake, line } = reset();
-  seedGroup(fake, "G1", activeSub(-0.5), { reachableOwner: false });
+  fake.seed("groupSubscriptions", "G1", { gid: "G1", ...activeSub(7) });
+  fake.seed("groupInviters", "G1", {}); // 有綁定紀錄但沒 userId
 
   const res = await sendExpiryReminders();
 
-  assert.equal(res.sent, 1);
-  assert.equal(res.viaGroup, 1);
-  assert.equal(line.calls.pushes[0].to, "G1");
-  // 順便請他去綁定，之後就能走 1:1
-  assert.match(line.lastPushText(), /私訊|綁定/);
+  assert.equal(res.sent, 0);
+  assert.equal(line.calls.pushes.length, 0);
 });
 
-test("走 1:1 的訊息不會附上「請加好友」那句提示", async () => {
+test("任何情況下都不會推播到 gid（成本護欄）", async () => {
   const { fake, line } = reset();
   seedGroup(fake, "G1", activeSub(7));
+  seedGroup(fake, "G2", activeSub(-0.5), { owner: "UownerB" });
+  seedGroup(fake, "G3", trialSub(1), { owner: "UownerC", reachableOwner: false });
 
   await sendExpiryReminders();
 
-  assert.doesNotMatch(line.lastPushText(), /私訊本官方帳號/);
+  const targets = line.calls.pushes.map(p => p.to);
+  for (const t of targets) {
+    assert.doesNotMatch(t, /^G/, `推播對象 ${t} 看起來是 groupId，不該發生`);
+  }
 });
 
-test("後台紀錄會寫明這則是推給管理者還是群組", async () => {
+test("後台紀錄會帶上管理者 userId，gid 也留著", async () => {
   const { fake } = reset();
   seedGroup(fake, "G1", activeSub(7));
 
   await sendExpiryReminders();
 
   const log = fake.all("adminLogs").find(l => l.action === "EXPIRY_REMINDER_SENT");
-  assert.equal(log.extra.channel, "owner");
   assert.equal(log.extra.ownerUserId, "Uowner");
   assert.equal(log.extra.gid, "G1", "gid 還是要留著，後台要能對回群組");
 });
