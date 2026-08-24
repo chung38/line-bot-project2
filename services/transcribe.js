@@ -41,7 +41,49 @@ const MIN_AUDIO_MS = Number(process.env.MIN_AUDIO_MS) || 1000;
 // 0.6 是偏保守的設定（寧可多翻一則雜訊，也不要吃掉真的有人講的話）。
 const NO_SPEECH_THRESHOLD = Number(process.env.AUDIO_NO_SPEECH_THRESHOLD) || 0.6;
 
+// 音檔位元組上限。這是**真正的**護欄——duration 是選填欄位（見 checkAudioMessage），
+// 靠不住，位元組數是我們自己數出來的，沒有人能造假。
+//
+// 8MB 大約是 60 秒 m4a 的十幾倍，正常訊息碰不到；OpenAI 的音檔上限是 25MB，
+// 超過那個數字送出去也是白費。真正的意義是「無論 duration 說什麼，記憶體用量
+// 有上限」——見 streamToBufferWithLimit()。
+const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES) || 8 * 1024 * 1024;
+
+// 從 LINE 抓音檔的逾時。@line/bot-sdk 的 getMessageContent() 沒有內建逾時，
+// 串流卡住的話這個背景任務永遠不會結束——額度會停在「已預扣、未結算」，
+// 而且關機時 waitForDrain() 會被它拖滿整個排乾時間。
+const FETCH_TIMEOUT_MS = Number(process.env.AUDIO_FETCH_TIMEOUT_MS) || 15000;
+
 const OPENAI_TIMEOUT_MS = 20000;
+
+// 同時進行的轉錄數上限。額度限制的是「每月總量」，擋不住「同一秒湧進來」——
+// 有人連續丟 20 則語音，就是 20 個並行下載 + 20 份音檔同時佔記憶體 +
+// 20 個 Whisper 請求。在 512MB 的小機器上這足以把 process 打掛。
+//
+// 超過上限的語音直接跳過（額度會退回），不排隊：排隊只會讓 replyToken 過期，
+// 使用者一樣拿不到東西，卻多付了成本。
+const MAX_CONCURRENT_TRANSCRIPTIONS = Number(process.env.MAX_CONCURRENT_TRANSCRIPTIONS) || 3;
+
+let activeTranscriptions = 0;
+
+// 取得一個轉錄名額。拿得到回傳 release 函式，拿不到回傳 null。
+// 在扣額度之前呼叫，這樣被擋下來的語音不會浪費使用者的額度。
+function acquireTranscriptionSlot() {
+  if (activeTranscriptions >= MAX_CONCURRENT_TRANSCRIPTIONS) return null;
+
+  activeTranscriptions += 1;
+  let released = false;
+
+  return function release() {
+    if (released) return; // 防止重複釋放把計數器弄成負的
+    released = true;
+    activeTranscriptions = Math.max(0, activeTranscriptions - 1);
+  };
+}
+
+function getActiveTranscriptionCount() {
+  return activeTranscriptions;
+}
 
 // 已知的幻覺片語。這些都是模型在「無語音輸入」時最常吐出來的字幕殘留，
 // 正常的工廠對話不會整句只有這些內容，所以是用「整句完全等於」來比對，
@@ -108,12 +150,46 @@ function averageNoSpeechProb(segments) {
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
-async function streamToBuffer(stream) {
+// 邊讀邊數，超過上限就當場中止並丟掉已讀的部分。
+//
+// 關鍵在於「不能先讀完再檢查大小」——那樣的話一個 200MB 的檔案還是會被
+// 整份讀進記憶體，檢查只是在事後告訴你「剛剛差點死掉」。
+async function streamToBufferWithLimit(stream, maxBytes) {
   const chunks = [];
+  let total = 0;
+
   for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+
+    if (total > maxBytes) {
+      // 主動關掉來源，否則 LINE 那端會繼續傳，連線也不會釋放
+      try {
+        stream.destroy?.();
+      } catch {
+        /* 關不掉就算了，至少我們不再往 chunks 裡塞東西 */
+      }
+      return { ok: false, bytes: total };
+    }
+
+    chunks.push(buf);
   }
-  return Buffer.concat(chunks);
+
+  return { ok: true, buffer: Buffer.concat(chunks) };
+}
+
+// 把一個 promise 套上逾時。逾時回傳 null，呼叫端自己決定要怎麼處理。
+async function withTimeout(promise, ms) {
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // 實際打 OpenAI 的那一層。抽成獨立函式是為了讓測試能整個換掉
@@ -162,31 +238,63 @@ function setTranscriberForTesting(fn) {
 //
 // contentProvider.type 不是 line 的話，音檔根本不在 LINE 伺服器上
 //（是使用者的外部連結），getMessageContent 拿不到內容。
+//
+// ⚠️ duration 在 LINE 的規格裡是「Not always included」——webhook 事件不會帶上
+//    沒有值的屬性。所以「拿不到 duration」是正常情況，不是異常。
+//
+//    這代表 **duration 不能當成唯一的長度護欄**：沒有這個欄位的長音檔會直接
+//    穿過所有檢查。真正擋得住的是下游的 MAX_AUDIO_BYTES（位元組是我們自己數的，
+//    造不了假），這裡的 duration 檢查只是「便宜的提前擋掉」，能省一次下載。
 function checkAudioMessage(message) {
-  const durationMs = Number(message?.duration) || 0;
+  const raw = Number(message?.duration);
+  const durationKnown = Number.isFinite(raw) && raw > 0;
+  const durationMs = durationKnown ? raw : null;
   const provider = message?.contentProvider?.type;
 
   if (provider && provider !== "line") return { ok: false, reason: "EXTERNAL_CONTENT" };
-  if (durationMs > 0 && durationMs < MIN_AUDIO_MS) return { ok: false, reason: "TOO_SHORT" };
-  if (durationMs > MAX_AUDIO_MS) return { ok: false, reason: "TOO_LONG", durationMs };
 
-  return { ok: true, durationMs };
+  if (durationKnown) {
+    if (durationMs < MIN_AUDIO_MS) return { ok: false, reason: "TOO_SHORT", durationMs };
+    if (durationMs > MAX_AUDIO_MS) return { ok: false, reason: "TOO_LONG", durationMs };
+  }
+
+  return { ok: true, durationMs, durationKnown };
 }
 
 // 從 LINE 取回音檔並轉成逐字稿。回傳 { ok, text } 或 { ok: false, reason }。
 // 這個函式不丟例外——語音翻譯是加值路徑，任何失敗都只該讓這一則安靜跳過，
 // 不該讓整個 webhook 處理流程炸掉。
+async function fetchAudioBuffer(messageId) {
+  const stream = await client.getMessageContent(messageId);
+  return streamToBufferWithLimit(stream, MAX_AUDIO_BYTES);
+}
+
 async function transcribeAudioMessage(messageId) {
-  let audioBuffer;
+  let fetched;
 
   try {
-    const stream = await client.getMessageContent(messageId);
-    audioBuffer = await streamToBuffer(stream);
+    // 下載整段套逾時。LINE 對「還在轉檔中」的大檔案會回 202 而不是音檔內容，
+    // 加上 SDK 本身沒有逾時，卡住的話這個背景任務會永遠不結束——額度停在
+    // 「已預扣、未結算」，關機時也會被它拖滿排乾時間。
+    fetched = await withTimeout(fetchAudioBuffer(messageId), FETCH_TIMEOUT_MS);
   } catch (e) {
     console.error("❌ 取回語音內容失敗:", e.response?.data || e.message);
     return { ok: false, reason: "FETCH_FAILED" };
   }
 
+  if (fetched === null) {
+    console.error(`❌ 取回語音內容逾時（>${FETCH_TIMEOUT_MS}ms）: ${messageId}`);
+    return { ok: false, reason: "FETCH_TIMEOUT" };
+  }
+
+  if (!fetched.ok) {
+    // 這是對付「刻意錄超長音檔」最重要的一道：不管 duration 說什麼，
+    // 讀到超過上限就當場中止，記憶體用量有硬上限。
+    console.error(`❌ 語音檔超過大小上限（${fetched.bytes} > ${MAX_AUDIO_BYTES} bytes）`);
+    return { ok: false, reason: "TOO_LARGE", bytes: fetched.bytes };
+  }
+
+  const audioBuffer = fetched.buffer;
   if (!audioBuffer?.length) return { ok: false, reason: "EMPTY_CONTENT" };
 
   let raw;
@@ -204,6 +312,12 @@ export {
   MAX_AUDIO_SECONDS,
   MAX_AUDIO_MS,
   MIN_AUDIO_MS,
+  MAX_AUDIO_BYTES,
+  FETCH_TIMEOUT_MS,
+  MAX_CONCURRENT_TRANSCRIPTIONS,
+  acquireTranscriptionSlot,
+  getActiveTranscriptionCount,
+  streamToBufferWithLimit,
   NO_SPEECH_THRESHOLD,
   HALLUCINATION_PATTERNS,
   isKnownHallucination,

@@ -59,6 +59,7 @@ services/           跟平台無關的商業邏輯
                        —— 不依賴 Firebase，可以直接寫單元測試
   translate.js        呼叫 OpenAI 的翻譯邏輯，組裝 prompt，重用 translateLogic.js 的純函式
   transcribe.js       語音訊息轉逐字稿（OpenAI）與幻覺過濾，見下方「語音訊息翻譯」
+  ocr.js              圖片訊息取字（視覺模型）與描述過濾，見下方「圖片翻譯」
   maintenance.js      背景清理（過期 session、逾期未付款訂單），由 server.js 定期呼叫
   reminder.js         訂閱到期提醒（到期前 7 天與到期當下，只推管理者 1:1），由 server.js 每天呼叫
 routes/             把 services/ 組裝成實際的路由，各自匯出一個 register*Routes(app) 函式
@@ -131,6 +132,8 @@ npm test
 | `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
 | `tests/webhook-audio.test.js` | `routes/webhook.js` 語音路徑：轉錄失敗/幻覺時的額度退回 |
 | `tests/transcribe.test.js` | `services/transcribe.js` 長度把關與三層幻覺過濾 |
+| `tests/webhook-image.test.js` | `routes/webhook.js` 圖片路徑：無文字/描述/太大時的額度退回 |
+| `tests/ocr.test.js` | `services/ocr.js` OCR prompt 內容與描述過濾 |
 | `tests/member.test.js` | `routes/member.js` 登入把關、checkout 金額來源、藍新通知驗證、解除綁定 |
 | `tests/admin.test.js` | `routes/admin.js` 登入/權限/群組設定/訂閱設定（真的起一個 express server） |
 | `tests/maintenance.test.js` | `services/maintenance.js` 背景清理該刪什麼、不該刪什麼 |
@@ -348,6 +351,43 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 被過濾掉的語音**不回覆、不扣額度**（預扣會退回）。群組裡冒出「你剛剛那則語音
 我聽不懂」比安靜跳過更擾人。
 
+### 防濫用：三道護欄
+
+「有人刻意錄很長的音檔」是這個功能最直接的攻擊面。三道護欄，重要性由高到低：
+
+| 護欄 | 預設 | 為什麼需要 |
+| --- | --- | --- |
+| `MAX_AUDIO_BYTES` | 8MB | **真正擋得住的那道。** 邊讀邊數，超過就當場中止下載並丟棄 |
+| `MAX_CONCURRENT_TRANSCRIPTIONS` | 3 | 額度管的是每月總量，擋不住同一秒湧進來一堆 |
+| `MAX_AUDIO_SECONDS` | 60 | 便宜的提前擋掉，能省一次下載——但**不能當成唯一護欄**，見下 |
+
+#### ⚠️ `duration` 靠不住
+
+LINE 的 audio 訊息規格裡，`duration` 標註為 **Not always included**——webhook
+事件不會帶上沒有值的屬性。所以「拿不到 duration」是正常情況，不是異常。
+
+這代表只看 `duration` 的長度檢查會被沒有這個欄位的長音檔整個穿過去。真正擋得住
+的是位元組上限：位元組是我們自己一塊一塊數出來的，造不了假。
+
+`streamToBufferWithLimit()` 是**邊讀邊數**，不是讀完再檢查——後者的話一個
+200MB 的檔案還是會被整份讀進記憶體，檢查只是在事後告訴你剛剛差點死掉。
+
+#### 為什麼要限制並行數
+
+額度限制的是「每月總量」，擋不住「同一秒湧進來」。連續丟 20 則語音 = 20 個並行
+下載 + 20 份音檔同時佔記憶體 + 20 個 Whisper 請求，在小規格的機器上足以把
+process 打掛。
+
+超過上限的語音**直接跳過，不排隊**——排隊只會讓 `replyToken` 過期，使用者一樣
+拿不到東西，卻多付了成本。名額在**扣額度之前**取得，所以被擋掉的語音不會浪費
+使用者的額度。
+
+#### 下載逾時
+
+`getMessageContent()` 沒有內建逾時，而 LINE 對還在轉檔的大檔案會回 `202` 而不是
+音檔內容。沒有逾時的話，背景任務會永遠掛著：額度停在「已預扣、未結算」，關機時
+`waitForDrain()` 也會被它拖滿整個排乾時間。`AUDIO_FETCH_TIMEOUT_MS` 預設 15 秒。
+
 ### 為什麼有長度上限
 
 `MAX_AUDIO_SECONDS`（預設 60）同時是成本與延遲的護欄。轉錄是**按秒計費**的額外
@@ -366,6 +406,64 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 「測試已經結束之後」才寫 stdout，那會打亂協定串流，整個測試檔以
 `Unable to deserialize cloned data due to invalid or unsupported version.` 失敗，
 而且錯誤訊息完全看不出跟那行 log 有關。`console.error`（stderr）不受影響。
+
+## 圖片翻譯
+
+群組裡的圖片會先用視覺模型把圖中的文字抽出來（OCR），再走**跟文字訊息完全一樣**
+的翻譯流程。回覆的形狀跟語音一致，原文與譯文並陳：
+
+```
+【張三】圖片文字：
+禁止進入
+施工中
+
+🇹🇭 (泰文譯文)
+🇻🇳 (越南文譯文)
+```
+
+額度跟文字、語音一樣「一張圖算 1 次」。
+
+⚠️ 一次傳多張圖片時，LINE 會送出**多個各自獨立的事件**（帶 `imageSet`），
+所以是「一張圖 = 一次額度 = 一則回覆」。傳 5 張就是 5 次、5 則回覆。
+
+### 預設是關閉的
+
+沒有設定 `OPENAI_VISION_MODEL` 就完全不啟用，圖片訊息會像以前一樣被忽略。
+
+刻意不給預設值：視覺模型的可用名稱會隨時間變動，寫死一個預設值在程式裡，等它
+某天下架，錯誤會以「圖片翻譯莫名其妙全部失敗」的形式出現，很難查。要用就明確
+指定一個你確認過、支援圖片輸入的模型。
+
+### 過濾「描述」而不是「文字」（`services/ocr.js`）
+
+這是這個功能最重要的部分，性質跟語音的幻覺過濾一樣。
+
+工廠群組裡的圖片**大多數根本沒有文字**：壞掉的機台零件、現場照片、午餐。而視覺
+模型天生傾向「描述」而不是「照抄」——你問它圖裡有什麼字，它很容易回「這是一張
+顯示機台故障的照片」。那句描述會被當成原文翻成四種語言推給整個群組，使用者完全
+無從判斷那是誰寫的。
+
+兩道防線：
+
+1. **prompt**：明確要求原樣照抄、禁止描述，並約定「沒有文字就只輸出 `NO_TEXT`」。
+   `tests/ocr.test.js` 直接對 prompt 本身斷言——prompt 壞掉不會有任何錯誤訊息，
+   只會安靜地開始翻譯圖片描述，所以那幾條規則有沒有掉必須用測試盯著。
+2. **`looksLikeDescription()`**：擋掉「這是一張…」「圖片中…」「抱歉，我無法…」
+   `This image shows…` 這類典型開頭。用**開頭比對**而不是包含比對，避免誤殺真的
+   印在看板上的字（有測試確認「這區域請配戴安全帽」「圖書室 二樓」不會被誤殺）。
+
+被過濾掉的圖片**不回覆、不扣額度**。這一點對圖片比對語音更重要：沒有文字的圖片
+是常態，每張機台照片都回一句「沒有偵測到文字」會把群組洗爆。
+
+### 兩道成本護欄
+
+| 護欄 | 預設 | 擋什麼 |
+| --- | --- | --- |
+| `MAX_IMAGE_BYTES` | 4MB | 視覺模型按解析度計費，超大圖成本可能是文字翻譯的好幾倍，額度卻只算 1 次 |
+| `MAX_TRANSLATE_CHARS` | 1500 | OCR 完的文字沿用文字訊息的上限。一整頁公告或規格書 OCR 出來可能好幾千字 |
+
+OCR 用 `detail: "high"`，這是必要的——`low` 會把圖縮到很小，看板上的小字會整片
+消失，等於功能失效。
 
 ## 單則訊息長度上限
 

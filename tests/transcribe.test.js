@@ -13,6 +13,12 @@ import { setFirestoreForTesting } from "../lib/firestore.js";
 import { setLineClientForTesting } from "../lib/line.js";
 import {
   MAX_AUDIO_SECONDS,
+  MAX_AUDIO_BYTES,
+  FETCH_TIMEOUT_MS,
+  MAX_CONCURRENT_TRANSCRIPTIONS,
+  acquireTranscriptionSlot,
+  getActiveTranscriptionCount,
+  streamToBufferWithLimit,
   isKnownHallucination,
   isRepetitiveLoop,
   evaluateTranscript,
@@ -181,7 +187,7 @@ test("transcribeAudioMessage：OpenAI 失敗時不丟例外，回 TRANSCRIBE_FAI
 test("transcribeAudioMessage：音檔是空的就不送去轉錄", async () => {
   let called = false;
   reset({
-    line: createFakeLineClient({ audioContent: "" }),
+    line: createFakeLineClient({ messageContent: "" }),
     transcribeWith: async () => {
       called = true;
       return { text: "不該被呼叫" };
@@ -193,4 +199,135 @@ test("transcribeAudioMessage：音檔是空的就不送去轉錄", async () => {
   assert.equal(res.ok, false);
   assert.equal(res.reason, "EMPTY_CONTENT");
   assert.equal(called, false);
+});
+
+// ── 對付惡意/異常的長音檔 ──────────────────────────────────
+//
+// 這一組是回歸測試。原本的長度把關只看 webhook 帶來的 duration，但 duration
+// 在 LINE 的規格裡是「Not always included」——事件不會帶上沒有值的屬性。
+// 也就是說「沒有 duration」是正常情況，而當時的實作會讓那種訊息**穿過所有
+// 長度檢查**，直接進到下載 + Whisper。刻意錄一段很長的音檔就能利用這點。
+
+test("沒有 duration 欄位時不當成 0，也不會被誤判成太短", () => {
+  const res = checkAudioMessage({ id: "m", type: "audio", contentProvider: { type: "line" } });
+
+  assert.equal(res.ok, true, "拿不到 duration 是正常情況，不該直接擋掉");
+  assert.equal(res.durationKnown, false, "但要標示出來，讓下游知道長度不可信");
+  assert.equal(res.durationMs, null);
+});
+
+test("duration 是垃圾值時視為未知，不是 0", () => {
+  for (const duration of [undefined, null, "abc", NaN, -5, 0]) {
+    const res = checkAudioMessage({ duration, contentProvider: { type: "line" } });
+    assert.equal(res.durationKnown, false, `duration=${duration} 應視為未知`);
+  }
+});
+
+test("streamToBufferWithLimit：超過上限時當場中止，不會先讀完再檢查", async () => {
+  const { Readable } = await import("node:stream");
+
+  let chunksRead = 0;
+  const stream = Readable.from((function* () {
+    // 每塊 1KB，總共 1000 塊。上限設 4KB，所以應該讀個 5 塊就停。
+    for (let i = 0; i < 1000; i++) {
+      chunksRead += 1;
+      yield Buffer.alloc(1024, 1);
+    }
+  })());
+
+  const res = await streamToBufferWithLimit(stream, 4 * 1024);
+
+  assert.equal(res.ok, false);
+  assert.equal(res.bytes > 4 * 1024, true);
+  assert.equal(chunksRead < 50, true, `應該早早就停，實際讀了 ${chunksRead} 塊`);
+});
+
+test("streamToBufferWithLimit：在上限內正常回傳完整內容", async () => {
+  const { Readable } = await import("node:stream");
+  const stream = Readable.from([Buffer.from("hello "), Buffer.from("world")]);
+
+  const res = await streamToBufferWithLimit(stream, 1024);
+
+  assert.equal(res.ok, true);
+  assert.equal(res.buffer.toString(), "hello world");
+});
+
+test("超過位元組上限的音檔不會送去轉錄（duration 造假也擋得住）", async () => {
+  let called = false;
+  reset({
+    line: createFakeLineClient({ messageContent: MAX_AUDIO_BYTES + 1 }),
+    transcribeWith: async () => {
+      called = true;
+      return { text: "不該被呼叫" };
+    },
+  });
+
+  const res = await transcribeAudioMessage("msg-1");
+
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "TOO_LARGE");
+  assert.equal(called, false, "位元組是我們自己數的，這是真正擋得住的那道");
+});
+
+test("LINE 下載卡住時會逾時，不會讓背景任務永遠掛著", async () => {
+  const { Readable } = await import("node:stream");
+
+  // 一個永遠不結束的串流，模擬 LINE 那端卡住（大檔案還在轉檔會回 202）
+  const stalled = new Readable({ read() { /* 什麼都不推 */ } });
+  const line = createFakeLineClient();
+  line.getMessageContent = async () => stalled;
+  setLineClientForTesting(line);
+  setTranscriberForTesting(async () => ({ text: "不該被呼叫" }));
+
+  const started = Date.now();
+  const res = await transcribeAudioMessage("msg-1");
+  const elapsed = Date.now() - started;
+
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "FETCH_TIMEOUT");
+  assert.equal(elapsed < FETCH_TIMEOUT_MS + 3000, true, "要在逾時後就放棄，不是無限等");
+  stalled.destroy();
+});
+
+// ── 並行上限 ───────────────────────────────────────────────
+//
+// 額度限制的是「每月總量」，擋不住「同一秒湧進來」。有人連續丟 20 則語音，
+// 就是 20 個並行下載 + 20 份音檔同時佔記憶體 + 20 個 Whisper 請求。
+
+test("acquireTranscriptionSlot：到達上限就拿不到名額", () => {
+  const held = [];
+  try {
+    for (let i = 0; i < MAX_CONCURRENT_TRANSCRIPTIONS; i++) {
+      const release = acquireTranscriptionSlot();
+      assert.ok(release, `第 ${i + 1} 個應該拿得到`);
+      held.push(release);
+    }
+
+    assert.equal(acquireTranscriptionSlot(), null, "超過上限就要擋下來");
+    assert.equal(getActiveTranscriptionCount(), MAX_CONCURRENT_TRANSCRIPTIONS);
+  } finally {
+    held.forEach(release => release());
+  }
+
+  assert.equal(getActiveTranscriptionCount(), 0, "全部放掉之後要歸零");
+
+  // 歸零之後要能重新取得名額（不會因為計數器沒清乾淨而永久卡住）
+  const again = acquireTranscriptionSlot();
+  assert.ok(again, "釋放之後應該又拿得到名額");
+  again();
+});
+
+test("acquireTranscriptionSlot：重複釋放不會把計數器弄成負的", () => {
+  const release = acquireTranscriptionSlot();
+  release();
+  release();
+  release();
+
+  assert.equal(getActiveTranscriptionCount(), 0, "計數器不能被重複釋放灌成負數");
+
+  // 負數的話這裡會多給出額外的名額，等於上限失效
+  const held = [];
+  for (let i = 0; i < MAX_CONCURRENT_TRANSCRIPTIONS; i++) held.push(acquireTranscriptionSlot());
+  assert.equal(acquireTranscriptionSlot(), null);
+  held.forEach(r => r?.());
 });

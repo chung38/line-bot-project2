@@ -27,7 +27,12 @@ import {
   MAX_AUDIO_SECONDS,
   checkAudioMessage,
   transcribeAudioMessage,
+  acquireTranscriptionSlot,
 } from "../services/transcribe.js";
+import {
+  checkImageMessage,
+  extractTextFromImageMessage,
+} from "../services/ocr.js";
 import {
   translateLineSegments,
   extractMentionsFromLineMessage,
@@ -74,6 +79,9 @@ async function processTranslationInBackground(
   // 當場就能更正。翻譯、逾時、額度結算的邏輯兩邊完全共用。
   { sourceKind = "text" } = {}
 ) {
+  // sourceKind 對應的回覆開頭：語音與圖片都要把「抽出來的原文」一起附上，
+  // 因為那一段是機器判讀的結果，可能會錯——附上原文，講錯或判讀錯的時候
+  // 群組裡當場就能更正。純文字訊息不需要重複原文。
   let billable = false;
 
   try {
@@ -140,8 +148,10 @@ async function processTranslationInBackground(
       : body;
 
     const userName = await getGroupMemberDisplayName(gid, uid);
-    const header = sourceKind === "audio"
-      ? `【${userName}】語音：\n${mergedText}\n\n`
+    const SOURCE_LABELS = { audio: "語音", image: "圖片文字" };
+    const label = SOURCE_LABELS[sourceKind];
+    const header = label
+      ? `【${userName}】${label}：\n${mergedText}\n\n`
       : `【${userName}】說：\n`;
     await safeReply(replyToken, `${header}${replyText.trim()}`);
 
@@ -175,7 +185,7 @@ async function processTranslationInBackground(
 // 責任是「要嘛把 reservation 交棒出去，要嘛自己退回」——轉錄失敗、被判定成
 // 幻覺、或轉出來根本沒有可翻的內容時，使用者什麼都沒拿到，不該扣他的額度。
 async function processVoiceTranslationInBackground(
-  replyToken, gid, uid, messageId, langSet, reservation
+  replyToken, gid, uid, messageId, langSet, reservation, releaseSlot = null
 ) {
   // 交棒之後額度由 processTranslationInBackground 的 finally 負責結算，
   // 這裡就不能再退，否則會退兩次。
@@ -222,6 +232,10 @@ async function processVoiceTranslationInBackground(
       { sourceKind: "audio" }
     );
   } finally {
+    // 名額要在這裡放掉，不是在 handedOff 之後——轉錄已經做完了，
+    // 後面的翻譯階段不佔轉錄的並行額度。
+    releaseSlot?.();
+
     if (!handedOff && reservation?.ok) {
       try {
         await releaseGroupTranslation(gid, {
@@ -230,6 +244,76 @@ async function processVoiceTranslationInBackground(
         });
       } catch (e) {
         console.error("❌ 語音額度退回失敗:", e.message);
+      }
+    }
+  }
+}
+
+// 圖片訊息：先用視覺模型把圖裡的文字抽出來，再交給上面那個共用的翻譯流程。
+//
+// 跟語音同一個形狀：額度在 handleEvent 就預扣好了（一則算 1 次），所以這裡
+// 要嘛把 reservation 交棒出去，要嘛自己退回。
+//
+// 圖片跟語音有一個重要差異：工廠群組裡「沒有文字的圖片」是常態（機台照片、
+// 現場狀況、午餐），所以 NO_TEXT 不是異常而是預期中的多數情況——安靜跳過、
+// 退回額度，不要回覆任何東西。
+async function processImageTranslationInBackground(
+  replyToken, gid, uid, messageId, langSet, reservation
+) {
+  let handedOff = false;
+
+  try {
+    const result = await extractTextFromImageMessage(messageId);
+    if (!result.ok) {
+      // ⚠️ 跟語音那邊同樣的理由，這裡必須用 debugLog 而不是 console.log：
+      // 背景任務會在測試結束之後才寫 stdout，node --test 用 stdout 傳協定。
+      debugLog("圖片未採用", result.reason, gid);
+      return;
+    }
+
+    const extracted = result.text;
+
+    // OCR 出來的文字沿用文字訊息同一條長度上限：一整頁公告或規格書 OCR 完
+    // 可能好幾千字，翻成四種語言的成本跟一句話差幾十倍，額度卻一樣算 1 次。
+    if (extracted.length > MAX_TRANSLATE_CHARS) {
+      await safeReply(
+        replyToken,
+        `⚠️ 這張圖片的文字太多（${extracted.length} 字，上限 ${MAX_TRANSLATE_CHARS} 字），無法翻譯。\n請分段拍攝。`
+      );
+      return;
+    }
+
+    const normalizedForDetect = normalizeTextForLangDetect(extracted);
+
+    if (!normalizedForDetect.trim()) return;
+    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return;
+    if (isSymbolOrNum(normalizedForDetect)) return;
+
+    const sourceLang = detectLang(normalizedForDetect);
+
+    handedOff = true;
+    await processTranslationInBackground(
+      replyToken,
+      gid,
+      uid,
+      extracted,
+      [], // 圖片沒有 mention，不需要遮罩/還原
+      extracted.split("\n"),
+      langSet,
+      sourceLang,
+      false,
+      reservation,
+      { sourceKind: "image" }
+    );
+  } finally {
+    if (!handedOff && reservation?.ok) {
+      try {
+        await releaseGroupTranslation(gid, {
+          monthKey: reservation.monthKey,
+          translationCount: reservation.reserved,
+        });
+      } catch (e) {
+        console.error("❌ 圖片額度退回失敗:", e.message);
       }
     }
   }
@@ -747,13 +831,67 @@ if (event.message?.mention) {
       return null;
     }
 
+    // 並行名額要在扣額度「之前」搶，被擋下來的語音才不會浪費使用者的額度。
+    // 額度限制的是每月總量，擋不住「同一秒湧進來一堆」。
+    const releaseSlot = acquireTranscriptionSlot();
+    if (!releaseSlot) {
+      console.log(`⏳ 同時轉錄數已達上限，略過這則語音（未扣額度）: ${gid}`);
+      return null;
+    }
+
+    let reservation;
+    try {
+      reservation = await reserveGroupTranslation(gid);
+    } catch (e) {
+      releaseSlot();
+      throw e;
+    }
+
+    if (!reservation.ok) {
+      releaseSlot();
+      return null;
+    }
+
+    trackInFlight(
+      processVoiceTranslationInBackground(
+        replyToken, gid, uid, event.message.id, langSet, reservation, releaseSlot
+      ).catch(e => {
+        // 背景任務自己的 finally 會放名額；這裡只是最後一道保險，
+        // 萬一連 finally 都沒跑到（例如同步階段就丟例外）不要把名額漏掉。
+        releaseSlot();
+        console.error("背景語音翻譯失敗:", e);
+      })
+    );
+
+    return null;
+  }
+
+  // ── 圖片訊息 ────────────────────────────────────────────
+  // 預設不啟用：沒設 OPENAI_VISION_MODEL 的話 checkImageMessage() 會回
+  // DISABLED，圖片訊息就跟以前一樣被忽略（見 services/ocr.js 檔頭）。
+  //
+  // ⚠️ 一次傳多張圖片時，LINE 會送出多個各自獨立的事件（帶 imageSet），
+  //    所以是「一張圖 = 一次額度 = 一則回覆」。傳 5 張就是 5 次。
+  if (event.type === "message" && event.message?.type === "image" && gid && uid) {
+    const langSet = groupLang.get(gid);
+    if (!langSet || langSet.size === 0) return null;
+
+    const check = checkImageMessage(event.message);
+    // DISABLED / EXTERNAL_CONTENT 都安靜跳過：不佔額度、不回覆。
+    if (!check.ok) return null;
+
+    if (isShuttingDown()) {
+      console.log("⏹️ 服務關閉中，略過這張圖片的翻譯（未扣額度）");
+      return null;
+    }
+
     const reservation = await reserveGroupTranslation(gid);
     if (!reservation.ok) return null;
 
     trackInFlight(
-      processVoiceTranslationInBackground(
+      processImageTranslationInBackground(
         replyToken, gid, uid, event.message.id, langSet, reservation
-      ).catch(e => console.error("背景語音翻譯失敗:", e))
+      ).catch(e => console.error("背景圖片翻譯失敗:", e))
     );
 
     return null;
@@ -797,4 +935,5 @@ export {
   handleEvent,
   processTranslationInBackground,
   processVoiceTranslationInBackground,
+  processImageTranslationInBackground,
 };

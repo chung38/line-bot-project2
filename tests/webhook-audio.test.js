@@ -15,7 +15,14 @@ import { setFirestoreForTesting } from "../lib/firestore.js";
 import { setLineClientForTesting } from "../lib/line.js";
 import { groupLang, groupInviter, groupIndustry, deletedGroups } from "../lib/state.js";
 import { setChatCompletionForTesting } from "../services/translate.js";
-import { MAX_AUDIO_SECONDS, setTranscriberForTesting } from "../services/transcribe.js";
+import {
+  MAX_AUDIO_SECONDS,
+  MAX_AUDIO_BYTES,
+  MAX_CONCURRENT_TRANSCRIPTIONS,
+  acquireTranscriptionSlot,
+  getActiveTranscriptionCount,
+  setTranscriberForTesting,
+} from "../services/transcribe.js";
 import { SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
 import { handleEvent } from "../routes/webhook.js";
 import { getMonthKey } from "../lib/utils.js";
@@ -219,4 +226,80 @@ test("關閉中不受理新的語音翻譯，也不扣額度", async () => {
   } finally {
     resetLifecycleForTesting();
   }
+});
+
+// ── 防濫用：並行上限 ───────────────────────────────────────
+//
+// 額度限制的是「每月總量」，擋不住「同一秒湧進來一堆」。名額要在扣額度之前搶，
+// 被擋下來的語音才不會浪費使用者的額度。
+
+test("同時轉錄數達上限時直接跳過，而且不扣額度", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+  setTranscriberForTesting(async () => {
+    throw new Error("名額滿了不該轉錄");
+  });
+
+  // 先把名額全部佔滿
+  const held = [];
+  for (let i = 0; i < MAX_CONCURRENT_TRANSCRIPTIONS; i++) held.push(acquireTranscriptionSlot());
+
+  try {
+    await handleEvent(audioEvent());
+    await settle();
+
+    assert.ok(!usageOf(fake), "被並行上限擋掉的語音不該扣額度");
+    assert.equal(line.calls.replies.length, 0);
+  } finally {
+    held.forEach(release => release?.());
+  }
+});
+
+test("轉錄結束後名額會歸還，下一則語音才不會被永久卡住", async () => {
+  const { fake } = reset();
+  seedActiveGroup(fake);
+  setTranscriberForTesting(async () => ({ text: "測試語音", noSpeechProb: 0.01 }));
+
+  await handleEvent(audioEvent());
+  await settle();
+
+  assert.equal(getActiveTranscriptionCount(), 0, "跑完要把名額還回去");
+  assert.equal(usageOf(fake).translationCount, 1);
+});
+
+test("轉錄失敗時名額一樣要歸還", async () => {
+  const { fake } = reset();
+  seedActiveGroup(fake);
+  setTranscriberForTesting(async () => {
+    throw new Error("openai down");
+  });
+
+  await handleEvent(audioEvent());
+  await settle();
+
+  assert.equal(getActiveTranscriptionCount(), 0, "失敗路徑漏掉名額的話，幾次之後功能就死了");
+  assert.equal(usageOf(fake).translationCount, 0);
+});
+
+// ── 防濫用：沒有 duration 的長音檔 ─────────────────────────
+
+test("沒有 duration 的音檔照樣受位元組上限保護", async () => {
+  const { fake, line } = reset({
+    line: createFakeLineClient({ messageContent: MAX_AUDIO_BYTES + 1 }),
+  });
+  seedActiveGroup(fake);
+  setTranscriberForTesting(async () => {
+    throw new Error("超大音檔不該送去轉錄");
+  });
+
+  // duration 整個不存在——LINE 規格允許，所以長度檢查完全用不上
+  const event = audioEvent();
+  delete event.message.duration;
+
+  await handleEvent(event);
+  await settle();
+
+  assert.equal(usageOf(fake).translationCount, 0, "額度要退回去");
+  assert.equal(line.calls.replies.length, 0);
+  assert.equal(getActiveTranscriptionCount(), 0);
 });

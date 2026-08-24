@@ -6,9 +6,11 @@ function createFakeLineClient({
   // 機器人已經被移出群組時，getGroupSummary 會失敗。設成 true 可以模擬這個情況。
   failGroupSummary = false,
   groupName = null,
-  // 語音測試用：模擬「音檔抓不回來」，以及控制假音檔的內容
+  // 語音／圖片測試用：模擬「內容抓不回來」，以及控制假檔案的內容。
+  // messageContent 給一個 number 的話會產生那個長度的假位元組，
+  // 用來測「檔案太大」這種只看大小的分支。
   failMessageContent = false,
-  audioContent = "fake-audio-bytes",
+  messageContent = "fake-binary-bytes",
 } = {}) {
   const calls = {
     replies: [],
@@ -37,15 +39,19 @@ function createFakeLineClient({
       calls.profileLookups.push({ gid, uid });
       return { displayName };
     },
-    // 語音訊息的音檔。回一個 Readable，內容是什麼不重要——
-    // 真正的轉錄那一層在測試裡是被 setTranscriberForTesting() 換掉的。
+    // 語音的音檔／圖片的圖檔。回一個 Readable，內容是什麼不重要——
+    // 真正的轉錄/OCR 那一層在測試裡是被 setTranscriberForTesting() /
+    // setImageOcrForTesting() 換掉的。
     async getMessageContent(messageId) {
       calls.contentFetches.push({ messageId });
       if (failMessageContent) {
         throw new Error("get content failed");
       }
       const { Readable } = await import("node:stream");
-      return Readable.from([Buffer.from(audioContent)]);
+      const bytes = typeof messageContent === "number"
+        ? Buffer.alloc(messageContent, 1)
+        : Buffer.from(messageContent);
+      return Readable.from([bytes]);
     },
     async getGroupSummary(gid) {
       calls.groupSummaryLookups.push({ gid });
