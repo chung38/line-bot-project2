@@ -23,10 +23,66 @@
 import { client } from "../lib/line.js";
 import { isTestEnv } from "../lib/env.js";
 
-// 轉錄模型。whisper-1 是預設，因為只有它支援 verbose_json（才拿得到
-// no_speech_prob 這個最有效的過濾訊號）。換成 gpt-4o-transcribe 系列也可以，
-// 程式會自動改用 json 格式，但那樣就只剩下第 1、3 層防護。
+// 轉錄模型。預設 whisper-1。
+//
+// ── 兩個系列的差別（會影響防護，不只是換個名字）───────────
+//
+// whisper-1：支援 response_format=verbose_json，回傳每一段的 no_speech_prob
+//   （「這段沒有語音」的機率）。那是過濾幻覺最可靠的訊號。
+//
+// gpt-transcribe（2026-07-28 推出，OpenAI 目前建議的預設）、
+// gpt-4o-transcribe、gpt-4o-mini-transcribe：走 response_format=json。
+//   代價是拿不到 no_speech_prob——改用 include[]=logprobs 拿每個 token 的
+//   對數機率，取平均當信心度，把同一層防護補回來。見 evaluateTranscript()。
+//
+//   ⚠️ 哪個模型支援哪些選填參數，OpenAI 是會改的，而且新模型推出的速度比
+//      文件更新快。所以這裡**不寫死能力表**：可選參數一律先送，被 API 以
+//      400 退回就記下來、拿掉重試一次，並在 log 印出來。這樣換模型永遠不會
+//      因為某個參數不支援而整個功能死掉，而是安靜降級成少一層防護——
+//      而且你在 log 看得到少了哪一層。見 requestTranscriptionViaOpenAI()。
+//
+//   另外 gpt 系列是 LLM 架構，跟純 ASR 的 whisper 有本質差異：它可能「回應」
+//   音檔內容而不是照抄，或吐出「抱歉，我無法…」這種助理式回覆。
+//   ASSISTANT_REPLY_PATTERNS 就是在擋這個。
 const TRANSCRIBE_MODEL = (process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1").trim();
+
+// 只有 whisper 系列預設送 verbose_json。用「是不是 whisper」判斷而不是列舉
+// gpt 的型號，因為 OpenAI 持續在推出新的轉錄模型名稱（gpt-transcribe 就是
+// 2026-07 才有的），未知名稱送 json 是安全的預設。萬一猜錯，下面的
+// 降級重試會自己修正。
+const SUPPORTS_VERBOSE_JSON = /^whisper-/i.test(TRANSCRIBE_MODEL);
+
+// 非 whisper 的模型改用 logprobs 當信心度來源。
+const SUPPORTS_LOGPROBS = !SUPPORTS_VERBOSE_JSON;
+
+// 給這個群組的轉錄提示：專有名詞、機台代號、常見人名地名。
+// gpt-transcribe 支援 keywords（逐字提示）與 prompt（情境描述），對工廠場景
+// 特別有用——機台型號、批號、人名地名正是最容易聽錯的東西。
+// 逗號分隔，例如：TRANSCRIBE_KEYWORDS="大甲廠,射出機,SMT,林班長,料號"
+const TRANSCRIBE_KEYWORDS = (process.env.TRANSCRIBE_KEYWORDS || "")
+  .split(/[,，]/)
+  .map(k => k.trim())
+  .filter(Boolean);
+
+const TRANSCRIBE_PROMPT = (process.env.TRANSCRIBE_PROMPT || "").trim();
+
+// 被 API 判定為「這個模型不支援」的可選參數。記下來就不再送，
+// 否則每一則語音都要白白失敗一次再重試。
+const unsupportedParams = new Set();
+
+// 觀測用：目前實際生效的信心度來源。部署後看一眼就知道那一層是不是空的。
+function getConfidenceSource() {
+  if (SUPPORTS_VERBOSE_JSON) return "no_speech_prob";
+  if (unsupportedParams.has("logprobs")) return "none";
+  return "logprobs";
+}
+
+// 平均 logprob 低於這個值就當作模型沒把握，整段丟掉。
+//
+// ⚠️ 這個門檻沒有標準答案，要靠實際觀察調整。預設 -1.0 刻意保守——寧可漏放
+//    幾句雜訊，也不要吃掉真的有人講的話。想收緊就往 -0.5 方向調，
+//    但先在測試群組看 log 裡實際的數值分布再決定。
+const MIN_AVG_LOGPROB = Number(process.env.AUDIO_MIN_AVG_LOGPROB) || -1.0;
 
 // 單則語音的長度上限（秒）。這不只是成本問題，也是延遲問題：
 // LINE 的 replyToken 有效期以秒計算，而回覆是免費的、推播是要錢的
@@ -102,6 +158,27 @@ const HALLUCINATION_PATTERNS = [
   /^\[?(音楽|音乐|music|applause|拍手)\]?$/i,
 ];
 
+// gpt-4o-transcribe 系列是 LLM 架構，可能吐出「助理式回覆」而不是逐字稿。
+//
+// 比對刻意抓得很緊——要「拒絕的句型」整組出現才算。單看「抱歉」開頭是不行的：
+// 工廠群組裡「抱歉我遲到了」「抱歉剛剛沒聽到」是正常對話，誤殺的代價比漏放高。
+const ASSISTANT_REPLY_PATTERNS = [
+  /^(很)?抱歉[，,]?\s*(我)?(無法|不能|沒辦法|聽不清|沒有辦法)/,
+  /^對不起[，,]?\s*(我)?(無法|不能|沒辦法)/,
+  /^(我)?(無法|不能|沒辦法)(轉錄|辨識|處理|理解)(這段|此)?(音檔|錄音|音訊)/,
+  /^作為一個?\s*(AI|人工智慧|語言模型)/i,
+  /^(i'?m sorry|sorry)[,.]?\s*(but\s+)?i\s*(can'?t|cannot|am unable|couldn'?t)/i,
+  /^as an ai\b/i,
+  /^i'?m (unable|not able) to (transcribe|process|understand)/i,
+  /^\[?(inaudible|unintelligible|無法辨識|聽不清楚)\]?$/i,
+];
+
+function isAssistantReply(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return ASSISTANT_REPLY_PATTERNS.some(re => re.test(t));
+}
+
 function isKnownHallucination(text) {
   const t = String(text || "").trim();
   if (!t) return false;
@@ -122,19 +199,45 @@ function isRepetitiveLoop(text) {
 
 // 純函式：拿到轉錄結果之後，決定要不要採用。
 // 抽出來是為了讓三層防護可以在沒有網路、沒有音檔的情況下被測試。
-function evaluateTranscript({ text, noSpeechProb = null }) {
+function evaluateTranscript({ text, noSpeechProb = null, avgLogprob = null }) {
   const trimmed = String(text || "").trim();
 
   if (!trimmed) return { ok: false, reason: "EMPTY" };
 
+  // 信心度那一層：兩個模型系列提供的訊號不同，但作用一樣——
+  // 「模型自己都沒把握」的輸出不要拿去翻譯。
+  //
+  //   whisper-1          → no_speech_prob（verbose_json）
+  //   gpt-*-transcribe   → avgLogprob（include[]=logprobs）
+  //
+  // 兩個都拿不到的話這層就是空的，只剩片語清單擋著——換模型時要特別注意
+  // 這件事，見檔頭。
   if (noSpeechProb !== null && Number.isFinite(noSpeechProb) && noSpeechProb > NO_SPEECH_THRESHOLD) {
     return { ok: false, reason: "NO_SPEECH" };
   }
 
+  if (avgLogprob !== null && Number.isFinite(avgLogprob) && avgLogprob < MIN_AVG_LOGPROB) {
+    return { ok: false, reason: "LOW_CONFIDENCE", avgLogprob };
+  }
+
   if (isKnownHallucination(trimmed)) return { ok: false, reason: "HALLUCINATION" };
+  if (isAssistantReply(trimmed)) return { ok: false, reason: "ASSISTANT_REPLY" };
   if (isRepetitiveLoop(trimmed)) return { ok: false, reason: "REPETITIVE" };
 
   return { ok: true, text: trimmed };
+}
+
+// gpt-*-transcribe 的 logprobs 是「每個 token 一筆」，取平均當整段的信心度。
+// 拿不到就回 null，讓 evaluateTranscript 跳過這一層。
+function averageLogprob(logprobs) {
+  if (!Array.isArray(logprobs) || logprobs.length === 0) return null;
+
+  const values = logprobs
+    .map(item => Number(item?.logprob))
+    .filter(Number.isFinite);
+
+  if (!values.length) return null;
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
 // verbose_json 的 no_speech_prob 是「每一段」各有一個，取平均當作整段的判斷依據。
@@ -194,34 +297,110 @@ async function withTimeout(promise, ms) {
 
 // 實際打 OpenAI 的那一層。抽成獨立函式是為了讓測試能整個換掉
 //（見 setTranscriberForTesting），測試不需要真的有音檔或網路。
-async function requestTranscriptionViaOpenAI(audioBuffer, { fileName = "audio.m4a" } = {}) {
-  // verbose_json 只有 whisper-1 支援。其他模型送了會被打回 400，
-  // 所以依模型自動切換——跟 services/translate.js 處理推理模型參數的作法一致。
-  const wantsVerbose = /^whisper-/i.test(TRANSCRIBE_MODEL);
+// 從 API 的 400 錯誤訊息裡認出「是哪個可選參數不被支援」。
+// OpenAI 的訊息格式會變，所以只做寬鬆的關鍵字比對，認不出來就回 null
+//（那代表是真正的錯誤，不該無限重試）。
+function detectUnsupportedParam(detail) {
+  const text = String(detail || "");
+  if (!/unsupported|not compatible|not supported|unknown parameter|invalid/i.test(text)) {
+    return null;
+  }
+  for (const param of ["logprobs", "keywords", "prompt", "response_format"]) {
+    if (new RegExp(`\\b${param}\\b`).test(text)) return param;
+  }
+  return null;
+}
 
+function buildTranscriptionForm(audioBuffer, fileName, { useVerbose }) {
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: "audio/m4a" }), fileName);
   form.append("model", TRANSCRIBE_MODEL);
-  form.append("response_format", wantsVerbose ? "verbose_json" : "json");
+  form.append("response_format", useVerbose ? "verbose_json" : "json");
 
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: form,
-    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
-  });
+  // logprobs 是非 whisper 模型的信心度來源（verbose_json 模式下用不到）
+  if (!useVerbose && !unsupportedParams.has("logprobs")) {
+    form.append("include[]", "logprobs");
+  }
 
-  if (!res.ok) {
+  // 逐字提示：機台代號、料號、人名地名這些最容易聽錯的東西
+  if (TRANSCRIBE_KEYWORDS.length && !unsupportedParams.has("keywords")) {
+    for (const keyword of TRANSCRIBE_KEYWORDS) form.append("keywords[]", keyword);
+  }
+
+  if (TRANSCRIBE_PROMPT && !unsupportedParams.has("prompt")) {
+    form.append("prompt", TRANSCRIBE_PROMPT);
+  }
+
+  return form;
+}
+
+// 實際打 OpenAI 的那一層。抽成獨立函式讓測試能整個換掉（setTranscriberForTesting）。
+//
+// 這裡的重點是「能力探測 + 降級重試」：可選參數先送，被 400 退回就記下來、
+// 拿掉重試。OpenAI 各個轉錄模型支援的參數不一樣而且會變動，寫死能力表遲早
+// 會過期——而過期的症狀是「語音翻譯整個沒反應」，非常難查。
+async function requestTranscriptionViaOpenAI(audioBuffer, { fileName = "audio.m4a" } = {}) {
+  let useVerbose = SUPPORTS_VERBOSE_JSON;
+
+  // 最多重試幾次。每次重試都會拿掉一個不支援的參數，可選參數就那幾個，
+  // 所以次數有限——這個上限只是保險，避免錯誤訊息被誤判時無限迴圈。
+  for (let attempt = 0; attempt <= 4; attempt++) {
+    const form = buildTranscriptionForm(audioBuffer, fileName, { useVerbose });
+
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        text: data?.text || "",
+        noSpeechProb: averageNoSpeechProb(data?.segments),
+        avgLogprob: averageLogprob(data?.logprobs),
+      };
+    }
+
     const detail = await res.text().catch(() => "");
+
+    if (res.status === 400) {
+      const bad = detectUnsupportedParam(detail);
+
+      // verbose_json 不被支援 → 降級成 json（信心度來源會換成 logprobs）
+      if (bad === "response_format" && useVerbose) {
+        console.warn(
+          `⚠️ ${TRANSCRIBE_MODEL} 不支援 verbose_json，改用 json 重試（信心度改用 logprobs）`
+        );
+        useVerbose = false;
+        continue;
+      }
+
+      // 其他可選參數不被支援 → 記下來、拿掉重試
+      if (bad && bad !== "response_format" && !unsupportedParams.has(bad)) {
+        unsupportedParams.add(bad);
+        console.warn(
+          `⚠️ ${TRANSCRIBE_MODEL} 不支援 ${bad}，已停用並重試。` +
+          (bad === "logprobs"
+            ? "\n   注意：少了 logprobs 就沒有信心度那一層防護，只剩片語清單擋幻覺。"
+            : "")
+        );
+        continue;
+      }
+
+      // 認不出是哪個參數 → 多半是模型名稱打錯，這是最常見的設定失誤，
+      // 而症狀是「語音翻譯整個沒反應」，一定要印得夠明顯。
+      console.error(
+        `❌ 轉錄請求被拒絕，請確認 OPENAI_TRANSCRIBE_MODEL="${TRANSCRIBE_MODEL}" 是有效的轉錄模型名稱\n` +
+        `   （常見值：gpt-transcribe / gpt-4o-transcribe / gpt-4o-mini-transcribe / whisper-1）`
+      );
+    }
+
     throw new Error(`轉錄失敗 HTTP ${res.status}：${detail.slice(0, 200)}`);
   }
 
-  const data = await res.json();
-
-  return {
-    text: data?.text || "",
-    noSpeechProb: averageNoSpeechProb(data?.segments),
-  };
+  throw new Error("轉錄失敗：降級重試次數用盡");
 }
 
 let requestTranscription = requestTranscriptionViaOpenAI;
@@ -320,10 +499,21 @@ export {
   streamToBufferWithLimit,
   NO_SPEECH_THRESHOLD,
   HALLUCINATION_PATTERNS,
+  TRANSCRIBE_MODEL,
+  SUPPORTS_VERBOSE_JSON,
+  SUPPORTS_LOGPROBS,
+  MIN_AVG_LOGPROB,
+  ASSISTANT_REPLY_PATTERNS,
+  TRANSCRIBE_KEYWORDS,
+  getConfidenceSource,
+  detectUnsupportedParam,
+  requestTranscriptionViaOpenAI,
   isKnownHallucination,
+  isAssistantReply,
   isRepetitiveLoop,
   evaluateTranscript,
   averageNoSpeechProb,
+  averageLogprob,
   checkAudioMessage,
   transcribeAudioMessage,
   setTranscriberForTesting,

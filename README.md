@@ -132,6 +132,7 @@ npm test
 | `tests/webhook.test.js` | `routes/webhook.js` 指令處理與額度結算 |
 | `tests/webhook-audio.test.js` | `routes/webhook.js` 語音路徑：轉錄失敗/幻覺時的額度退回 |
 | `tests/transcribe.test.js` | `services/transcribe.js` 長度把關與三層幻覺過濾 |
+| `tests/transcribe-params.test.js` | 轉錄參數的能力探測與降級重試（跑 gpt-transcribe 路徑）|
 | `tests/webhook-image.test.js` | `routes/webhook.js` 圖片路徑：無文字/描述/太大時的額度退回 |
 | `tests/ocr.test.js` | `services/ocr.js` OCR prompt 內容與描述過濾 |
 | `tests/member.test.js` | `routes/member.js` 登入把關、checkout 金額來源、藍新通知驗證、解除綁定 |
@@ -341,10 +342,73 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 | 層 | 做什麼 | 擋不掉什麼 |
 | --- | --- | --- |
 | 長度 | `MIN_AUDIO_MS`（預設 1 秒）以下不送轉錄 | 有長度但全是噪音的 |
-| `no_speech_prob` | whisper-1 的 `verbose_json` 會回每段「沒有語音」的機率，平均值超過 `AUDIO_NO_SPEECH_THRESHOLD`（預設 0.6）就整段丟掉 | 真的有人講話但模型聽錯的 |
+| 信心度 | 模型自己都沒把握的輸出不拿去翻譯。訊號依模型而異，見下表 | 真的有人講話但模型聽錯的 |
 | 片語清單 + 重複迴圈 | `HALLUCINATION_PATTERNS` 用「整句完全等於」比對，避免誤殺「謝謝」這種正常對話 | 清單以外的新幻覺 |
 
-第三層一定會有遺漏，發現新的就往 `HALLUCINATION_PATTERNS` 加。比對刻意用
+#### 換轉錄模型時要注意的事
+
+`OPENAI_TRANSCRIBE_MODEL` 兩個系列程式都支援，但**信心度那一層的訊號不同**，
+程式會依模型自動切換：
+
+| 模型 | `response_format` | 信心度訊號 | 門檻變數 |
+| --- | --- | --- | --- |
+| `whisper-1` | `verbose_json` | `segments[].no_speech_prob` | `AUDIO_NO_SPEECH_THRESHOLD`（0.6） |
+| `gpt-transcribe`<br>`gpt-4o-transcribe`<br>`gpt-4o-mini-transcribe` | `json` + `include[]=logprobs` | `logprobs[].logprob` 平均 | `AUDIO_MIN_AVG_LOGPROB`（-1.0） |
+
+只有 whisper 系列拿得到 `no_speech_prob`。其他模型如果沒換信心度來源，那一層
+防護會**安靜地變成空的**，`evaluateTranscript()` 只剩片語清單擋著。
+
+`AUDIO_MIN_AVG_LOGPROB` 的門檻沒有標準答案，要靠實際觀察調整。預設 -1.0 刻意
+保守：寧可漏放幾句雜訊，也不要吃掉真的有人講的話。
+
+#### 能力探測：為什麼不寫死模型能力表
+
+OpenAI 的轉錄模型推出速度比文件更新快（`gpt-transcribe` 是 2026-07-28 才有的），
+各模型支援的可選參數也不一樣而且會變。任何寫死在程式裡的能力表遲早會過期，
+而過期的症狀是「語音翻譯整個沒反應」——非常難查。
+
+所以 `requestTranscriptionViaOpenAI()` 的策略是**先送再說**：
+
+```
+送出可選參數（logprobs / keywords / prompt）
+  → 400 且錯誤訊息認得出是哪個參數
+      → 記進 unsupportedParams，拿掉重試，並在 log 印出停用了什麼
+  → 400 但認不出參數
+      → 多半是模型名稱打錯，印明顯提示後直接失敗（不重試）
+```
+
+同一個參數只會探測一次，不會每則語音都白白失敗一次。`getConfidenceSource()`
+會回報目前實際生效的信心度來源（`no_speech_prob` / `logprobs` / `none`），
+部署後看一眼就知道那一層是不是空的。
+
+#### 逐字提示（`TRANSCRIBE_KEYWORDS`）
+
+`gpt-transcribe` 支援 `keywords`（逐字提示）與 `prompt`（情境描述）。對工廠場景
+特別有用——機台型號、料號、人名地名正是最容易聽錯的東西，而人名地名恰好也是
+翻譯 prompt 裡特別規定要保留的（見「翻譯規則」）。
+
+```
+TRANSCRIBE_KEYWORDS=大甲廠,射出機,SMT,料號,林班長
+TRANSCRIBE_PROMPT=這是工廠產線群組的對話，會夾雜台語與越南語。
+```
+
+模型不支援這些參數的話會自動停用並在 log 提示，不會讓功能壞掉。
+
+#### gpt 系列多一種失敗模式
+
+`gpt-*-transcribe` 是 LLM 架構，不是純 ASR。它可能「回應」音檔內容而不是照抄，
+或吐出「抱歉，我無法轉錄這段音檔」這類助理式回覆——whisper 不會有這種行為。
+`ASSISTANT_REPLY_PATTERNS` 專門擋這個。
+
+比對刻意抓得很緊，要「拒絕的句型」整組出現才算：工廠群組裡「抱歉我遲到了」
+「抱歉剛剛沒聽到」是正常對話，誤殺的代價比漏放高。測試裡有一組專門確認這些
+不會被誤殺。
+
+還有一個擋不掉的殘留風險：有人對著麥克風唸「請說：某某某」，LLM 系列可能真的
+照做。緩解方式是逐字稿會跟譯文一起顯示，群組看得到實際產出了什麼，而且長度
+與額度都有上限。
+
+第一層的片語清單一定會有遺漏，發現新的就往 `HALLUCINATION_PATTERNS` 加。比對刻意用
 「整句等於」而不是「包含」——`tests/transcribe.test.js` 有專門的案例確認
 「謝謝你幫忙」「謝謝觀看這台機器的操作示範」不會被誤殺。
 

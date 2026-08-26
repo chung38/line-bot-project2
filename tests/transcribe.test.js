@@ -19,6 +19,11 @@ import {
   acquireTranscriptionSlot,
   getActiveTranscriptionCount,
   streamToBufferWithLimit,
+  TRANSCRIBE_MODEL,
+  SUPPORTS_VERBOSE_JSON,
+  SUPPORTS_LOGPROBS,
+  averageLogprob,
+  isAssistantReply,
   isKnownHallucination,
   isRepetitiveLoop,
   evaluateTranscript,
@@ -330,4 +335,98 @@ test("acquireTranscriptionSlot：重複釋放不會把計數器弄成負的", ()
   for (let i = 0; i < MAX_CONCURRENT_TRANSCRIPTIONS; i++) held.push(acquireTranscriptionSlot());
   assert.equal(acquireTranscriptionSlot(), null);
   held.forEach(r => r?.());
+});
+
+// ── 換成 gpt-*-transcribe 之後的防護 ───────────────────────
+//
+// gpt-4o-transcribe / gpt-4o-mini-transcribe 只支援 response_format=json，
+// 送 verbose_json 會被 API 打回 400。也就是說 whisper-1 那個最可靠的訊號
+// （no_speech_prob）在這些模型上是拿不到的。
+//
+// 補回來的方式是 include[]=logprobs：拿每個 token 的對數機率取平均當信心度。
+// 這一組測試就是在確認「換模型之後那一層防護還在」。
+
+test("evaluateTranscript：logprob 太低（模型沒把握）時整段丟掉", () => {
+  const res = evaluateTranscript({ text: "這是一段聽不太出來的話", avgLogprob: -2.5 });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "LOW_CONFIDENCE");
+  assert.equal(res.avgLogprob, -2.5);
+});
+
+test("evaluateTranscript：logprob 正常時照常採用", () => {
+  const res = evaluateTranscript({ text: "明天早上八點集合", avgLogprob: -0.12 });
+
+  assert.equal(res.ok, true);
+  assert.equal(res.text, "明天早上八點集合");
+});
+
+test("evaluateTranscript：兩種信心度訊號各自獨立生效", () => {
+  // whisper 路徑：只有 no_speech_prob
+  assert.equal(evaluateTranscript({ text: "測試", noSpeechProb: 0.99 }).reason, "NO_SPEECH");
+  // gpt 路徑：只有 logprob
+  assert.equal(evaluateTranscript({ text: "測試", avgLogprob: -3 }).reason, "LOW_CONFIDENCE");
+  // 兩個都沒有：這一層是空的，只剩片語清單擋著（換模型時最容易忽略的狀況）
+  assert.equal(evaluateTranscript({ text: "測試" }).ok, true);
+});
+
+test("averageLogprob：取平均，拿不到就回 null 讓那一層跳過", () => {
+  assert.equal(averageLogprob([{ logprob: -0.2 }, { logprob: -0.4 }]), -0.30000000000000004);
+  assert.equal(averageLogprob([]), null);
+  assert.equal(averageLogprob(undefined), null);
+  assert.equal(averageLogprob([{ token: "x" }]), null, "沒有可用數值時不要硬算");
+});
+
+// ── LLM 架構帶來的新失敗模式 ───────────────────────────────
+//
+// gpt-*-transcribe 是 LLM，不是純 ASR。它可能「回應」音檔而不是照抄，
+// 或吐出助理式的拒絕語。whisper 不會有這種行為。
+
+test("isAssistantReply：擋掉助理式的拒絕回覆", () => {
+  for (const text of [
+    "抱歉，我無法轉錄這段音檔",
+    "很抱歉，我聽不清楚",
+    "對不起，我沒辦法處理",
+    "我無法辨識這段錄音",
+    "作為一個 AI 語言模型",
+    "I'm sorry, I can't transcribe this",
+    "As an AI, I cannot process audio",
+    "[inaudible]",
+  ]) {
+    assert.equal(isAssistantReply(text), true, `應該擋掉：${text}`);
+  }
+});
+
+test("isAssistantReply：不會誤殺正常對話裡的道歉", () => {
+  for (const text of [
+    "抱歉我遲到了",
+    "抱歉，剛剛沒聽到你說什麼",
+    "很抱歉造成困擾，明天會補上",
+    "對不起，料我拿錯了",
+    "不好意思，這批要重做",
+  ]) {
+    assert.equal(isAssistantReply(text), false, `不該擋：${text}`);
+  }
+});
+
+test("evaluateTranscript：助理式回覆不會被當成逐字稿翻出去", () => {
+  const res = evaluateTranscript({ text: "抱歉，我無法轉錄這段音檔", avgLogprob: -0.1 });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "ASSISTANT_REPLY");
+});
+
+test("模型系列的判斷：只有 whisper 走 verbose_json，其他一律 json + logprobs", () => {
+  // 這裡驗的是模組載入時算好的常數，反映當下 OPENAI_TRANSCRIBE_MODEL 的設定。
+  // 兩者必為互斥——同時成立或同時不成立都代表格式切換的邏輯壞了。
+  assert.equal(
+    SUPPORTS_VERBOSE_JSON,
+    !SUPPORTS_LOGPROBS,
+    "verbose_json 與 logprobs 是兩條互斥的信心度來源"
+  );
+  assert.equal(
+    SUPPORTS_VERBOSE_JSON,
+    /^whisper-/i.test(TRANSCRIBE_MODEL),
+    `目前模型 ${TRANSCRIBE_MODEL} 的格式判斷不正確`
+  );
 });
