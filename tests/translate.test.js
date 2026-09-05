@@ -553,3 +553,36 @@ test("recordTokenUsage：沒有 usage 欄位時不會炸掉", () => {
   recordTokenUsage(null, "test-model", "th");
   assert.equal(getTokenUsageSummary().calls, before, "沒資料就不該計入");
 });
+
+test("token 摘要不受 DEBUG 開關影響，永遠會輸出", () => {
+  // 這一行只有數字、沒有使用者內容，所以不該跟「會印出對話原文」的診斷訊息
+  // 共用 DEBUG 開關——否則想看成本就得同時開啟對話內容記錄。
+  // 測試環境的 DEBUG 是關的（見 tests/helpers/setupTestEnv.js）。
+  const original = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(" "));
+
+  try {
+    recordTokenUsage({ prompt_tokens: 10, completion_tokens: 5 }, "m", "th");
+  } finally {
+    console.log = original;
+  }
+
+  assert.equal(lines.some(l => l.includes("💰 tokens")), true, "DEBUG 關著也要印");
+});
+
+test("token 摘要不含使用者訊息內容", () => {
+  const original = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(" "));
+
+  try {
+    recordTokenUsage({ prompt_tokens: 10, completion_tokens: 5 }, "m", "th");
+  } finally {
+    console.log = original;
+  }
+
+  const line = lines.find(l => l.includes("💰 tokens"));
+  // 只該出現模型、語言與數字。有使用者內容的話這行就不能無條件輸出了。
+  assert.match(line, /^💰 tokens m → th \| prompt=\d+ cached=\d+ write=\d+ out=\d+$/);
+});

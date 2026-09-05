@@ -293,8 +293,20 @@ function recordTokenUsage(usage, modelName, targetLang) {
   m.cachedTokens += cached;
   m.cacheWriteTokens += cacheWrite;
 
-  // 一行摘要，方便直接在 Render log 上看趨勢
-  debugLog(
+  /*
+    一行摘要，直接在 Render log 上看趨勢。
+
+    ⚠️ 這裡刻意用 console.log 而不是 debugLog——跟本檔案其他診斷訊息不同，
+       這一行是「無條件輸出」的。理由是隱私分級：
+
+         這一行：只有數字（token 數、模型、目標語言），沒有任何使用者內容。
+         其他診斷（例如 mention restore check）：會印出使用者訊息原文。
+
+       兩者若共用 DEBUG 開關，就變成「想看成本數據 = 必須同時開啟對話內容記錄」，
+       等於為了對帳把工廠群組的對話持續寫進 log 服務。成本監控是商業化的日常
+       需求，對話內容外流不是——所以拆開。
+  */
+  console.log(
     `💰 tokens ${modelName} → ${targetLang} | prompt=${prompt} cached=${cached} ` +
     `write=${cacheWrite} out=${completion}${reasoning ? ` (推理 ${reasoning})` : ""}`
   );
