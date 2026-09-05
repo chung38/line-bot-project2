@@ -48,7 +48,18 @@ function detectLang(text) {
 
   const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
   const thaiLen = (cleaned.match(/[\u0E00-\u0E7F]/g) || []).length;
-  const viCharLen = (cleaned.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  /*
+    越南文特徵字元。
+
+    原本只涵蓋 U+0102–01B0（Ă ă … Ư ư）與 U+1EA0–1EF9（帶聲調），
+    漏掉了 Latin-1 區的 â ê ô á à é è í ì ó ò ú ù ý ——
+    結果「Vâng ạ」只算到 1 個特徵字，達不到門檻而被判成英文，
+    越南文原文又被翻成越南文一次（「Ok ạ」甚至被改寫成「Được ạ」）。
+
+    這組語言裡（中／泰／越／印尼／英）只有越南文使用變音符號，
+    印尼文和英文都不用，所以出現變音符號就是很強的證據。
+  */
+  const viCharLen = (cleaned.match(/[\u00C0-\u00FF\u0100-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (cleaned.match(/[a-zA-Z]/g) || []).length;
 
   const chineseRatio = chineseLen / totalLen;
@@ -59,7 +70,10 @@ function detectLang(text) {
 
   if (
     /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
-    viCharLen >= 2
+    viCharLen >= 2 ||
+    // 沒有中文夾雜時，單一個變音符號就足以判定。工廠群組裡「Ok ạ」「Vâng ạ」
+    // 這種只有一個變音符號的短回覆頻率極高，門檻設 2 會全部漏判成英文。
+    (viCharLen >= 1 && chineseLen === 0)
   ) {
     return "vi";
   }
@@ -96,7 +110,9 @@ function isPureChineseMessage(text = "") {
 
   const chineseLen = (compact.match(/[\u4e00-\u9fff]/g) || []).length;
   const thaiLen = (compact.match(/[\u0E00-\u0E7F]/g) || []).length;
-  const viCharLen = (compact.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  // 跟 detectLang 用同一組範圍，兩處不一致的話會出現
+  // 「detectLang 說是越南文、isPureChineseMessage 說是純中文」的矛盾狀態
+  const viCharLen = (compact.match(/[\u00C0-\u00FF\u0100-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (compact.match(/[a-zA-Z]/g) || []).length;
   const foreignLen = thaiLen + viCharLen + latinLen;
   const chineseRatio = chineseLen / (compact.length || 1);
@@ -282,6 +298,28 @@ function isInvalidTranslation(sourceText, outputText, targetLang = "zh-TW") {
 
 // translate.js 用這個決定要不要換極簡 prompt 重試。
 // 抽成純函式，測試就不需要 mock OpenAI 也能驗證「哪些語言會重試、重試幾次」。
+/*
+  偵測「輸出裡殘留了照抄原文的中文名稱」。
+
+  名稱規則已改成「人名與公司名都要轉寫、不得保留中文字」，所以譯文裡出現
+  兩個以上連續中文字、而且那些字全部來自原文，就代表模型是照抄而不是轉寫。
+
+  「全部來自原文」這個條件是用來區隔另一種失敗：模型憑空生成原文沒有的中文
+  （那是幻覺，不是照抄），兩者該走不同的處理。
+
+  單一中文字不計入——那類殘留通常是計量單位（米、條、支），由既有的
+  isInvalidTranslation 那條路徑處理，避免兩支重複觸發重試。
+*/
+function hasUntranslatedChineseNames(out = "", sourceText = "", targetLang = "") {
+  if (targetLang === "zh-TW") return false;
+
+  const sourceChars = new Set(String(sourceText).match(/[\u4e00-\u9fff]/g) || []);
+  const runs = String(out).match(/[\u4e00-\u9fff]{2,}/g) || [];
+  if (!runs.length) return false;
+
+  return runs.some(r => [...r].every(ch => sourceChars.has(ch)));
+}
+
 function shouldRetryTranslation({ sourceText, output, targetLang, retry = 0, maxRetry = 2 } = {}) {
   if (retry >= maxRetry) return false;
   return isInvalidTranslation(sourceText, output, targetLang);
@@ -368,6 +406,7 @@ export {
   isUnchangedChineseSource,
   // 通用翻譯品質檢查與重試判斷
   isInvalidTranslation,
+  hasUntranslatedChineseNames,
   shouldRetryTranslation,
   buildTranslationErrorMessage,
   isTranslationFailureOutput,

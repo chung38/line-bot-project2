@@ -23,7 +23,7 @@ import {
   deleteGroupSettings,
 } from "../lib/state.js";
 import { addAdminLog } from "../lib/adminLog.js";
-import { isValidLineUserId } from "../services/translate.js";
+import { isValidLineUserId, getTokenUsageSummary } from "../services/translate.js";
 import { sendMenu } from "./webhook.js";
 import { getMonthKey, toDateSafe, toSafeInt } from "../lib/utils.js";
 import {
@@ -135,6 +135,22 @@ const adminRouter = express.Router();
 adminRouter.use(adminLimiter);
 adminRouter.use(requireAdminSession);
 adminRouter.use(express.json({ limit: "1mb" }));
+
+/*
+  Token 用量。用來判斷 prompt 快取到底有沒有省到錢。
+
+  GPT-5.6 之後快取寫入收 1.25 倍的未快取 input 費率、讀取 0.1 倍，可快取前綴
+  至少要 1024 tokens——快取從「開了就賺」變成「要算才賺」。調 prompt 結構之前
+  先看這支，不要憑感覺賭。
+
+  relativeInputCost 是以「完全不快取 = 1」換算的相對成本：
+    < 1 代表有省到；> 1 代表寫入太多，反而比不快取貴。
+
+  這是行程內的累計，重啟歸零（since 欄位標明從什麼時候算起）。
+*/
+adminRouter.get("/token-usage", (req, res) => {
+  res.json({ success: true, usage: getTokenUsageSummary() });
+});
 
 adminRouter.get("/constants", async (req, res) => {
   await loadIndustryMaster();

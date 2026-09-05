@@ -19,6 +19,10 @@ import {
   isReasoningModel,
   buildRequestPayload,
   extractUnsupportedParam,
+  OPENAI_MAX_COMPLETION_TOKENS,
+  buildTranslationCacheKey,
+  recordTokenUsage,
+  getTokenUsageSummary,
 } from "../services/translate.js";
 
 // 每個測試用不同的原文，避免模組層級的 LRU 快取跨測試互相影響。
@@ -366,7 +370,7 @@ test("payload：GPT-5 用 max_completion_tokens，不能送 max_tokens", () => {
   // 送 max_tokens 會被打回 400：
   // "Unsupported parameter: 'max_tokens' is not supported with this model."
   assert.equal("max_tokens" in payload, false);
-  assert.equal(payload.max_completion_tokens, 1000);
+  assert.equal(payload.max_completion_tokens, OPENAI_MAX_COMPLETION_TOKENS);
 });
 
 test("payload：GPT-5 會明確關掉推理", () => {
@@ -391,7 +395,7 @@ test("payload：GPT-4.x 維持原本的 max_tokens", () => {
     temperature: 0.1,
   });
 
-  assert.equal(payload.max_tokens, 1000);
+  assert.equal(payload.max_tokens, OPENAI_MAX_COMPLETION_TOKENS);
   assert.equal("max_completion_tokens" in payload, false);
   assert.equal("reasoning_effort" in payload, false);
 });
@@ -447,4 +451,105 @@ test("extractUnsupportedParam：一般錯誤不會被誤判成參數問題", () 
     null
   );
   assert.equal(extractUnsupportedParam({ response: { status: 503 } }), null);
+});
+
+// ── 名稱規則（人名／公司名轉寫）───────────────────────────
+//
+// 原本第 5 條只寫「一律保留原文或音譯」，模型多半選「保留」，結果泰文、越南文
+// 的譯文裡夾著整串中文人名。加班名單、點名這類訊息正是靠名字認人的。
+//
+// prompt 壞掉不會有錯誤訊息，只會安靜地開始輸出中文人名——跟之前人名地名規則
+// 掉了卻沒人發現是同一類問題，所以直接對 prompt 內容斷言。
+
+test("prompt：非中文目標語言要求人名一律轉寫，不得保留中文字", () => {
+  for (const lang of ["vi", "th", "id", "en"]) {
+    const prompt = buildTranslationPrompt(lang, "");
+    assert.match(prompt, /名稱規則/, `${lang} 缺少名稱規則`);
+    assert.match(prompt, /不得保留中文字/, `${lang} 沒要求不可保留中文`);
+    assert.match(prompt, /公司名、廠區名/, `${lang} 缺少公司名處理規則`);
+  }
+});
+
+test("prompt：越南文用漢越音，其他語言依華語發音轉寫", () => {
+  const vi = buildTranslationPrompt("vi", "");
+  assert.match(vi, /漢越音/, "越南文要指定漢越音");
+  assert.match(vi, /Lâm Dũng Trợ/, "要給實際範例，光講規則模型照做率低很多");
+
+  for (const lang of ["th", "id", "en"]) {
+    const prompt = buildTranslationPrompt(lang, "");
+    assert.doesNotMatch(prompt, /漢越音/, `${lang} 不該出現漢越音`);
+    assert.match(prompt, /華語發音/, `${lang} 應依華語發音轉寫`);
+  }
+});
+
+test("prompt：公司名範例要分語言，泰文句子裡不該夾拉丁拼寫", () => {
+  assert.match(buildTranslationPrompt("th", ""), /หมี่/, "泰文要用泰文字母的範例");
+  assert.doesNotMatch(
+    buildTranslationPrompt("th", ""),
+    /Mi Duo Li/,
+    "泰籍員工念不出拉丁拼寫"
+  );
+});
+
+test("prompt：目標語言是繁體中文時，不套用轉寫規則", () => {
+  const zh = buildTranslationPrompt("zh-TW", "");
+  assert.match(zh, /人名以中文書寫即可/);
+  assert.doesNotMatch(zh, /漢越音/);
+});
+
+// ── 快取 key ───────────────────────────────────────────────
+
+test("快取 key 不含 gid：同行業別的不同群組要能共用", () => {
+  const a = buildTranslationCacheKey("明天加班", "th", "電子", "PROMPT");
+  const b = buildTranslationCacheKey("明天加班", "th", "電子", "PROMPT");
+  assert.equal(a, b);
+  assert.doesNotMatch(a, /group_/, "帶 gid 會讓命中率大幅下降");
+});
+
+test("快取 key 會隨 prompt 改版而失效，但不把整段 prompt 塞進 key", () => {
+  const before = buildTranslationCacheKey("明天加班", "th", "電子", "舊版 PROMPT");
+  const after = buildTranslationCacheKey("明天加班", "th", "電子", "新版 PROMPT");
+
+  assert.notEqual(before, after, "prompt 改了舊快取要自動失效");
+  assert.equal(before.includes("舊版 PROMPT"), false, "應該只放雜湊，不放整段內容");
+  assert.equal(before.length < 60, true, `key 不該太長，實際 ${before.length}`);
+});
+
+test("快取 key 會區分目標語言與行業別", () => {
+  const th = buildTranslationCacheKey("明天加班", "th", "電子", "P");
+  const vi = buildTranslationCacheKey("明天加班", "vi", "電子", "P");
+  const food = buildTranslationCacheKey("明天加班", "th", "食品", "P");
+
+  assert.notEqual(th, vi);
+  assert.notEqual(th, food);
+});
+
+// ── Token 統計 ─────────────────────────────────────────────
+
+test("recordTokenUsage：接得住兩種欄位命名，並算出相對成本", () => {
+  recordTokenUsage(
+    {
+      prompt_tokens: 1000,
+      completion_tokens: 200,
+      prompt_tokens_details: { cached_tokens: 800, cache_write_tokens: 100 },
+      completion_tokens_details: { reasoning_tokens: 50 },
+    },
+    "test-model",
+    "th"
+  );
+
+  const s = getTokenUsageSummary();
+  assert.equal(s.calls >= 1, true);
+  assert.equal(s.cachedTokens >= 800, true);
+  assert.equal(s.reasoningTokens >= 50, true, "推理 token 是隱形成本，一定要記");
+  assert.equal(s.byModel["test-model"].calls >= 1, true);
+  // 未快取 100 + 寫入 100×1.25 + 讀取 800×0.1 = 305，除以 1000
+  assert.equal(s.relativeInputCost < 1, true, "快取讀取多的時候應該比不快取便宜");
+});
+
+test("recordTokenUsage：沒有 usage 欄位時不會炸掉", () => {
+  const before = getTokenUsageSummary().calls;
+  recordTokenUsage(undefined, "test-model", "th");
+  recordTokenUsage(null, "test-model", "th");
+  assert.equal(getTokenUsageSummary().calls, before, "沒資料就不該計入");
 });

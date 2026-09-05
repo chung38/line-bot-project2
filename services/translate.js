@@ -4,6 +4,7 @@
 // 為了不動到 routes/ 既有的 import（它們是從這個檔案 import isValidLineUserId 等
 // 純函式的），這裡把 translateLogic.js 的東西整批 re-export 出去。
 import axios from "axios";
+import crypto from "node:crypto";
 import { LRUCache } from "lru-cache";
 import { SUPPORTED_LANGS } from "../lib/i18n.js";
 import { groupIndustry, industryMasterDocs } from "../lib/state.js";
@@ -28,6 +29,7 @@ import {
   analyzeChineseDominance,
   resolveTargetLangs,
   summarizeTranslationOutputs,
+  hasUntranslatedChineseNames,
 } from "./translateLogic.js";
 
 const translationCache = new LRUCache({
@@ -48,6 +50,77 @@ function buildIndustryContext(industry) {
       ? `工作類型：${industry}。優先使用此工作領域的專業術語及自然用語。`
       : "未指定工作類型，請根據原文語境選擇適當的日常或工作用語。")
   );
+}
+
+// 公司名／廠區名的音譯範例。必須跟人名一樣分語言——
+// 否則泰文句子裡會夾著「Zhuang Xi」這種泰籍員工念不出來的拉丁拼寫。
+const ORG_NAME_EXAMPLES = {
+  vi: "米多力 → Mễ Đa Lực、庒西 → Trang Tây、褒忠 → Bảo Trung",
+  id: "米多力 → Mi Duo Li、庒西 → Cuang Si",
+  th: "米多力 → หมี่ ตัว ลี่、庒西 → จวง ซี",
+  en: "米多力 → Mi Duo Li、庒西 → Zhuang Xi",
+};
+
+const PERSON_NAME_EXAMPLES = {
+  vi: "林勇助 → Lâm Dũng Trợ、李明通 → Lý Minh Thông、阿凱 → A Khải、宜丸 → Nghi Hoàn",
+  id: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → I Wan",
+  th: "阿安 → อา อาน、阿凱 → อา ไค、阿力 → อา ลี่、宜丸 → อี้ หวาน",
+  en: "阿安 → A An、阿凱 → A Kai、阿力 → A Li、宜丸 → Yi Wan",
+};
+
+/*
+  名稱規則。
+
+  原本第 5 條只寫「人名與地名一律保留原文或音譯」，實務上模型多半選「保留」，
+  結果泰文、越南文的譯文裡夾著整串中文人名——外籍工作者看不懂，而加班名單、
+  點名這類訊息正是靠名字認人的。所以改成「一律轉寫，不得保留中文字」。
+
+  轉寫方式刻意依語言而不同：
+
+  - 越南文用漢越音（Hán-Việt）。漢越音是「一個漢字固定對一個音節」的標準對照，
+    李永遠是 Lý、明永遠是 Minh，天生穩定。名單靠名字認人，拼法飄動比念不準更
+    危險，所以穩定性優先，也符合越南處理中文姓名的慣例。
+
+  - 泰文、印尼文、英文沒有漢字讀音系統，只能依華語發音用該語言的文字轉寫。
+*/
+function buildNameRule(targetLang, langLabel) {
+  if (targetLang === "zh-TW") {
+    return `
+人名規則：
+- 目標語言是繁體中文，人名以中文書寫即可。
+- 原文若是拼音或外文姓名（例如 Nguyen Van A、Somchai），保留原樣，不要音譯成漢字。
+`.trim();
+  }
+
+  const transliterationRule =
+    targetLang === "vi"
+      ? `- 使用越南傳統的漢越音（Hán-Việt）讀法，一個漢字對應一個音節。
+  每個音節首字母大寫、音節之間空一格，並保留越南文的聲調符號。
+  同一個漢字必須永遠對應同一個音節（李一律是 Lý、明一律是 Minh），
+  這樣同一個人名在不同訊息中的寫法才會完全一致。`
+      : `- 轉寫依據是「這個名字的華語發音」，用「${langLabel}」自己的文字與拼寫習慣書寫，
+  讓${langLabel}母語者照著念出來會接近原本的華語發音。
+- 「${langLabel}」沒有漢字讀音系統，不可套用其他語言的漢字讀法。`;
+
+  return `
+名稱規則（務必嚴格遵守）：
+
+【人名】
+- 所有人名、暱稱、綽號一律轉寫，不得保留中文字。
+${transliterationRule}
+- 不要把名字意譯，也不要改用該語言的常見人名代替。
+- 參考寫法：${PERSON_NAME_EXAMPLES[targetLang] || PERSON_NAME_EXAMPLES.en}
+- 同一則訊息中，同一個人名的寫法必須完全一致。
+
+【公司名、廠區名、地名、產品名】
+- 也一律不得保留中文字，依下列優先順序處理：
+  1. 該名稱若有廣為使用的官方外文名稱，直接使用該名稱。
+     例如「嘉里大榮」的官方名稱是「Kerry TJ」，就用 Kerry TJ。
+  2. 沒有官方外文名稱時，比照上面【人名】的轉寫方式處理。
+     例如：${ORG_NAME_EXAMPLES[targetLang] || ORG_NAME_EXAMPLES.en}
+- 不確定是否有官方名稱時，一律選擇第 2 種（音譯），不要自行創造英文名稱。
+- 同一則訊息中，同一個名稱的寫法必須完全一致。
+`.trim();
 }
 
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
@@ -84,8 +157,10 @@ ${industryContext}
    - 英文縮寫、全大寫英文詞、英數混合代碼、單一英文字母代號（A、B、C）
    - 數字、日期、時間、URL、Email、@提及 placeholder
    例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
-5. 人名與地名一律保留原文或音譯，不可照字面意思翻譯。中文姓氏與地名的單字本身有意義（林、王、大甲、太平），照字面翻會變成「森林」「國王」這種完全錯誤的內容。
+5. 人名與地名不可照字面意思翻譯。中文姓氏與地名的單字本身有意義（林、王、大甲、太平），照字面翻會變成「森林」「國王」這種完全錯誤的內容。詳細處理方式見下方「名稱規則」。
 6. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
+
+${buildNameRule(targetLang, langLabel)}
 
 請翻譯成：${langLabel}`.trim();
 }
@@ -110,6 +185,15 @@ if (!OPENAI_MODEL) {
 //      而且推理會吃掉 max_completion_tokens 的額度：如果推理用掉 1000 token，
 //      真正的譯文就沒有空間了，回來的 content 會是空字串。
 //      所以這裡明確設成 "none"。
+// 輸出上限。原本寫死 1000，但推理模型的推理 token 也算在這個額度裡——
+// 推理吃掉太多，真正的譯文就沒有空間，回來的 content 會是空字串。
+// 拉高當保險，並讓它可以不改程式碼就調整。
+const OPENAI_MAX_COMPLETION_TOKENS = Number(process.env.OPENAI_MAX_COMPLETION_TOKENS) || 2000;
+
+// 翻譯是照規則轉換，不需要模型自己想。設為 none 可省下大量輸出 token。
+// 設成空字串就不送這個參數（某些模型不吃）。
+const OPENAI_REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT ?? "none";
+
 function isReasoningModel(model) {
   return /^(gpt-5|o[1-9])/i.test(model);
 }
@@ -124,13 +208,13 @@ function buildRequestPayload({ model, systemPrompt, text, temperature }) {
     return {
       model,
       messages,
-      max_completion_tokens: 1000,
-      reasoning_effort: "none",
+      max_completion_tokens: OPENAI_MAX_COMPLETION_TOKENS,
+      ...(OPENAI_REASONING_EFFORT ? { reasoning_effort: OPENAI_REASONING_EFFORT } : {}),
       temperature,
     };
   }
 
-  return { model, messages, max_tokens: 1000, temperature };
+  return { model, messages, max_tokens: OPENAI_MAX_COMPLETION_TOKENS, temperature };
 }
 
 // OpenAI 回傳「這個參數不支援」時，從 payload 拿掉那個參數再送一次。
@@ -158,7 +242,85 @@ function extractUnsupportedParam(err) {
   return m ? m[1] : null;
 }
 
-async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature }) {
+/*
+  Token 用量統計。
+
+  GPT-5.6 之後，快取寫入要收 1.25 倍的未快取 input 費率，讀取則是 0.1 倍，
+  而且可快取的前綴至少要 1024 tokens。也就是說 prompt 快取從「開了就賺」變成
+  「要算才賺」：寫入多、讀取少的話反而比不快取更貴。
+
+  在調整 prompt 結構之前必須先有實際數據，否則只是憑感覺賭。這裡累計各項
+  token，用 /admin/token-usage 就能看，不必翻 log。
+
+  注意：這是「行程內」的累計，重啟就歸零（since 欄位會告訴你從什麼時候算起）。
+  要長期趨勢的話請看 Render 的 log，每次呼叫都有一行摘要。
+*/
+const tokenStats = {
+  since: new Date().toISOString(),
+  calls: 0,
+  promptTokens: 0,
+  cachedTokens: 0,
+  cacheWriteTokens: 0,
+  completionTokens: 0,
+  reasoningTokens: 0,
+  byModel: {},
+};
+
+function recordTokenUsage(usage, modelName, targetLang) {
+  if (!usage) return;
+
+  // 不同 API 版本欄位名稱不一致，兩種都接
+  const prompt = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+  const completion = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+  const cacheWrite =
+    usage.prompt_tokens_details?.cache_write_tokens ?? usage.cache_write_tokens ?? 0;
+  // 推理 token 是隱形成本：計入 completion 卻不會出現在譯文裡
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+
+  tokenStats.calls += 1;
+  tokenStats.promptTokens += prompt;
+  tokenStats.completionTokens += completion;
+  tokenStats.cachedTokens += cached;
+  tokenStats.cacheWriteTokens += cacheWrite;
+  tokenStats.reasoningTokens += reasoning;
+
+  const m = (tokenStats.byModel[modelName] ||= {
+    calls: 0, promptTokens: 0, cachedTokens: 0, cacheWriteTokens: 0,
+  });
+  m.calls += 1;
+  m.promptTokens += prompt;
+  m.cachedTokens += cached;
+  m.cacheWriteTokens += cacheWrite;
+
+  // 一行摘要，方便直接在 Render log 上看趨勢
+  debugLog(
+    `💰 tokens ${modelName} → ${targetLang} | prompt=${prompt} cached=${cached} ` +
+    `write=${cacheWrite} out=${completion}${reasoning ? ` (推理 ${reasoning})` : ""}`
+  );
+}
+
+// 給後台用的摘要。以「未快取價為 1」換算相對成本，直接看得出
+// 開快取到底有沒有比不快取便宜。
+function getTokenUsageSummary() {
+  const { promptTokens, cachedTokens, cacheWriteTokens } = tokenStats;
+  const uncachedPrompt = Math.max(promptTokens - cachedTokens - cacheWriteTokens, 0);
+
+  const relativeInputCost =
+    promptTokens > 0
+      ? (uncachedPrompt * 1 + cacheWriteTokens * 1.25 + cachedTokens * 0.1) / promptTokens
+      : null;
+
+  return {
+    ...tokenStats,
+    uncachedPromptTokens: uncachedPrompt,
+    cacheReadWriteRatio: cacheWriteTokens > 0 ? cachedTokens / cacheWriteTokens : null,
+    // < 1 代表快取有省到，> 1 代表寫入太多、反而比不快取貴
+    relativeInputCost,
+  };
+}
+
+async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature, targetLang = "" }) {
   let payload = buildRequestPayload({ model: OPENAI_MODEL, systemPrompt, text, temperature });
 
   for (let attempt = 0; attempt <= UNSUPPORTED_PARAM_RETRY_LIMIT; attempt++) {
@@ -171,6 +333,8 @@ async function requestChatCompletionViaOpenAI({ systemPrompt, text, temperature 
           timeout: 25000
         }
       );
+
+      recordTokenUsage(res.data?.usage, OPENAI_MODEL, targetLang);
 
       const choice = res.data?.choices?.[0];
       const content = choice?.message?.content?.trim() || "";
@@ -209,6 +373,27 @@ function setChatCompletionForTesting(fn) {
   requestChatCompletion = fn || requestChatCompletionViaOpenAI;
 }
 
+// 翻譯快取的 key。
+//
+// 原本是 `group_${gid}:${targetLang}:${text}:${industry}:${systemPrompt}`，兩個問題：
+//
+//   1. 帶 gid → 同行業別、不同群組完全無法共用快取。你有幾十個電子廠群組在講
+//      同樣的話（「明天加班」「料到了」），現在每個群組各付一次 OpenAI 費用。
+//      而譯文其實只由「原文 + 目標語言 + 產業別」決定，跟哪個群組無關。
+//
+//   2. 帶整段 systemPrompt → 那是完全由 targetLang + industry 決定的冗餘資訊，
+//      卻讓每一筆 key 多背 1KB 字串。改成雜湊，保留「prompt 改版後舊快取自動
+//      失效」這個性質，但不用把整段內容塞進 key。
+function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
+  const promptHash = crypto
+    .createHash("sha1")
+    .update(systemPrompt)
+    .digest("hex")
+    .slice(0, 8);
+
+  return `${targetLang}:${industry || ""}:${promptHash}:${text}`;
+}
+
 // 輸出不合格時，最多再用極簡 prompt 重試幾次
 const MAX_QUALITY_RETRY = 2;
 
@@ -218,7 +403,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
 
   const industry = gid ? groupIndustry.get(gid) : null;
   const systemPrompt = customPrompt || buildTranslationPrompt(targetLang, industry);
-  const cacheKey = `group_${gid}:${targetLang}:${text}:${industry || ""}:${systemPrompt}`;
+  const cacheKey = buildTranslationCacheKey(text, targetLang, industry, systemPrompt);
 
   if (translationCache.has(cacheKey)) {
     return translationCache.get(cacheKey);
@@ -229,6 +414,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       systemPrompt,
       text,
       temperature: retry > 0 ? 0.3 : 0.1,
+      targetLang,
     });
 
     let out = String(raw || "")
@@ -236,6 +422,48 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       .map(line => line.trimEnd())
       .join("\n")
       .trim();
+
+    /*
+      輸出裡殘留了原文的中文人名（模型照抄而非轉寫）。
+
+      這屬於「大致正確、局部漏翻」，跟整段翻錯不同，所以走軟性重試：
+      只有重試結果「確實比較好」才採用，否則保留原本的輸出。硬性重試
+      會把一個只差幾個名字的好譯文換成一個可能更糟的新譯文。
+    */
+    // ⚠️ 順序很重要：只有「其他方面都合格」的輸出才走這條軟性重試。
+    //
+    //    整段照抄原文的輸出也會讓 hasUntranslatedChineseNames 成立，但那是
+    //    根本沒翻譯，該走下面的硬性重試（換極簡 prompt、用完次數就回錯誤訊息）。
+    //    如果不先排除，那種輸出會白白多打一次 OpenAI 才落到正確的路徑上。
+    if (
+      retry < 1 &&
+      !isInvalidTranslation(text, out, targetLang) &&
+      hasUntranslatedChineseNames(out, text, targetLang)
+    ) {
+      debugLog("⚠️ 輸出殘留中文人名，嘗試轉寫：", { targetLang, out });
+
+      const nameFixPrompt = `${buildTranslationPrompt(targetLang, industry, true)}
+
+人名轉寫修正（務必遵守）：
+上一次的回覆把中文人名照抄出來，沒有轉寫。
+
+請重新輸出「${SUPPORTED_LANGS[targetLang] || targetLang}」的翻譯，並且：
+${buildNameRule(targetLang, SUPPORTED_LANGS[targetLang] || targetLang)}
+- 其餘內容維持不變。只輸出翻譯結果。`.trim();
+
+      const retried = await translateWithChatGPT(text, targetLang, gid, retry + 1, nameFixPrompt);
+
+      const improved =
+        typeof retried === "string" &&
+        retried.trim() &&
+        !isInvalidTranslation(text, retried, targetLang) &&
+        !hasUntranslatedChineseNames(retried, text, targetLang);
+
+      if (improved) {
+        translationCache.set(cacheKey, retried);
+        return retried;
+      }
+    }
 
     // 輸出品質檢查：以前只對 zh-TW 做，其他語言的重試路徑等於形同虛設。
     // 現在改用 isInvalidTranslation()，每個目標語言都有對應的判斷規則
@@ -380,4 +608,12 @@ export {
   translateWithChatGPT,
   translateLineSegments,
   setChatCompletionForTesting,
+  buildTranslationCacheKey,
+  buildNameRule,
+  OPENAI_MAX_COMPLETION_TOKENS,
+  OPENAI_REASONING_EFFORT,
+  getTokenUsageSummary,
+  recordTokenUsage,
+  PERSON_NAME_EXAMPLES,
+  ORG_NAME_EXAMPLES,
 };
