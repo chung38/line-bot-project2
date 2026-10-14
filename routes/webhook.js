@@ -16,6 +16,7 @@ import {
   isValidIndustry,
   loadIndustryMaster,
   leaveGroupCleanup,
+  recordGroupJoin,
 } from "../lib/state.js";
 import { ensureInviterIfMissing, isAuthorizedOperator, getGroupMemberDisplayName, safeReply, safeReplyOrPush } from "../services/group.js";
 import {
@@ -59,6 +60,21 @@ const webhookLimiter = rateLimit({
 // 1500 字是實務上的取捨：工廠群組的正常訊息通常在 200 字以內，會超過 1500 的
 // 幾乎都是整份貼上來的文件，那種本來就該用文件翻譯而不是群組即時翻譯。
 const MAX_TRANSLATE_CHARS = Number(process.env.MAX_TRANSLATE_CHARS) || 1500;
+
+/*
+  機器人被加入群組時的行為。
+
+    menu   ：直接跳出語言選單
+    hint   ：只回一句話告知怎麼設定，不跳選單（預設）
+    silent ：完全不回應
+
+  預設 hint 而不是 silent，是因為完全不回應的話邀請者不會知道要輸入「!啟動」，
+  機器人看起來就像壞掉的。silent 適合由你們自己在後台完成設定、
+  不希望機器人在客戶群組裡發言的情況。
+
+  不論哪一種模式，入群都會寫進 joinedGroups——通知與記錄是兩件事。
+*/
+const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
 
 // reservation 是 handleEvent 事先用 reserveGroupTranslation() 預扣下來的額度。
 // 這個函式負責在結束時「結清」：有翻出東西就補記字元數，沒有就把預扣的次數退回去。
@@ -592,7 +608,20 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
   }
 
   if (event.type === "join" && gid) {
-    await safeReplyOrPush(replyToken, gid, "👋 感謝邀請！請由邀請人輸入「!啟動」完成綁定，即可開始使用翻譯服務。");
+    // 不管要不要發言，入群這件事一定要先記下來（見 recordGroupJoin 的說明）
+    await recordGroupJoin(gid);
+
+    if (JOIN_MESSAGE_MODE === "menu") {
+      await sendMenu(gid);
+    } else if (JOIN_MESSAGE_MODE === "hint") {
+      await safeReplyOrPush(
+        replyToken,
+        gid,
+        "👋 感謝邀請！請由邀請人輸入「!啟動」完成綁定，即可開始使用翻譯服務。"
+      );
+    }
+    // silent：完全不回應
+
     return null;
   }
 
@@ -607,8 +636,15 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
         return null;
       }
 
+      /*
+        非授權者按按鈕時保持靜默，只留 log。
+
+        語言選單是全群組看得到的，好奇按一下的人不少。每次都回一句
+        「你沒有權限操作此群組設定」會在群組裡洗版，而且推播還要錢。
+        按了沒反應本身就足以表達「這不是給你用的」。
+      */
       if (!isAuthorizedOperator(gid, uid)) {
-      
+        console.log("🔒 非授權者操作，已略過：", { gid, uid, action });
         return null;
       }
 

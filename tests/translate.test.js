@@ -491,10 +491,44 @@ test("prompt：公司名範例要分語言，泰文句子裡不該夾拉丁拼�
   );
 });
 
-test("prompt：目標語言是繁體中文時，不套用轉寫規則", () => {
+test("prompt：目標語言是繁體中文時，不套用漢字音譯", () => {
   const zh = buildTranslationPrompt("zh-TW", "");
-  assert.match(zh, /人名以中文書寫即可/);
+  assert.match(zh, /中文人名與專有名詞以中文書寫即可/);
   assert.doesNotMatch(zh, /漢越音/);
+  // 外籍員工的姓名要對得上工證、薪資單、打卡系統，音譯成漢字會全部對不起來
+  assert.match(zh, /保留拉丁字母/);
+  assert.match(zh, /工證/);
+});
+
+test("prompt：譯成中文時要求去掉越南文聲調符號", () => {
+  // 打卡系統與薪資單上的拼法是無聲調的 Nguyen Duc Manh，
+  // 譯文若保留 Nguyễn Đức Mạnh，人資對名冊時會比對不到
+  const zh = buildTranslationPrompt("zh-TW", "");
+  assert.match(zh, /Nguyen Duc Manh/);
+});
+
+test("prompt：節日與文化名詞要意譯，不可照抄", () => {
+  // Tết 照抄的話中文讀者看不懂，而且這類詞是排休公告的重點
+  assert.match(buildTranslationPrompt("zh-TW", ""), /越南新年/);
+  for (const lang of ["th", "id", "en"]) {
+    assert.match(
+      buildTranslationPrompt(lang, ""),
+      /節日與文化名詞要意譯/,
+      `${lang} 缺少節日意譯規則`
+    );
+  }
+});
+
+test("prompt：原文不是中文時，外文專有名詞也要改用目標語言書寫", () => {
+  // 泰文譯文裡留著越南文人名，泰籍員工一樣念不出來
+  for (const lang of ["th", "id", "en"]) {
+    assert.match(
+      buildTranslationPrompt(lang, ""),
+      /原文不是中文時/,
+      `${lang} 缺少非中文原文的處理規則`
+    );
+  }
+  assert.match(buildTranslationPrompt("th", ""), /เหงียน/, "泰文要給泰文字母的範例");
 });
 
 // ── 快取 key ───────────────────────────────────────────────

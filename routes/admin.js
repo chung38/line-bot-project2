@@ -21,6 +21,8 @@ import {
   saveIndustryForGroup,
   saveInviterForGroup,
   deleteGroupSettings,
+  joinedGroups,
+  getGroupSetupState,
 } from "../lib/state.js";
 import { addAdminLog } from "../lib/adminLog.js";
 import { isValidLineUserId, getTokenUsageSummary } from "../services/translate.js";
@@ -426,6 +428,10 @@ adminRouter.get("/groups", async (req, res) => {
           industry: groupIndustry.get(gid) || null,
           inviter,
           inviterName,
+          // 卡在設定流程哪一步。JOINED 的是「機器人已進群但沒人設定」，
+          // 這種群組以前後台根本看不到——它們是最值得主動聯繫的名單。
+          setupState: getGroupSetupState(gid),
+          joinedAt: joinedGroups.get(gid)?.joinedAt || null,
           subscription,
           usage: {
             ...usage,

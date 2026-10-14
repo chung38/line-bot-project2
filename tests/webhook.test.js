@@ -16,7 +16,10 @@ import { createFakeFirestore } from "./helpers/fakeFirestore.js";
 import { createFakeLineClient } from "./helpers/fakeLineClient.js";
 import { setFirestoreForTesting } from "../lib/firestore.js";
 import { setLineClientForTesting } from "../lib/line.js";
-import { groupLang, groupInviter, groupIndustry, deletedGroups } from "../lib/state.js";
+import { groupLang, groupInviter, groupIndustry, deletedGroups,
+  getGroupSetupState,
+  getAllKnownGroupIds,
+} from "../lib/state.js";
 import { setChatCompletionForTesting } from "../services/translate.js";
 import { MAX_AUDIO_SECONDS, setTranscriberForTesting } from "../services/transcribe.js";
 import { SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
@@ -448,4 +451,81 @@ test("waitForDrain 會等到已經預扣的背景翻譯結清才回來", async (
   assert.equal(usageOf(fake).charCount > 0, true, "翻譯完成要補記字元數");
 
   resetLifecycleForTesting();
+});
+
+// ── 入群記錄與設定狀態 ─────────────────────────────────────
+//
+// 語言／邀請人／行業別三個 map 都要等到「有人真的去操作設定」才會寫入，
+// 而後台的群組列表就是由它們組成的。所以客戶把機器人拉進群組、卻沒人按
+// 「!啟動」時，後台完全看不到這個群組——這是最可惜的一種流失：
+// 機器人已經進去了，只差一步設定，但你不知道要去追。
+
+function joinEvent({ gid = GID } = {}) {
+  return {
+    type: "join",
+    replyToken: "reply-token-1",
+    source: { type: "group", groupId: gid },
+  };
+}
+
+test("機器人入群就記一筆，不必等到有人設定", async () => {
+  const { fake } = reset();
+
+  await handleEvent(joinEvent());
+  await settle();
+
+  assert.ok(fake.read("joinedGroups", GID), "入群當下就要留下紀錄");
+  assert.equal(getGroupSetupState(GID), "JOINED", "還沒有人設定");
+});
+
+test("入群紀錄讓後台看得到「尚未設定」的群組", async () => {
+  const { fake } = reset();
+
+  await handleEvent(joinEvent());
+  await settle();
+
+  assert.equal(
+    getAllKnownGroupIds().includes(GID),
+    true,
+    "沒有這筆的話，後台的群組列表根本不會出現這個群組"
+  );
+});
+
+test("設定狀態會隨流程前進：JOINED → NO_LANGUAGE → READY", async () => {
+  reset();
+
+  await handleEvent(joinEvent());
+  await settle();
+  assert.equal(getGroupSetupState(GID), "JOINED");
+
+  // 有人開始設定（綁定邀請人）但還沒選語言 → 翻譯不會運作
+  groupInviter.set(GID, UID);
+  assert.equal(getGroupSetupState(GID), "NO_LANGUAGE");
+
+  groupLang.set(GID, new Set(["th"]));
+  assert.equal(getGroupSetupState(GID), "READY");
+});
+
+test("非授權者按語言按鈕時完全靜默，不在群組裡洗版", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent({
+    type: "postback",
+    replyToken: "reply-token-1",
+    source: { type: "group", groupId: GID, userId: "Ustranger" },
+    postback: { data: "action=set_lang&code=vi" },
+  });
+  await settle();
+
+  assert.equal(
+    line.calls.replies.length + line.calls.pushes.length,
+    0,
+    "選單全群組看得到，好奇按一下的人不少；每次都回「沒有權限」會洗版，推播還要錢"
+  );
+  assert.equal(
+    [...(groupLang.get(GID) || [])].includes("vi"),
+    false,
+    "靜默不代表放行，設定不可以被改到"
+  );
 });

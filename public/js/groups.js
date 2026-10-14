@@ -180,6 +180,20 @@ function renderGroups() {
         </div>
 
         <div class="group-row">
+          <span class="label">設定狀態</span>
+          <div>
+            ${
+              item.setupState === "READY"
+                ? `<span class="badge badge-green">運作中</span>`
+                : item.setupState === "NO_LANGUAGE"
+                  ? `<span class="badge badge-red">未選語言</span>`
+                  : `<span class="badge badge-gray">尚未設定</span>`
+            }
+            ${item.joinedAt ? `<span class="muted">入群 ${escapeHtml(item.joinedAt.slice(0, 10))}</span>` : ""}
+          </div>
+        </div>
+
+        <div class="group-row">
           <span class="label">語言</span>
           <div class="tag-wrap">
             ${(item.langs || []).length

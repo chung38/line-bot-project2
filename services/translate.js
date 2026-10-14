@@ -86,9 +86,13 @@ const PERSON_NAME_EXAMPLES = {
 function buildNameRule(targetLang, langLabel) {
   if (targetLang === "zh-TW") {
     return `
-人名規則：
-- 目標語言是繁體中文，人名以中文書寫即可。
-- 原文若是拼音或外文姓名（例如 Nguyen Van A、Somchai），保留原樣，不要音譯成漢字。
+專有名詞規則：
+- 目標語言是繁體中文，中文人名與專有名詞以中文書寫即可。
+- 外文姓名（例如 Nguyen Van A、Somchai）保留拉丁字母，不要音譯成漢字，
+  那樣會對不上工證、薪資單與打卡系統上的拼法。
+- 但要去掉越南文的聲調符號，改用一般拉丁字母，
+  例如：Nguyễn Đức Mạnh → Nguyen Duc Manh。
+- 節日與文化名詞要意譯，不可照抄，例如：Tết → 越南新年。
 `.trim();
   }
 
@@ -120,6 +124,18 @@ ${transliterationRule}
      例如：${ORG_NAME_EXAMPLES[targetLang] || ORG_NAME_EXAMPLES.en}
 - 不確定是否有官方名稱時，一律選擇第 2 種（音譯），不要自行創造英文名稱。
 - 同一則訊息中，同一個名稱的寫法必須完全一致。
+
+【原文不是中文時】
+- 原文中的外文專有名詞（越南文、泰文、印尼文的人名、地名、節日名等）
+  同樣不可原樣照抄，一律改用「${langLabel}」的書寫方式呈現。
+${
+  targetLang === "th"
+    ? "- 用泰文字母轉寫，例如：Nguyễn Đức Mạnh → เหงียน ดึ๊ก หมั่ญ"
+    : targetLang === "vi"
+      ? "- 已經是越南文的姓名保留原樣（含聲調）；其他語言的姓名依發音用越南文書寫。"
+      : "- 去掉越南文的聲調符號改用一般拉丁字母，例如：Nguyễn Đức Mạnh → Nguyen Duc Manh。"
+}
+- 節日與文化名詞要意譯成「${langLabel}」，不可照抄原文寫法。
 `.trim();
 }
 
