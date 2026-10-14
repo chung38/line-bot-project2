@@ -352,6 +352,31 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 
 靜默不等於放行：權限檢查照舊，設定不會被改到，有測試釘住這一點。
 
+## 後台登入
+
+### 為什麼不會「一直要重登」
+
+`server.js` 的 session 設定有 `rolling: true`。沒有這一行的話，
+express-session 只在 session 內容被改動時才重送 `Set-Cookie`，而後台登入後
+session 內容就不再變動（只有 `isAdmin` / `adminUser`），所以瀏覽器那份 cookie
+的到期時間永遠停在「登入當下 + 7 天」——中間每天都在用也一樣，第 7 天準時登出。
+
+`FirestoreSessionStore.touch()` 本來就會延長伺服器端的到期時間，但那只是後端
+紀錄；決定「瀏覽器還會不會把 cookie 帶上來」的是前端那一份。兩邊要一起延長
+才有意義。加上 `rolling: true` 之後，7 天是從「最後一次操作」起算。
+
+### 為什麼瀏覽器記得住密碼
+
+登入區塊是真正的 `<form id="loginForm">`，欄位有 `name` 與 `autocomplete`，
+按鈕是 `type="submit"`，`common.js` 綁的是 form 的 `submit` 事件。
+
+這三件事缺一不可——瀏覽器的密碼管理員是看到「表單被送出」才會跳出儲存提示。
+原本是兩個裸 `<input>` 加一顆 `click` 按鈕、沒有 `<form>`，提示永遠不會出現，
+所以每次都得手動打帳密。
+
+另外登入成功後**不要清空密碼欄位**：Chrome 是在送出之後才決定要不要跳提示，
+而且會去看欄位當下的值，立刻清空等於把要儲存的內容抽走。
+
 ## Token 用量與 log 分級
 
 每次翻譯呼叫都會**無條件**印一行摘要：

@@ -33,13 +33,27 @@ window.AdminCommon = (() => {
     location.href = '/index.html';
   }
 
-  async function handleLoginSubmit() {
+  async function handleLoginSubmit(event) {
+    // 登入區塊現在是真正的 <form>，按鈕是 type="submit"。
+    // 瀏覽器的密碼管理員要看到「表單被送出」才會跳出儲存密碼的提示——
+    // 之前是兩個裸 <input> 加一顆按鈕，沒有 form，所以提示永遠不會出現，
+    // 等於每次都得手動輸入帳密。這裡攔下預設的整頁送出，改走 fetch。
+    event?.preventDefault();
+
     const u = document.getElementById('authUser'), p = document.getElementById('authPass');
     if (!u || !p) return;
     try {
       await login(u.value.trim(), p.value);
-      p.value = '';
       toast('✅ 登入成功');
+
+      /*
+        不要在這裡清空密碼欄位。
+
+        Chrome 判斷「要不要跳出儲存密碼」是在表單送出之後才做的，
+        而且會去看欄位當下的值。登入成功就立刻把它清成空字串，
+        等於把要儲存的內容抽走，提示就不會出現。
+        讓瀏覽器自己處理，使用者離開頁面時欄位本來就會消失。
+      */
       if (window.loadDashboard) window.loadDashboard();
     } catch (e) {
       toast('❌ ' + (e.message || '登入失敗'), true);
@@ -97,8 +111,16 @@ window.AdminCommon = (() => {
   document.addEventListener('DOMContentLoaded', () => {
     // 非登入頁若沒有有效 session，伺服器端已在回傳 HTML 前就導回 /admin/index.html，
     // 這裡不再需要（也無法）用前端存的密碼來判斷是否登入。
-    const btn = document.getElementById('saveAuthBtn');
-    if (btn) btn.addEventListener('click', handleLoginSubmit);
+    // 綁在 form 的 submit 上，不是按鈕的 click——按 Enter 也要能登入，
+    // 而且密碼管理員認的是 submit 事件。
+    const loginForm = document.getElementById('loginForm');
+    if (loginForm) {
+      loginForm.addEventListener('submit', handleLoginSubmit);
+    } else {
+      // 舊版頁面沒有 form 時的退路
+      const btn = document.getElementById('saveAuthBtn');
+      if (btn) btn.addEventListener('click', handleLoginSubmit);
+    }
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) logoutBtn.addEventListener('click', logout);
     initTabs('#subTabs');

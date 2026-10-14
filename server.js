@@ -27,6 +27,20 @@ app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  /*
+    rolling 讓每次回應都重新送出 cookie，把 maxAge 從「登入那一刻起算」
+    改成「最後一次操作起算」。
+
+    沒有這一行的話，express-session 只有在 session 內容被改動時才會重送
+    Set-Cookie。後台登入之後 session 內容不會再變（只有 isAdmin / adminUser），
+    所以瀏覽器那份 cookie 的到期時間永遠停在登入當下 + 7 天——不管中間
+    每天都在用，第 7 天一到就被登出。
+
+    FirestoreSessionStore 的 touch() 本來就會延長伺服器端的到期時間，
+    但那只是後端紀錄；真正決定「瀏覽器還會不會帶 cookie 來」的是前端這一份。
+    兩邊必須一起延長才有意義。
+  */
+  rolling: true,
   cookie: {
     httpOnly: true,
     sameSite: "lax",
