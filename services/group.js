@@ -1,4 +1,5 @@
 // 群組層級的操作權限與 LINE 訊息回覆輔助函式。
+import { LRUCache } from "lru-cache";
 import { db, admin } from "../lib/firestore.js";
 import { client } from "../lib/line.js";
 import { groupInviter, deletedGroups, withInviterWriteGuard } from "../lib/state.js";
@@ -81,14 +82,56 @@ async function ensureInviterIfMissing(gid, uid) {
   return { ok: true, inviter: uid };
 }
 
+/*
+  群組成員顯示名稱的快取。
+
+  為什麼需要：這個函式是用來組「【張三】說：」那個開頭的，也就是**每翻譯一則
+  訊息就會呼叫一次**。顯示名稱幾乎不會變，卻每則訊息都去 LINE 查一次。
+
+  兩個代價：
+    1. 白白消耗 LINE API 配額。
+    2. 疊在 replyToken 的時間預算上——語音訊息已經要花幾秒下載＋轉錄，
+       再多一次網路往返，撞到 token 過期的機率就更高（過期就整則靜靜消失）。
+
+  TTL 設 6 小時：使用者改暱稱不是高頻行為，而工廠群組的活躍時段大概就是一個
+  班別，一個班內看到同一個名字是合理的。要立刻反映改名的話重啟服務即可。
+
+  max 2000 筆：一筆大概幾十 bytes，記憶體影響可以忽略，但足以容納
+  「幾十個群組 × 每群幾十人」的規模。
+*/
+const displayNameCache = new LRUCache({
+  max: Number(process.env.DISPLAY_NAME_CACHE_MAX) || 2000,
+  ttl: Number(process.env.DISPLAY_NAME_CACHE_TTL_MS) || 6 * 60 * 60 * 1000,
+});
+
 async function getGroupMemberDisplayName(gid, uid) {
   if (!gid || !uid) return uid || "未知使用者";
+
+  const cacheKey = `${gid}:${uid}`;
+  const cached = displayNameCache.get(cacheKey);
+  if (cached) return cached;
+
   try {
     const profile = await client.getGroupMemberProfile(gid, uid);
-    return profile.displayName || uid;
+    const name = profile.displayName || uid;
+
+    /*
+      只有「真的查到名稱」才寫快取。
+
+      查不到時回傳的是 uid 本身（那是退路，不是答案）——如果連那個也快取，
+      一次暫時性的 API 失敗就會讓這個人在接下來 6 小時都顯示成一串
+      Uxxxxx 亂碼。寧可下一則訊息再試一次。
+    */
+    if (profile.displayName) displayNameCache.set(cacheKey, name);
+    return name;
   } catch {
     return uid;
   }
+}
+
+// 使用者改暱稱後想立刻生效時用得到；測試也用它來隔離彼此。
+function clearDisplayNameCache() {
+  displayNameCache.clear();
 }
 async function getUserDisplayNameByUserId(userId) {
   if (!userId) return null;
@@ -169,6 +212,7 @@ export {
   isAuthorizedOperator,
   ensureInviterIfMissing,
   getGroupMemberDisplayName,
+  clearDisplayNameCache,
   getUserDisplayNameByUserId,
   safeReply,
   safeReplyOrPush,

@@ -11,6 +11,7 @@ import session from "express-session";
 import https from "node:https";
 
 import { db, FirestoreSessionStore } from "./lib/firestore.js";
+import { createErrorHandler } from "./lib/errorHandler.js";
 import { beginShutdown, waitForDrain, inFlightCount, DRAIN_TIMEOUT_MS } from "./lib/lifecycle.js";
 import { loadAllGroupState, startGroupStateSync } from "./lib/state.js";
 import { startMaintenanceJobs } from "./services/maintenance.js";
@@ -61,6 +62,15 @@ registerMemberRoutes(app);
 registerWebhookRoutes(app);
 
 app.get("/ping", (req, res) => res.sendStatus(200));
+
+/*
+  全域錯誤處理 middleware。必須掛在所有路由「之後」，Express 才認得它。
+
+  這是第二層保險：個別路由的 try/catch 是正解，但只要有一支漏掉
+  （曾經就有——見 routes/admin.js 的 /constants），這裡能把它變成一次
+  500 回應，而不是整台服務結束。實作與測試見 lib/errorHandler.js。
+*/
+app.use(createErrorHandler());
 
 // === PING 伺服器（避免 free-tier 平台把閒置服務睡眠掉） ===
 // PING_URL 是選填的。原本沒設定時 https.get(undefined) 會變成打自己的 localhost:443，
@@ -135,6 +145,32 @@ loadAllGroupState()
 
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
+
+    /*
+      === 最後一道網：沒被接住的例外與 rejection ===
+
+      Node 15 之後，unhandledRejection 的預設行為是「印出堆疊然後直接結束
+      process」。也就是說任何一個漏掉 try/catch 的 async 路徑，都可能讓整台
+      服務無聲消失——所有群組的翻譯同時斷線。
+
+      這裡刻意「不」把錯誤吃掉繼續跑：process 在這種狀態下可能已經有半完成的
+      狀態（連線、交易、記憶體中的群組設定），硬撐著服務反而會產生更難查的
+      資料問題。正確做法是「記錄下來，然後走跟 SIGTERM 完全相同的優雅關閉」：
+
+        - 背景翻譯有機會結清額度，不會留下「扣了錢沒給譯文」
+        - Render 看到 process 結束會自動重啟，幾秒內恢復服務
+
+      log 要印得夠醒目，因為這是「本來不該發生」的事，每一次都值得去追原因。
+    */
+    process.on("unhandledRejection", reason => {
+      console.error("❌❌ unhandledRejection（這是程式缺陷，請追查）:", reason);
+      shutdown("unhandledRejection");
+    });
+
+    process.on("uncaughtException", err => {
+      console.error("❌❌ uncaughtException（這是程式缺陷，請追查）:", err);
+      shutdown("uncaughtException");
+    });
   })
   .catch(e => {
     console.error("❌ 初始化失敗:", e);

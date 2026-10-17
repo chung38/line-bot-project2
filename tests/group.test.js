@@ -14,6 +14,7 @@ import {
   safeReply,
   safeReplyOrPush,
   getGroupMemberDisplayName,
+  clearDisplayNameCache,
 } from "../services/group.js";
 import { FALLBACK_SUBSCRIPTION_DEFAULTS, SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
 
@@ -24,6 +25,8 @@ function reset({ line = createFakeLineClient() } = {}) {
   // lib/state.js 的 Map/Set 是模組層級的共用狀態，每個測試都要清乾淨
   groupInviter.clear();
   deletedGroups.clear();
+  // 顯示名稱快取也是模組層級的，不清的話前一個測試查到的名字會漏到下一個
+  clearDisplayNameCache();
   return { fake, line };
 }
 
@@ -188,4 +191,79 @@ test("getGroupMemberDisplayName：查不到 profile 時退回 userId", async () 
 
   const name = await getGroupMemberDisplayName("G1", "Uabc");
   assert.equal(name, "Uabc");
+});
+
+// ── 顯示名稱快取 ───────────────────────────────────────────
+//
+// getGroupMemberDisplayName 是用來組「【張三】說：」那個開頭的，也就是
+// **每翻譯一則訊息就呼叫一次**。沒有快取的話，每則訊息都多一次 LINE API
+// 往返——白白吃配額，而且疊在 replyToken 的時間預算上（語音訊息本來就要
+// 花幾秒下載＋轉錄，再多一次往返就更容易撞到 token 過期）。
+
+test("同一個人連續發言只會查一次 LINE API", async () => {
+  const { line } = reset({ line: createFakeLineClient({ displayName: "張三" }) });
+
+  const a = await getGroupMemberDisplayName("G1", "U1");
+  const b = await getGroupMemberDisplayName("G1", "U1");
+  const c = await getGroupMemberDisplayName("G1", "U1");
+
+  assert.equal(a, "張三");
+  assert.equal(b, "張三");
+  assert.equal(c, "張三");
+  assert.equal(line.calls.profileLookups.length, 1, "第二次之後應該走快取");
+});
+
+test("快取以「群組＋使用者」為單位，不會互相污染", async () => {
+  const { line } = reset({ line: createFakeLineClient({ displayName: "張三" }) });
+
+  await getGroupMemberDisplayName("G1", "U1");
+  await getGroupMemberDisplayName("G1", "U2"); // 同群組不同人
+  await getGroupMemberDisplayName("G2", "U1"); // 同人不同群組（暱稱可以不一樣）
+
+  assert.equal(line.calls.profileLookups.length, 3, "三個不同的 key 要各查一次");
+});
+
+test("查不到名稱時不寫快取，下一則訊息會再試一次", async () => {
+  // 這點很重要：查失敗時回傳的是 uid 本身（那是退路，不是答案）。
+  // 如果把它也快取起來，一次暫時性的 API 失敗會讓這個人接下來 6 小時
+  // 都顯示成一串 Uxxxxx 亂碼。
+  const line = createFakeLineClient();
+  let calls = 0;
+  line.getGroupMemberProfile = async () => {
+    calls += 1;
+    throw new Error("profile unavailable");
+  };
+  reset({ line });
+  setLineClientForTesting(line);
+
+  const first = await getGroupMemberDisplayName("G1", "U1");
+  const second = await getGroupMemberDisplayName("G1", "U1");
+
+  assert.equal(first, "U1", "查不到就退回 uid");
+  assert.equal(second, "U1");
+  assert.equal(calls, 2, "失敗不該被快取住");
+});
+
+test("API 恢復之後就會拿到真正的名稱", async () => {
+  const line = createFakeLineClient();
+  let fail = true;
+  line.getGroupMemberProfile = async () => {
+    if (fail) throw new Error("temporarily unavailable");
+    return { displayName: "李四" };
+  };
+  reset({ line });
+  setLineClientForTesting(line);
+
+  assert.equal(await getGroupMemberDisplayName("G1", "U1"), "U1");
+
+  fail = false;
+  assert.equal(await getGroupMemberDisplayName("G1", "U1"), "李四", "失敗沒被快取，所以能恢復");
+});
+
+test("缺少 gid 或 uid 時不會去打 API", async () => {
+  const { line } = reset();
+
+  assert.equal(await getGroupMemberDisplayName(null, "U1"), "U1");
+  assert.equal(await getGroupMemberDisplayName("G1", null), "未知使用者");
+  assert.equal(line.calls.profileLookups.length, 0);
 });

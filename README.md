@@ -352,6 +352,72 @@ reserveGroupTranslation()        ← 額度在 Firestore 交易裡「先扣掉�
 
 靜默不等於放行：權限檢查照舊，設定不會被改到，有測試釘住這一點。
 
+## 錯誤處理：三層，而且第二層有個反直覺的限制
+
+一次沒被接住的例外會讓整台服務消失——所有群組的翻譯同時斷線，而錯誤訊息
+常常跟真正的原因長得毫無關係。所以錯誤處理是三層：
+
+| 層 | 位置 | 接得到什麼 |
+| --- | --- | --- |
+| 1. 路由自己的 try/catch | 各 `routes/*.js` | **正解。** 只有那一次請求失敗，服務繼續 |
+| 2. Express 全域 handler | `lib/errorHandler.js` | 同步 throw、`next(err)`。**接不到 async rejection** |
+| 3. process 層級 | `server.js` | 其他全部。記錄後走優雅關閉，由平台重啟 |
+
+### ⚠️ 第二層接不到 async rejection
+
+這點反直覺，而且實測過（express 4.22）：
+
+```js
+app.get("/sync",  () => { throw e })        // error handler ✓ 會被呼叫
+app.get("/async", async () => { throw e })  // error handler ✗ 不會
+                                            // → 變成 unhandledRejection
+```
+
+所以「掛了全域 handler 就安全了」是錯的。如果因為這個誤解把 async 路由的
+try/catch 省掉，一次 Firestore 讀取失敗就會變成整台服務消失。
+`tests/errorHandler.test.js` 有測試把這個事實釘住。
+
+專案裡曾經真的漏過一支：`/admin/constants` 是唯一沒有 try/catch 的 async 路由，
+所以後台載入常數時 Firestore 偶發失敗，整台服務就會死。那支現在補上了，
+並且有回歸測試。
+
+### 不想靠「記得寫 try/catch」的話
+
+`lib/errorHandler.js` 匯出 `asyncHandler()`：
+
+```js
+adminRouter.get("/foo", asyncHandler(async (req, res) => { ... }));
+```
+
+它把 rejection 轉成 `next(err)`，這樣第二層就接得到了。實作上用 try/catch 而
+不是 `Promise.resolve(fn()).catch(next)`——後者對「同步就 throw」的函式無效
+（throw 發生在 `Promise.resolve` 被呼叫之前），這也有測試釘住。
+
+### 第三層為什麼是關閉而不是硬撐
+
+`process.on("unhandledRejection")` 刻意不把錯誤吃掉繼續跑。走到這一層時
+process 可能已經有半完成的狀態（連線、交易、記憶體中的群組設定），硬撐著
+服務反而會產生更難查的資料問題。
+
+正確做法是走跟 SIGTERM 完全相同的優雅關閉：背景翻譯有機會結清額度（不會留下
+「扣了錢沒給譯文」），Render 看到 process 結束會自動重啟，幾秒內恢復。
+
+## 顯示名稱快取
+
+`getGroupMemberDisplayName()` 是用來組「【張三】說：」那個開頭的，也就是
+**每翻譯一則訊息就呼叫一次**。顯示名稱幾乎不會變，卻每則訊息都去 LINE 查一次。
+
+兩個代價：白白消耗 LINE API 配額；以及疊在 `replyToken` 的時間預算上——語音
+訊息本來就要花幾秒下載＋轉錄，再多一次網路往返就更容易撞到 token 過期
+（過期就整則靜靜消失）。
+
+現在用 LRU 快取，key 是「群組＋使用者」，TTL 預設 6 小時
+（`DISPLAY_NAME_CACHE_TTL_MS`）、上限 2000 筆（`DISPLAY_NAME_CACHE_MAX`）。
+
+⚠️ **查不到名稱時不寫快取。** 查失敗時回傳的是 uid 本身，那是退路不是答案——
+如果把它也快取，一次暫時性的 API 失敗會讓這個人接下來 6 小時都顯示成一串
+Uxxxxx 亂碼。有測試確認 API 恢復後就能拿到真正的名稱。
+
 ## 後台登入
 
 ### 為什麼不會「一直要重登」

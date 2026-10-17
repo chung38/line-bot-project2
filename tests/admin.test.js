@@ -411,3 +411,55 @@ test("後台操作會留下 adminLogs，且記錄操作者", async t => {
   assert.ok(entry, "要有一筆操作紀錄");
   assert.equal(entry.actor, ADMIN_USER);
 });
+
+// ── Firestore 失敗時不該讓整台服務掛掉 ───────────────────────
+//
+// 回歸測試。/admin/constants 原本是整個專案唯一沒有 try/catch 的 async 路由。
+//
+// Express 4 不會接住 async handler 的 rejection，而 Node 15 之後
+// unhandledRejection 的預設行為是直接結束 process——也就是說 Firestore
+// 偶發一次讀取失敗，整台服務就死了，所有群組的翻譯同時斷線，而錯誤看起來
+// 跟「後台載入常數」毫無關係。
+
+test("Firestore 讀取失敗時回 500，不會讓 process 崩掉", async () => {
+  const srv = await startServer();
+  try {
+    await srv.login();
+
+    // 讓 loadIndustryMaster() 裡的 Firestore 讀取拋出例外
+    const realCollection = srv.fake.db.collection.bind(srv.fake.db);
+    srv.fake.db.collection = name => {
+      if (name === "systemIndustries") {
+        return { get: async () => { throw new Error("firestore unavailable"); } };
+      }
+      return realCollection(name);
+    };
+
+    const res = await srv.request("/admin/constants");
+
+    assert.equal(res.status, 500, "要回 500，而不是讓 rejection 冒到 process 層級");
+    assert.equal(res.json?.success, false);
+    // 錯誤內容不該回給客戶端：訊息可能含有內部路徑或欄位名稱
+    assert.doesNotMatch(JSON.stringify(res.json), /firestore unavailable/);
+
+    srv.fake.db.collection = realCollection;
+  } finally {
+    await srv.close();
+  }
+});
+
+test("Firestore 恢復之後這支路由照常工作", async () => {
+  const srv = await startServer();
+  try {
+    await srv.login();
+    srv.fake.seed("systemIndustries", "ind1", { name: "電子廠", enabled: true, sortOrder: 1 });
+
+    const res = await srv.request("/admin/constants");
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.success, true);
+    assert.ok(res.json.industries.includes("電子廠"));
+  } finally {
+    await srv.close();
+  }
+});

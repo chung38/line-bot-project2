@@ -155,8 +155,22 @@ adminRouter.get("/token-usage", (req, res) => {
 });
 
 adminRouter.get("/constants", async (req, res) => {
-  await loadIndustryMaster();
-  res.json({ success: true, SUPPORTED_LANGS, industries: getEnabledIndustryNames() });
+  // ⚠️ 這支原本沒有 try/catch，是整個專案唯一的漏網之魚。
+  //
+  //    Express 4 不會接住 async handler 的 rejection，而 Node 15 之後
+  //    unhandledRejection 的預設行為是直接結束 process——Firestore 偶發一次
+  //    讀取失敗，整台服務就死了，所有群組的翻譯跟著斷線，而錯誤看起來跟
+  //    「後台載入常數」毫無關係，極難追查。
+  //
+  //    server.js 現在另外有 process 層級的網當保險，但個別路由自己擋住
+  //    才是正解：這樣只有這一次請求失敗，服務繼續服務其他群組。
+  try {
+    await loadIndustryMaster();
+    res.json({ success: true, SUPPORTED_LANGS, industries: getEnabledIndustryNames() });
+  } catch (e) {
+    console.error("GET /admin/constants 失敗:", e.message);
+    res.status(500).json({ success: false, error: "讀取系統常數失敗" });
+  }
 });
 
 adminRouter.get("/dashboard", async (req, res) => {
