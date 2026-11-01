@@ -93,7 +93,9 @@ async function processTranslationInBackground(
   // sourceKind 只影響回覆的開頭：文字訊息是「【某某】說：」，語音訊息則要
   // 把逐字稿一起附上（「【某某】語音：」+ 原文 + 譯文），讓聽錯或講錯的時候
   // 當場就能更正。翻譯、逾時、額度結算的邏輯兩邊完全共用。
-  { sourceKind = "text" } = {}
+  // quoteToken 讓譯文掛在原訊息下方顯示引用。跟 replyToken 不同，它不會過期，
+  // 所以背景翻譯跑很久、已經退到 push 的情況下引用照樣顯示得出來。
+  { sourceKind = "text", quoteToken = null } = {}
 ) {
   // sourceKind 對應的回覆開頭：語音與圖片都要把「抽出來的原文」一起附上，
   // 因為那一段是機器判讀的結果，可能會錯——附上原文，講錯或判讀錯的時候
@@ -169,7 +171,7 @@ async function processTranslationInBackground(
     const header = label
       ? `【${userName}】${label}：\n${mergedText}\n\n`
       : `【${userName}】說：\n`;
-    await safeReply(replyToken, `${header}${replyText.trim()}`);
+    await safeReply(replyToken, `${header}${replyText.trim()}`, quoteToken);
 
     // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、服務異常等）時
     // 使用者其實什麼都沒拿到，不應該扣他的額度。
@@ -201,7 +203,7 @@ async function processTranslationInBackground(
 // 責任是「要嘛把 reservation 交棒出去，要嘛自己退回」——轉錄失敗、被判定成
 // 幻覺、或轉出來根本沒有可翻的內容時，使用者什麼都沒拿到，不該扣他的額度。
 async function processVoiceTranslationInBackground(
-  replyToken, gid, uid, messageId, langSet, reservation, releaseSlot = null
+  replyToken, gid, uid, messageId, langSet, reservation, releaseSlot = null, quoteToken = null
 ) {
   // 交棒之後額度由 processTranslationInBackground 的 finally 負責結算，
   // 這裡就不能再退，否則會退兩次。
@@ -245,7 +247,7 @@ async function processVoiceTranslationInBackground(
       sourceLang,
       false,
       reservation,
-      { sourceKind: "audio" }
+      { sourceKind: "audio", quoteToken }
     );
   } finally {
     // 名額要在這裡放掉，不是在 handedOff 之後——轉錄已經做完了，
@@ -274,7 +276,7 @@ async function processVoiceTranslationInBackground(
 // 現場狀況、午餐），所以 NO_TEXT 不是異常而是預期中的多數情況——安靜跳過、
 // 退回額度，不要回覆任何東西。
 async function processImageTranslationInBackground(
-  replyToken, gid, uid, messageId, langSet, reservation
+  replyToken, gid, uid, messageId, langSet, reservation, quoteToken = null
 ) {
   let handedOff = false;
 
@@ -319,7 +321,7 @@ async function processImageTranslationInBackground(
       sourceLang,
       false,
       reservation,
-      { sourceKind: "image" }
+      { sourceKind: "image", quoteToken }
     );
   } finally {
     if (!handedOff && reservation?.ok) {
@@ -608,8 +610,21 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
   }
 
   if (event.type === "join" && gid) {
-    // 不管要不要發言，入群這件事一定要先記下來（見 recordGroupJoin 的說明）
-    await recordGroupJoin(gid);
+    /*
+      不管要不要發言，入群這件事一定要先記下來（見 recordGroupJoin 的說明）。
+
+      群組名稱趁現在查——此刻機器人確定還在群組裡。等到客戶打電話來說不能用、
+      管理員才去後台找的時候，機器人可能早就被移出群組了，那時 getGroupSummary
+      會失敗，名單上就只剩一串看不懂的 gid。
+    */
+    let joinedName = null;
+    try {
+      const summary = await client.getGroupSummary(gid);
+      joinedName = summary?.groupName || null;
+    } catch {
+      // 查不到不影響入群流程，後台顯示 gid 即可
+    }
+    await recordGroupJoin(gid, joinedName);
 
     if (JOIN_MESSAGE_MODE === "menu") {
       await sendMenu(gid);
@@ -835,7 +850,9 @@ if (event.message?.mention) {
     trackInFlight(
       processTranslationInBackground(
         replyToken, gid, uid, masked, segments, rawLines,
-        langSet, sourceLang, hasOfficialMentionData, reservation
+        langSet, sourceLang, hasOfficialMentionData, reservation,
+        // webhook 的 message 物件直接帶 quoteToken，不需額外呼叫 API
+        { quoteToken: event.message?.quoteToken || null }
       ).catch(e => console.error("背景翻譯失敗:", e))
     );
   }
@@ -890,7 +907,8 @@ if (event.message?.mention) {
 
     trackInFlight(
       processVoiceTranslationInBackground(
-        replyToken, gid, uid, event.message.id, langSet, reservation, releaseSlot
+        replyToken, gid, uid, event.message.id, langSet, reservation, releaseSlot,
+        event.message?.quoteToken || null
       ).catch(e => {
         // 背景任務自己的 finally 會放名額；這裡只是最後一道保險，
         // 萬一連 finally 都沒跑到（例如同步階段就丟例外）不要把名額漏掉。
@@ -926,7 +944,8 @@ if (event.message?.mention) {
 
     trackInFlight(
       processImageTranslationInBackground(
-        replyToken, gid, uid, event.message.id, langSet, reservation
+        replyToken, gid, uid, event.message.id, langSet, reservation,
+        event.message?.quoteToken || null
       ).catch(e => console.error("背景圖片翻譯失敗:", e))
     );
 

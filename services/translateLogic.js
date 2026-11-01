@@ -274,8 +274,44 @@ function isInvalidTranslation(sourceText, outputText, targetLang = "zh-TW") {
   const script = TARGET_LANG_SCRIPT[targetLang] || "latin";
 
   if (script === "han") {
-    // 原本 isInvalidZhTwTranslation 的規則，原封不動保留
-    return !HAN_CHAR_RE.test(src) && !HAN_CHAR_RE.test(out);
+    /*
+      繁中的判斷。
+
+      原本是「原文和譯文都沒有中文字就算失敗」，但整則訊息只有一個外籍員工
+      姓名時（例如泰文的「อนุพงษ์」），照姓名規則正確的輸出會是音譯或拼音，
+      一個中文字都不會有——**正確的翻譯反而拿不出檢查要求的證據**，於是連同
+      重試一起被判失敗，群組收到「繁中翻譯異常」。
+
+      所以改成只在有「照抄原文」的正面證據時才判失敗：
+
+        殘留泰文字元       → 沒翻（泰文不可能出現在正確的繁中譯文裡）
+        殘留越南文聲調字元 → 沒翻（繁中的姓名規則要求去掉聲調）
+        整段拉丁字母又很長 → 把整句原文羅馬拼音化了，那不是翻譯
+
+      短的純拉丁輸出視為姓名或代號，放行。
+    */
+    if (HAN_CHAR_RE.test(out)) return false;
+
+    const compact = out.replace(/\s+/g, "");
+    if (!compact) return true;
+
+    if (THAI_CHAR_RE.test(out)) return true;
+    if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(out)) return true;
+
+    /*
+      輸出跟原文一字不差，而原文又不是中文 → 模型只是照抄，沒有翻譯。
+
+      這條取代了舊的「原文沒中文、譯文也沒中文就算失敗」。舊寫法會把
+      「อนุพงษ์ → Anuphong」這種正確的姓名音譯也判成失敗（兩邊都沒有中文字），
+      而那正是最常見的正確輸出之一。用「有沒有照抄」當證據精確得多：
+      音譯過的姓名跟原文長得不一樣，照抄的則完全相同。
+    */
+    if (out.trim() === src.trim()) return true;
+
+    // 門檻用字元數與詞數雙重把關：姓名通常 1～3 個詞、20 字元以內。
+    // 超過就不像姓名，而像是把整句原文羅馬拼音化了。
+    const wordCount = out.trim().split(/\s+/).filter(Boolean).length;
+    return !(compact.length <= 24 && wordCount <= 3);
   }
 
   if (script === "thai") {

@@ -18,6 +18,7 @@ import {
   isInvalidZhTwTranslation,
   isUnchangedChineseSource,
   hasUntranslatedChineseNames,
+  isInvalidTranslation,
 } from "../services/translateLogic.js";
 
 test("hasChinese", () => {
@@ -215,4 +216,70 @@ test("hasUntranslatedChineseNames：單一中文字不計入（那類殘留是�
 
 test("hasUntranslatedChineseNames：目標語言是中文時永遠不觸發", () => {
   assert.equal(hasUntranslatedChineseNames("明天林勇助請假", "明天林勇助請假", "zh-TW"), false);
+});
+
+// ── 繁中輸出驗證：不要把正確的姓名音譯判成失敗 ──────────────
+//
+// 回歸測試。原本的規則是「原文和譯文都沒有中文字就算失敗」，但整則訊息只有
+// 一個外籍員工姓名時（例如泰文的「อนุพงษ์」），照姓名規則正確的輸出會是音譯
+// 或拼音，一個中文字都不會有——正確的翻譯反而拿不出檢查要求的證據，於是連同
+// 重試一起被判失敗，群組收到「繁中翻譯異常」。
+//
+// 改成只在有「照抄原文」的正面證據時才判失敗。
+
+test("繁中：只有外籍姓名的訊息，音譯輸出不該被判失敗", () => {
+  for (const [src, out] of [
+    ["อนุพงษ์", "Anuphong"],
+    ["ธนกร", "Thanakorn"],
+    ["Nguyễn Đức Mạnh", "Nguyen Duc Manh"],
+    ["Somchai", "頌猜"],
+  ]) {
+    assert.equal(
+      isInvalidTranslation(src, out, "zh-TW"),
+      false,
+      `「${src}」→「${out}」是正確的姓名處理，不該判失敗`
+    );
+  }
+});
+
+test("繁中：殘留泰文或越南文聲調字元仍要判失敗（那是沒翻）", () => {
+  assert.equal(isInvalidTranslation("機台壞了", "เครื่องเสีย", "zh-TW"), true, "輸出泰文");
+  assert.equal(isInvalidTranslation("機台壞了", "Máy hỏng rồi", "zh-TW"), true, "輸出越南文帶聲調");
+});
+
+test("繁中：整句照抄原文要判失敗，不管長短", () => {
+  // 一字不差 → 模型只是照抄，沒有翻譯
+  assert.equal(isInvalidTranslation("OK", "OK", "zh-TW"), true, "短的照抄也是照抄");
+  assert.equal(
+    isInvalidTranslation(
+      "Please clean the machine before you leave today",
+      "Please clean the machine before you leave today",
+      "zh-TW"
+    ),
+    true,
+    "長句照抄"
+  );
+});
+
+test("繁中：把整句原文羅馬拼音化也要判失敗（不是姓名）", () => {
+  // 跟原文不同，所以躲過「照抄」那條，但長度與詞數明顯不像姓名
+  assert.equal(
+    isInvalidTranslation(
+      "เครื่องจักรเสียแล้วช่างมาซ่อมพรุ่งนี้",
+      "khrueang chak sia laeo chang ma som phrung ni",
+      "zh-TW"
+    ),
+    true,
+    "整句拼音化不是翻譯"
+  );
+});
+
+test("繁中：正常含中文的譯文照常通過", () => {
+  assert.equal(isInvalidTranslation("อนุพงษ์มาทำงาน", "阿努朋來上班", "zh-TW"), false);
+  assert.equal(isInvalidTranslation("Máy hỏng rồi", "機台壞了", "zh-TW"), false);
+});
+
+test("繁中：空白輸出要判失敗", () => {
+  assert.equal(isInvalidTranslation("機台壞了", "", "zh-TW"), true);
+  assert.equal(isInvalidTranslation("機台壞了", "   ", "zh-TW"), true);
 });

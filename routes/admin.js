@@ -445,6 +445,8 @@ adminRouter.get("/groups", async (req, res) => {
           // 卡在設定流程哪一步。JOINED 的是「機器人已進群但沒人設定」，
           // 這種群組以前後台根本看不到——它們是最值得主動聯繫的名單。
           setupState: getGroupSetupState(gid),
+          // 前端用這個決定要不要顯示「解除封鎖」的入口
+          blocked: deletedGroups.has(gid),
           joinedAt: joinedGroups.get(gid)?.joinedAt || null,
           subscription,
           usage: {

@@ -183,11 +183,13 @@ function renderGroups() {
           <span class="label">設定狀態</span>
           <div>
             ${
-              item.setupState === "READY"
-                ? `<span class="badge badge-green">運作中</span>`
-                : item.setupState === "NO_LANGUAGE"
-                  ? `<span class="badge badge-red">未選語言</span>`
-                  : `<span class="badge badge-gray">尚未設定</span>`
+              item.setupState === "BLOCKED"
+                ? `<span class="badge badge-red">已封鎖</span>`
+                : item.setupState === "READY"
+                  ? `<span class="badge badge-green">運作中</span>`
+                  : item.setupState === "NO_LANGUAGE"
+                    ? `<span class="badge badge-red">未選語言</span>`
+                    : `<span class="badge badge-gray">尚未設定</span>`
             }
             ${item.joinedAt ? `<span class="muted">入群 ${escapeHtml(item.joinedAt.slice(0, 10))}</span>` : ""}
           </div>

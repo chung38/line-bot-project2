@@ -491,20 +491,37 @@ test("prompt：公司名範例要分語言，泰文句子裡不該夾拉丁拼�
   );
 });
 
-test("prompt：目標語言是繁體中文時，不套用漢字音譯", () => {
+test("prompt：繁中的外籍姓名要音譯成漢字，不保留原文拼寫", () => {
+  /*
+    這條規則曾經是反過來的（保留 Somchai 這種拉丁拼寫，理由是要對得上工證與
+    薪資單）。改成音譯是因為繁中譯文的讀者是台籍幹部——他們要的是念得出來、
+    記得住的名字；要核對人事系統的場合看的是原文訊息或系統本身。
+
+    這個測試同時防兩個方向的回歸：規則不見了，或是悄悄被改回保留拼寫。
+  */
   const zh = buildTranslationPrompt("zh-TW", "");
-  assert.match(zh, /中文人名與專有名詞以中文書寫即可/);
-  assert.doesNotMatch(zh, /漢越音/);
-  // 外籍員工的姓名要對得上工證、薪資單、打卡系統，音譯成漢字會全部對不起來
-  assert.match(zh, /保留拉丁字母/);
-  assert.match(zh, /工證/);
+
+  assert.match(zh, /所有人名一律以中文漢字書寫/);
+  assert.match(zh, /不可保留原文拼寫/);
+  assert.doesNotMatch(zh, /保留拉丁字母/, "舊規則不該殘留，兩條並存會互相矛盾");
+  assert.doesNotMatch(zh, /漢越音/, "漢越音是越南文的規則，不該出現在繁中");
 });
 
-test("prompt：譯成中文時要求去掉越南文聲調符號", () => {
-  // 打卡系統與薪資單上的拼法是無聲調的 Nguyen Duc Manh，
-  // 譯文若保留 Nguyễn Đức Mạnh，人資對名冊時會比對不到
+test("prompt：繁中音譯要給實際範例，而且涵蓋每個來源語言", () => {
+  // 光講規則模型照做率低很多，而且各語言的音譯習慣不同，
+  // 只給一種語言的範例時另外幾種容易被模型自由發揮
   const zh = buildTranslationPrompt("zh-TW", "");
-  assert.match(zh, /Nguyen Duc Manh/);
+
+  assert.match(zh, /阿努朋/, "泰文範例");
+  assert.match(zh, /阮德孟/, "越南文範例");
+  assert.match(zh, /頌猜/, "英文拼寫的泰文姓名");
+  assert.match(zh, /布迪/, "印尼文範例");
+});
+
+test("prompt：繁中要求同一則訊息內的人名寫法一致", () => {
+  // 音譯用字不是標準對照，不要求一致的話同一個人在一則訊息裡
+  // 可能出現兩種寫法，點名時會對不上人
+  assert.match(buildTranslationPrompt("zh-TW", ""), /同一則訊息中同一個人名的寫法必須一致/);
 });
 
 test("prompt：節日與文化名詞要意譯，不可照抄", () => {

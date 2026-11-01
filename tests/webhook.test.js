@@ -529,3 +529,39 @@ test("非授權者按語言按鈕時完全靜默，不在群組裡洗版", async
     "靜默不代表放行，設定不可以被改到"
   );
 });
+
+// ── 封鎖狀態要排在最前面 ───────────────────────────────────
+
+test("getGroupSetupState：被封鎖的群組回 BLOCKED，不是「尚未設定」", () => {
+  groupLang.clear();
+  groupInviter.clear();
+  deletedGroups.clear();
+
+  deletedGroups.add("Gblocked");
+  assert.equal(getGroupSetupState("Gblocked"), "BLOCKED");
+
+  // 就算還留著語言設定也一樣——被封鎖的群組一句話都不會翻，
+  // 顯示「運作中」會害管理員判斷錯誤
+  groupLang.set("Gblocked", new Set(["th"]));
+  assert.equal(getGroupSetupState("Gblocked"), "BLOCKED", "BLOCKED 必須勝過 READY");
+
+  deletedGroups.clear();
+  groupLang.clear();
+});
+
+test("getGroupSetupState：沒被封鎖時維持原本三種狀態", () => {
+  groupLang.clear();
+  groupInviter.clear();
+  deletedGroups.clear();
+
+  assert.equal(getGroupSetupState("Gnew"), "JOINED");
+
+  groupInviter.set("Gbound", "U1");
+  assert.equal(getGroupSetupState("Gbound"), "NO_LANGUAGE");
+
+  groupLang.set("Gready", new Set(["th"]));
+  assert.equal(getGroupSetupState("Gready"), "READY");
+
+  groupLang.clear();
+  groupInviter.clear();
+});

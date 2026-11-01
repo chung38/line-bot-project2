@@ -15,6 +15,7 @@ import {
   safeReplyOrPush,
   getGroupMemberDisplayName,
   clearDisplayNameCache,
+  buildTextMessage,
 } from "../services/group.js";
 import { FALLBACK_SUBSCRIPTION_DEFAULTS, SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
 
@@ -266,4 +267,49 @@ test("缺少 gid 或 uid 時不會去打 API", async () => {
   assert.equal(await getGroupMemberDisplayName(null, "U1"), "U1");
   assert.equal(await getGroupMemberDisplayName("G1", null), "未知使用者");
   assert.equal(line.calls.profileLookups.length, 0);
+});
+
+// ── quoteToken：譯文掛在原訊息下方 ─────────────────────────
+//
+// quoteToken 跟 replyToken 是兩回事，這個差異是整個設計的重點：
+//   replyToken 很短命、一次性 → 決定「用 reply 還是 push」
+//   quoteToken 永不過期、可重用 → 決定「要不要顯示引用」
+//
+// 翻譯是背景跑的，主模型加重試可能花掉數十秒，replyToken 常常已經失效而
+// 改走 push。如果引用也跟著失效，那這個功能在最需要它的場合（訊息密集的
+// 工廠群組、翻譯花很久）就剛好派不上用場。
+
+test("safeReply 帶 quoteToken 時，訊息要包含引用欄位", async () => {
+  const { line } = reset();
+
+  await safeReply("rt-1", "譯文", "qt-abc");
+
+  assert.equal(line.calls.replies[0].message.quoteToken, "qt-abc");
+});
+
+test("沒有 quoteToken 時不要塞空欄位進訊息", async () => {
+  const { line } = reset();
+
+  await safeReply("rt-1", "譯文");
+
+  assert.equal("quoteToken" in line.calls.replies[0].message, false, "LINE 不該收到 quoteToken: null");
+});
+
+test("reply 失敗退到 push 時，引用一樣要帶上（quoteToken 不會過期）", async () => {
+  const { line } = reset({ line: createFakeLineClient({ failReply: true }) });
+
+  await safeReplyOrPush("rt-expired", "G1", "譯文", "qt-abc");
+
+  assert.equal(line.calls.pushes.length, 1, "reply 失敗要退到 push");
+  assert.equal(
+    line.calls.pushes[0].message.quoteToken,
+    "qt-abc",
+    "這正是 quoteToken 的價值：翻譯跑很久、replyToken 過期了，引用照樣顯示"
+  );
+});
+
+test("buildTextMessage：只有真的有 token 才加欄位", () => {
+  assert.deepEqual(buildTextMessage("hi", "qt-1"), { type: "text", text: "hi", quoteToken: "qt-1" });
+  assert.deepEqual(buildTextMessage("hi", null), { type: "text", text: "hi" });
+  assert.deepEqual(buildTextMessage("hi"), { type: "text", text: "hi" });
 });

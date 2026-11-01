@@ -152,17 +152,35 @@ async function getUserDisplayNameByUserId(userId) {
   }
 }
 
-async function safeReply(replyToken, text) {
+/*
+  quoteToken 讓回覆在群組裡直接掛在原訊息下方，顯示引用區塊。
+
+  它跟 replyToken 是兩回事，這個差異很關鍵：
+
+    replyToken  很短命、一次性，決定「用 reply 還是 push 送出」
+    quoteToken  永不過期、可重複使用，決定「要不要顯示引用」
+
+  翻譯是背景跑的，主模型加重試可能花掉數十秒，replyToken 常常已經失效；
+  但 quoteToken 不受影響，所以就算改走 push，訊息一樣看得到引用，
+  視覺上的關聯不會斷掉。工廠群組訊息密集，這個關聯很有用——
+  不然三十秒後冒出一段泰文，沒人知道是在回哪一句。
+
+  限制：只有 text 與 sticker 訊息能帶 quoteToken，Flex 不支援。
+*/
+function buildTextMessage(text, quoteToken) {
+  const msg = { type: "text", text };
+  if (quoteToken) msg.quoteToken = quoteToken;
+  return msg;
+}
+
+async function safeReply(replyToken, text, quoteToken = null) {
   if (!replyToken) {
     console.error("❌ 無 replyToken，略過回覆");
     return false;
   }
 
   try {
-    await client.replyMessage(replyToken, {
-      type: "text",
-      text
-    });
+    await client.replyMessage(replyToken, buildTextMessage(text, quoteToken));
     return true;
   } catch (e) {
     console.error(
@@ -172,13 +190,10 @@ async function safeReply(replyToken, text) {
     return false;
   }
 }
-async function safeReplyOrPush(replyToken, gid, text) {
+async function safeReplyOrPush(replyToken, gid, text, quoteToken = null) {
   if (replyToken) {
     try {
-      await client.replyMessage(replyToken, {
-        type: "text",
-        text
-      });
+      await client.replyMessage(replyToken, buildTextMessage(text, quoteToken));
       return true;
     } catch (e) {
       console.error(
@@ -194,10 +209,8 @@ async function safeReplyOrPush(replyToken, gid, text) {
   }
 
   try {
-    await client.pushMessage(gid, {
-      type: "text",
-      text
-    });
+    // quoteToken 不會過期，所以退到 push 時引用照樣顯示得出來
+    await client.pushMessage(gid, buildTextMessage(text, quoteToken));
     return true;
   } catch (e) {
     console.error(
@@ -216,4 +229,5 @@ export {
   getUserDisplayNameByUserId,
   safeReply,
   safeReplyOrPush,
+  buildTextMessage,
 };
