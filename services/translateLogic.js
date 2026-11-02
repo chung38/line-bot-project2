@@ -27,6 +27,39 @@ function isOnlyEmojiOrWhitespace(txt = "") {
   return /^\p{Extended_Pictographic}+$/u.test(s);
 }
 
+/*
+  整則訊息是不是「只有 LINE 顏文字（sticon）」。
+
+  LINE 的顏文字不是以 sticker 型別送出，而是變成純文字「(tearing Cony)」
+  這種英文名稱，message.type 仍然是 "text"——所以 webhook 那邊「非文字型別
+  就跳過」的過濾完全擋不到，群組會收到「🇹🇼：（撕裂的康妮）」這種譯文。
+
+  條件刻意收得很窄，寧可漏判也不要誤殺群組裡真正的括號訊息：
+
+    1. 去掉空白後，整則只由 ( ... ) 片段構成（全形括號先正規化）
+    2. 括號內只允許拉丁字母、數字、空白與少數標點——中文一律不算
+    3. 至少要有連續兩個英文字母
+
+  工廠群組常見的括號訊息因此都不受影響：
+
+    （急件）、(直接收費)        括號內是中文        → 照常翻譯
+    (A4518)、(2m)              沒有連續兩個英文字母 → 照常翻譯
+    「0963-174900 (直接收費)」  整句還有其他內容     → 照常翻譯
+
+  混在句子裡的顏文字（「(tearing Cony) 明天加班取消」）刻意不剔除，照原樣送去
+  翻——動手改掉使用者的原文，風險比留著那幾個字高。
+*/
+function isStickerOnlyText(text = "") {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+
+  const norm = t.replace(/（/g, "(").replace(/）/g, ")");
+
+  if (!/^(\(\s*[A-Za-z0-9][A-Za-z0-9 _'\-&!?.]*\s*\)\s*)+$/.test(norm)) return false;
+
+  return /[A-Za-z]{2,}/.test(norm);
+}
+
 function isSymbolOrNum(txt = "") {
   return /^[\d\s.,!?，。？！、:：；"'"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
@@ -431,6 +464,7 @@ function summarizeTranslationOutputs({ targetLangs = [], outputs = {} } = {}) {
 export {
   hasChinese,
   isOnlyEmojiOrWhitespace,
+  isStickerOnlyText,
   isSymbolOrNum,
   normalizeTextForLangDetect,
   detectLang,

@@ -23,6 +23,7 @@ import { groupLang, groupInviter, groupIndustry, deletedGroups,
 import { setChatCompletionForTesting } from "../services/translate.js";
 import { MAX_AUDIO_SECONDS, setTranscriberForTesting } from "../services/transcribe.js";
 import { SUBSCRIPTION_STATUS, MANUAL_OVERRIDE } from "../services/subscription.js";
+import { clearDisplayNameCache } from "../services/group.js";
 import { handleEvent, processTranslationInBackground } from "../routes/webhook.js";
 import { getMonthKey } from "../lib/utils.js";
 import {
@@ -50,6 +51,10 @@ function reset({ line = createFakeLineClient(), translateWith = null } = {}) {
   setChatCompletionForTesting(translateWith || (async () => "ข้อความแปล"));
 
   // 轉錄也要每次重設，否則上一個語音測試注入的替身會殘留到後面的測試裡。
+  // 顯示名稱快取是模組層級的，不清的話前一個測試查到的名字會漏到下一個——
+  // 「有沒有去查名字」正是下面幾個測試要斷言的事
+  clearDisplayNameCache();
+
   setTranscriberForTesting(async () => {
     throw new Error("這個測試沒有預期會呼叫轉錄，請用 setTranscriberForTesting() 明確注入");
   });
@@ -89,12 +94,12 @@ function usageOf(fake, gid = GID) {
   return fake.read("usageMonthly", `${gid}_${getMonthKey()}`);
 }
 
-function textEvent(text, { gid = GID, uid = UID } = {}) {
+function textEvent(text, { gid = GID, uid = UID, quoteToken = null } = {}) {
   return {
     type: "message",
     replyToken: "reply-token-1",
     source: { type: "group", groupId: gid, userId: uid },
-    message: { type: "text", text },
+    message: { type: "text", text, ...(quoteToken ? { quoteToken } : {}) },
   };
 }
 
@@ -564,4 +569,85 @@ test("getGroupSetupState：沒被封鎖時維持原本三種狀態", () => {
 
   groupLang.clear();
   groupInviter.clear();
+});
+
+// ── 有引用區塊時不重複標發話者 ─────────────────────────────
+//
+// LINE 的引用區塊已經顯示發話者的頭像、名字和一段原文，再補一行
+// 「【某某】說：」是同一個資訊講兩次，還多佔一行版面。
+//
+// 但不能無條件拿掉——webhook 沒給 quoteToken 的時候（舊版 LINE、某些訊息
+// 型態）就沒有人標出是誰說的，群組會看不懂在翻誰的話。
+
+test("有 quoteToken 時省略「【某某】說：」", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("明天早上八點集合", { quoteToken: "qt-1" }));
+  await settle();
+
+  const replied = line.lastReplyText();
+  assert.doesNotMatch(replied, /說：/, "引用區塊已經顯示發話者了");
+  assert.match(replied, /ข้อความแปล/, "譯文還是要在");
+});
+
+test("沒有 quoteToken 時照常標出發話者", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("明天早上八點集合"));
+  await settle();
+
+  assert.match(
+    line.lastReplyText(),
+    /說：/,
+    "沒有引用的話，不標發話者群組就看不懂在翻誰的話"
+  );
+});
+
+test("有 quoteToken 時連 LINE 的查名字 API 都不用打", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("明天早上八點集合", { quoteToken: "qt-1" }));
+  await settle();
+
+  assert.equal(
+    line.calls.profileLookups.length,
+    0,
+    "省下一次 API 呼叫——不顯示名字就不需要去查"
+  );
+});
+
+test("語音有引用時只拿掉名字，逐字稿一定要留著", async () => {
+  /*
+    這是最容易改錯的地方。引用區塊顯示的是原本的「語音泡泡」，裡面沒有
+    逐字稿——那段文字必須留著，判讀錯的時候群組才能當場更正，那是整個
+    語音翻譯設計的重點。
+  */
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+  setTranscriberForTesting(async () => ({
+    text: "明天早上八點到現場集合",
+    noSpeechProb: 0.02,
+  }));
+
+  await handleEvent({
+    type: "message",
+    replyToken: "reply-token-1",
+    source: { type: "group", groupId: GID, userId: UID },
+    message: {
+      id: "audio-1",
+      type: "audio",
+      duration: 5000,
+      contentProvider: { type: "line" },
+      quoteToken: "qt-1",
+    },
+  });
+  await settle();
+
+  const replied = line.lastReplyText();
+  assert.match(replied, /語音：/, "「語音：」標籤要留著");
+  assert.match(replied, /明天早上八點到現場集合/, "逐字稿不可以跟著名字一起被拿掉");
+  assert.doesNotMatch(replied, /【/, "但名字要省略");
 });

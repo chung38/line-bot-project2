@@ -13,6 +13,7 @@ import { isTestEnv } from "../lib/env.js";
 import {
   hasChinese,
   isOnlyEmojiOrWhitespace,
+  isStickerOnlyText,
   isSymbolOrNum,
   normalizeTextForLangDetect,
   detectLang,
@@ -629,6 +630,7 @@ export {
   // 從 translateLogic.js re-export，讓其他模組不用改 import 路徑
   hasChinese,
   isOnlyEmojiOrWhitespace,
+  isStickerOnlyText,
   isSymbolOrNum,
   normalizeTextForLangDetect,
   detectLang,

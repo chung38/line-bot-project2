@@ -19,6 +19,7 @@ import {
   isUnchangedChineseSource,
   hasUntranslatedChineseNames,
   isInvalidTranslation,
+  isStickerOnlyText,
 } from "../services/translateLogic.js";
 
 test("hasChinese", () => {
@@ -282,4 +283,59 @@ test("繁中：正常含中文的譯文照常通過", () => {
 test("繁中：空白輸出要判失敗", () => {
   assert.equal(isInvalidTranslation("機台壞了", "", "zh-TW"), true);
   assert.equal(isInvalidTranslation("機台壞了", "   ", "zh-TW"), true);
+});
+
+// ── LINE 顏文字（sticon）────────────────────────────────────
+//
+// LINE 的顏文字不是以 sticker 型別送出，而是變成純文字「(tearing Cony)」
+// 這種英文名稱，message.type 仍然是 "text"——所以 webhook 的「非文字型別就
+// 跳過」完全擋不到，群組會收到「🇹🇼：（撕裂的康妮）」這種譯文。
+//
+// 這組測試的重點在「不要誤殺」那一半：工廠群組真的會用括號寫料號、尺寸、
+// 急件標註，誤殺的代價比漏放一個顏文字高很多。
+
+test("isStickerOnlyText：認得出整則只有顏文字的訊息", () => {
+  for (const text of [
+    "(tearing Cony)",
+    "(happy brown)",
+    "(Cony) (Brown)",
+    "（tearing Cony）",   // 全形括號
+    "(OK)",                // 剛好兩個字母
+  ]) {
+    assert.equal(isStickerOnlyText(text), true, `應該認出：${text}`);
+  }
+});
+
+test("isStickerOnlyText：不誤殺括號內是中文的訊息", () => {
+  for (const text of ["（急件）", "(直接收費)", "（下午三點）", "(今天要出貨)"]) {
+    assert.equal(isStickerOnlyText(text), false, `不該擋：${text}`);
+  }
+});
+
+test("isStickerOnlyText：不誤殺料號與尺寸（沒有連續兩個英文字母）", () => {
+  for (const text of ["(A4518)", "(2m)", "(B12)", "(3)"]) {
+    assert.equal(isStickerOnlyText(text), false, `不該擋：${text}`);
+  }
+});
+
+test("isStickerOnlyText：整句還有其他內容時照常翻譯", () => {
+  for (const text of [
+    "0963-174900 (直接收費)",
+    "(tearing Cony) 明天加班取消",
+    "明天加班 (OK)",
+  ]) {
+    assert.equal(
+      isStickerOnlyText(text),
+      false,
+      `混在句子裡的顏文字刻意不剔除——動手改掉使用者原文的風險更高：${text}`
+    );
+  }
+});
+
+test("isStickerOnlyText：空值與一般訊息", () => {
+  assert.equal(isStickerOnlyText(""), false);
+  assert.equal(isStickerOnlyText("   "), false);
+  assert.equal(isStickerOnlyText(null), false);
+  assert.equal(isStickerOnlyText(undefined), false);
+  assert.equal(isStickerOnlyText("明天加班"), false);
 });

@@ -43,6 +43,7 @@ import {
   detectLang,
   resolveTargetLangs,
   summarizeTranslationOutputs,
+  isStickerOnlyText,
 } from "../services/translate.js";
 
 const webhookLimiter = rateLimit({
@@ -75,6 +76,20 @@ const MAX_TRANSLATE_CHARS = Number(process.env.MAX_TRANSLATE_CHARS) || 1500;
   不論哪一種模式，入群都會寫進 joinedGroups——通知與記錄是兩件事。
 */
 const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
+
+/*
+  譯文要不要加上「【某某】說：」這一行。
+
+    auto   有引用區塊就省略，沒有才顯示（預設）
+    always 一律顯示（回到加 quoteToken 之前的樣子）
+    never  一律不顯示——沒有引用的那幾則會看不出在翻誰的話
+
+  語音與圖片不受 never 影響到「逐字稿」那部分：拿掉的只有名字，
+  「語音：」「圖片文字：」加上抽出來的原文一律保留。
+*/
+const SPEAKER_LABEL_MODE = ["auto", "always", "never"].includes(process.env.SPEAKER_LABEL_MODE)
+  ? process.env.SPEAKER_LABEL_MODE
+  : "auto";
 
 // reservation 是 handleEvent 事先用 reserveGroupTranslation() 預扣下來的額度。
 // 這個函式負責在結束時「結清」：有翻出東西就補記字元數，沒有就把預扣的次數退回去。
@@ -165,12 +180,35 @@ async function processTranslationInBackground(
       ? `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${body}`
       : body;
 
-    const userName = await getGroupMemberDisplayName(gid, uid);
     const SOURCE_LABELS = { audio: "語音", image: "圖片文字" };
     const label = SOURCE_LABELS[sourceKind];
+
+    /*
+      有引用區塊時就不再自己標發話者。
+
+      LINE 的引用區塊已經顯示發話者的頭像、名字和一段原文，再補一行
+      「【某某】說：」是同一個資訊講兩次，還多佔一行版面。順帶也省下一次
+      getGroupMemberDisplayName 的呼叫。
+
+      但不能無條件拿掉——webhook 沒給 quoteToken 的時候（舊版 LINE、某些
+      訊息型態）就沒有人標出是誰說的，群組會看不懂在翻誰的話。
+
+      ⚠️ 語音與圖片只拿掉「名字」，不能連標籤和逐字稿一起拿掉：引用區塊顯示的
+         是原本的語音泡泡或圖片，裡面沒有逐字稿／OCR 結果。那段原文必須留著，
+         判讀錯的時候群組才能當場更正——那是整個設計的重點。
+    */
+    const showSpeaker =
+      SPEAKER_LABEL_MODE === "always" ? true :
+      SPEAKER_LABEL_MODE === "never" ? false :
+      !quoteToken;
+
+    const speaker = showSpeaker
+      ? `【${await getGroupMemberDisplayName(gid, uid)}】`
+      : "";
+
     const header = label
-      ? `【${userName}】${label}：\n${mergedText}\n\n`
-      : `【${userName}】說：\n`;
+      ? `${speaker}${label}：\n${mergedText}\n\n`
+      : (speaker ? `${speaker}說：\n` : "");
     await safeReply(replyToken, `${header}${replyText.trim()}`, quoteToken);
 
     // 只有至少成功翻出一種語言才計費。全部語言都失敗（OpenAI 逾時、服務異常等）時
@@ -799,6 +837,20 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
     }
 
     if (rawText.trim().startsWith("!")) return null;
+
+    /*
+      LINE 的顏文字（sticon）不是以 sticker 型別送出，而是變成純文字
+      「(tearing Cony)」這種英文名稱，message.type 仍然是 "text"——所以上面
+      「非文字型別就跳過」的過濾完全擋不到，群組會收到「🇹🇼：（撕裂的康妮）」。
+
+      判斷條件收得很窄（見 isStickerOnlyText 的說明），工廠群組常見的括號訊息
+      都不受影響。擋在這裡而不是在預扣額度之後：使用者不該為一則我們拒絕處理
+      的訊息被扣額度。
+    */
+    if (isStickerOnlyText(rawText)) {
+      console.log("🙂 顏文字訊息，略過翻譯");
+      return null;
+    }
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
