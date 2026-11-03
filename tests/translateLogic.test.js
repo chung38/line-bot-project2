@@ -20,6 +20,7 @@ import {
   hasUntranslatedChineseNames,
   isInvalidTranslation,
   isStickerOnlyText,
+  resolveTargetLangs,
 } from "../services/translateLogic.js";
 
 test("hasChinese", () => {
@@ -338,4 +339,101 @@ test("isStickerOnlyText：空值與一般訊息", () => {
   assert.equal(isStickerOnlyText(null), false);
   assert.equal(isStickerOnlyText(undefined), false);
   assert.equal(isStickerOnlyText("明天加班"), false);
+});
+
+// ── 印尼文偵測（回歸測試）─────────────────────────────────
+//
+// 真實事故：工廠／看護群組裡「Sudah」「Baik」這種單詞回覆全部被判成英文，
+// 於是目標語言沒有排除印尼文，印尼文原文又被翻成印尼文回貼一次——
+// 群組裡看到的是「🇮🇩：Sudah.」或「🇮🇩：（翻譯失敗或逾時）」。
+//
+// 原因有兩個，缺一不可：
+//   1. 門檻要求兩個以上的關鍵字命中，但單詞訊息永遠湊不到兩個
+//   2. 詞表缺了 baik / jangan / minum / obat / dulu 這些高頻詞
+//
+// 這組測試用真實訊息當基準，兩個方向都釘住：該判成印尼文的要判對，
+// 英文短回覆不可以被誤殺。
+
+test("detectLang：印尼文單詞回覆（群組裡最高頻的訊息）", () => {
+  for (const text of ["Sudah", "Baik", "Oke", "Siap", "Belum"]) {
+    assert.equal(detectLang(text), "id", `「${text}」應判為印尼文`);
+  }
+});
+
+test("detectLang：看護情境的印尼文（詞表原本完全沒涵蓋）", () => {
+  for (const text of [
+    "Jangan minum obat dulu",
+    "Kakek sudah mandi",
+    "Obatnya sudah diminum",
+    "Minta tolong ganti popok",
+  ]) {
+    assert.equal(detectLang(text), "id", `「${text}」應判為印尼文`);
+  }
+});
+
+test("detectLang：工廠情境的印尼文", () => {
+  for (const text of [
+    "Mesin rusak pak",
+    "Besok libur ya",
+    "Air panas habis",
+    "Mobil sdh di depan segera keluar",
+  ]) {
+    assert.equal(detectLang(text), "id", `「${text}」應判為印尼文`);
+  }
+});
+
+test("detectLang：英文短回覆不可以被誤判成印尼文", () => {
+  // 放寬門檻最大的風險就在這裡——英文的單詞回覆跟印尼文的一樣高頻
+  for (const text of ["OK", "Yes", "Thanks", "Done", "Good"]) {
+    assert.notEqual(detectLang(text), "id", `「${text}」是英文，不該判成印尼文`);
+  }
+});
+
+test("detectLang：英文整句不可以被誤判成印尼文", () => {
+  for (const text of [
+    "Please check the machine",
+    "Keep your body temperature stable",
+    "The machine is broken",
+    "See you later",
+  ]) {
+    assert.notEqual(detectLang(text), "id", `「${text}」是英文，不該判成印尼文`);
+  }
+});
+
+test("detectLang：擴大印尼文詞表後，其他語言不受影響", () => {
+  // 詞表一口氣加了上百個詞，最該擔心的是撞到別的語言
+  const corpus = {
+    vi: ["Vâng ạ", "Ok ạ", "Dạ", "Máy hỏng rồi", "Cảm ơn anh"],
+    th: ["เข้าใจแล้ว", "ครับ", "ขอบคุณ", "เครื่องเสีย"],
+    "zh-TW": ["好的", "明天加班", "機台壞了", "謝謝", "幫爺爺清理乾淨"],
+  };
+
+  for (const [expected, list] of Object.entries(corpus)) {
+    for (const text of list) {
+      assert.equal(detectLang(text), expected, `「${text}」應判為 ${expected}`);
+    }
+  }
+});
+
+test("偵測正確就不會把原文語言排進目標語言（這才是使用者看到的症狀）", () => {
+  const langSet = new Set(["id", "zh-TW"]);
+
+  // 印尼文來源 → 只翻成繁中，不該再翻一次印尼文
+  for (const text of ["Sudah", "Baik", "Jangan minum obat dulu"]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang: detectLang(text) });
+    assert.equal(
+      targets.includes("id"),
+      false,
+      `「${text}」是印尼文，不該再翻成印尼文（群組會看到「🇮🇩：Sudah.」）`
+    );
+    assert.equal(targets.includes("zh-TW"), true, "繁中還是要翻");
+  }
+
+  // 中文來源 → 只翻成印尼文
+  const zhTargets = resolveTargetLangs({
+    text: "幫爺爺清理乾淨",
+    langSet,
+    sourceLang: detectLang("幫爺爺清理乾淨"),
+  });
+  assert.deepEqual(zhTargets, ["id"]);
 });

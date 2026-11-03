@@ -111,20 +111,57 @@ function detectLang(text) {
     return "vi";
   }
 
+  /*
+    印尼文的證據分三類收集：
+
+      1. 功能詞與工廠／看護常用詞
+      2. 構詞前綴 ter- / ber- / meng- / mem- / pen-（英文極少這樣構詞）
+      3. 後綴 -nya / -kan / -lah / -pun
+
+    詞表涵蓋看護情境（obat、minum、mandi、popok…）是刻意的：這些群組不只是
+    產線，也有照顧長輩的場合，而那裡的高頻詞跟工廠完全不同。
+  */
   const idKeywordHits = (
-    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/gi) || []
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|baik|siap|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|maaf|orang|bapak|ibu|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|pake|bawa|ambil|buang|perbaiki|kunci|minyak|oli|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi|dari|pada|kalian|kena|tetap|depan|belakang|segera|mobil|motor|panggil|jemput|antar|ingat|kamar|badan|suhu|minum|makan|tidur|obat|berobat|klinik|pabrik|masker|libur|teman|uang|gaji|bos|atasan|mandi|popok|susu|bubur|suap|kakek|nenek|opa|oma|duduk|bangun|jatuh|pelan|hati|cuci|sapu|lap|kursi|roda|infus|perawat|dokter|rumah|yg|sdh|dgn|utk|tdk|blm|jgn|udh|aja|bgt)\b/gi) || []
+  ).length;
+
+  // 印尼文構詞前綴。英文偶爾會撞到（terminal、mention、pending），
+  // 所以下面用「印尼文證據必須多於英文證據」把這類情況排除。
+  const idMorphHits = (
+    cleaned.match(/\b(ter|ber|meng|meny|mem|men|peng|pem|pen)[a-z]{4,}\b/gi) || []
   ).length;
 
   const idSuffixHits = (
-    cleaned.match(/\b\w+(nya|kan|lah|pun)\b/gi) || []
+    cleaned.match(/\b[a-z]{3,}(nya|kan|lah|pun)\b/gi) || []
   ).length;
+
+  // 英文證據。印尼文不使用這些詞，所以不會誤傷正確的印尼文句子。
+  const enHits = (
+    cleaned.match(/\b(the|is|are|was|were|please|this|that|these|those|will|would|should|have|has|had|been|with|for|you|your|we|our|they|their|not|there|here|because|when|which|from|about|after|before|need|make|check|of|to|in|on|at|it|as|by|be|an|do|does|did|can|could|may|must|all|any|some|more|than|then|only|but|also|now|today|tomorrow|my|me|him|her|his|she|he)\b/gi) || []
+  ).length;
+
+  const idScore = idKeywordHits + idMorphHits + idSuffixHits;
 
   if (chineseLen >= 1 && foreignLen === 0) return "zh-TW";
   if (chineseRatio >= 0.45 && chineseLen >= 1) return "zh-TW";
 
-  if (idKeywordHits >= 2 || (idKeywordHits >= 1 && idSuffixHits >= 1)) {
-    return "id";
-  }
+  // 一般情況：要兩個以上的證據，而且印尼文證據要多於英文證據
+  if (idScore >= 2 && idScore > enHits) return "id";
+
+  /*
+    短訊息要放寬到「一個證據就夠」。
+
+    工廠與看護群組裡最高頻的訊息就是「Sudah」「Baik」「Oke」「Siap」這種
+    單詞回覆——而單詞訊息永遠湊不到兩個證據，等於這一類全部漏判成英文。
+    漏判的後果不是少翻一次，是**印尼文又被翻成印尼文回貼一次**
+    （因為目標語言沒有排除掉來源語言），群組裡會看到
+    「🇮🇩：Sudah.」或「🇮🇩：（翻譯失敗或逾時）」。
+
+    三個字以內、而且完全沒有英文證據才放行：英文的單詞回覆（OK、Yes、
+    Thanks）本來就不在上面的印尼文詞表裡，所以不會互相誤傷。
+  */
+  const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+  if (idScore >= 1 && enHits === 0 && wordCount <= 3) return "id";
 
   if (latinLen === 0) return "en";
   if (chineseLen >= 1) return "zh-TW";
