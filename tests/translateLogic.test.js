@@ -21,6 +21,7 @@ import {
   isInvalidTranslation,
   isStickerOnlyText,
   resolveTargetLangs,
+  isUniversalAck,
 } from "../services/translateLogic.js";
 
 test("hasChinese", () => {
@@ -436,4 +437,70 @@ test("偵測正確就不會把原文語言排進目標語言（這才是使用�
     sourceLang: detectLang("幫爺爺清理乾淨"),
   });
   assert.deepEqual(zhTargets, ["id"]);
+});
+
+// ── 純粹的 OK 類回應不翻譯 ─────────────────────────────────
+//
+// OK 在這套支援的五種語言裡都是直接照用的，翻了只有壞處：浪費額度
+//（一則訊息 = 1 次，跟內容多短無關）、每個目標語言各打一次 OpenAI，
+// 而且機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音——原訊息大家本來就看得懂。
+//
+// 這組測試的重點在「不要擋過頭」：只要訊息裡還有別的內容就必須照常翻譯。
+
+test("isUniversalAck：各種 OK 寫法都認得", () => {
+  for (const text of [
+    "ok", "OK", "Ok",
+    "oke", "Oke", "okee",
+    "okay", "Okay", "okey",
+    "OKOK", "ok ok",       // 重複
+    "ooook",                // 拉長
+  ]) {
+    assert.equal(isUniversalAck(text), true, `「${text}」應該視為 OK 類回應`);
+  }
+});
+
+test("isUniversalAck：標點與 emoji 不影響判斷", () => {
+  for (const text of ["OK!", "ok.", "Ok~", "OK？", "Ok 👍", "👌OK", "ok…"]) {
+    assert.equal(isUniversalAck(text), true, `「${text}」應該視為 OK 類回應`);
+  }
+});
+
+test("isUniversalAck：訊息裡還有別的內容就不能擋", () => {
+  // 擋過頭的後果比漏擋嚴重得多——真正的訊息不會被翻譯，
+  // 而且使用者完全不會知道發生了什麼
+  for (const text of [
+    "OK啦",          // 有中文
+    "Ok 明天見",      // 有實際內容
+    "Oke pak",       // pak 不是 ok 家族
+    "okay lah",
+    "ok 3樓",
+  ]) {
+    assert.equal(isUniversalAck(text), false, `「${text}」有實際內容，必須照常翻譯`);
+  }
+});
+
+test("isUniversalAck：其他語言的「好」不算——那些不是跨語言通用的", () => {
+  /*
+    刻意只收 ok 家族：
+      「ya」「siap」是印尼文，台籍幹部不見得懂
+      「noted」是英文，印尼籍同仁不見得懂
+      「好的」是中文，外籍同仁看不懂
+    只有 OK 是真正跨語言通用的，其他都還是該翻。
+  */
+  for (const text of ["好的", "Yes", "ya", "siap", "Sudah", "noted", "ครับ", "Vâng"]) {
+    assert.equal(isUniversalAck(text), false, `「${text}」不是跨語言通用，必須翻譯`);
+  }
+});
+
+test("isUniversalAck：長得像但不是的字串", () => {
+  for (const text of ["oak", "kok", "oko", "koko", "book"]) {
+    assert.equal(isUniversalAck(text), false, `「${text}」不是 OK`);
+  }
+});
+
+test("isUniversalAck：空值", () => {
+  assert.equal(isUniversalAck(""), false);
+  assert.equal(isUniversalAck("   "), false);
+  assert.equal(isUniversalAck(null), false);
+  assert.equal(isUniversalAck(undefined), false);
 });

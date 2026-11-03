@@ -60,6 +60,44 @@ function isStickerOnlyText(text = "") {
   return /[A-Za-z]{2,}/.test(norm);
 }
 
+/*
+  整則訊息是不是「純粹的 OK 類回應」。
+
+  OK 在這套支援的五種語言裡都是直接照用的——中文、泰文、越南文、印尼文的
+  日常對話都這樣寫，不需要翻譯。翻了反而有三個壞處：
+
+    1. 浪費額度（一則訊息 = 1 次，跟內容多短無關）
+    2. 每個目標語言各打一次 OpenAI
+    3. 機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音，原訊息大家本來就看得懂
+
+  判斷方式：去掉標點、符號、emoji 與空白之後，剩下的必須**完全**由 ok 家族
+  的字母構成。這樣：
+
+    ok / OK / Ok / oke / okay / okey / okee / okok / ooook   → 跳過
+    OK啦                                                     → 照常翻譯（有中文）
+    Ok 明天見                                                 → 照常翻譯（有實際內容）
+    Oke pak                                                  → 照常翻譯（pak 不是 ok 家族）
+
+  刻意只收 ok 家族，不收 yes / ya / siap / noted 那些：
+
+    「ya」是印尼文的「是」，台籍幹部不見得懂
+    「siap」是印尼文的「了解」，同上
+    「noted」是英文，印尼籍同仁不見得懂
+
+  只有 OK 是真正跨語言通用的，其他都還是該翻。
+*/
+function isUniversalAck(text = "") {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+
+  // 去掉標點（\p{P}）、符號與 emoji（\p{S}）、以及所有空白
+  const stripped = t.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  if (!stripped) return false;
+
+  // o+k+ 後面可接 e+ / ay / ey，整串可以重複（okok、ok ok）
+  return /^(o+k+(e+|ay|ey)?)+$/.test(stripped);
+}
+
 function isSymbolOrNum(txt = "") {
   return /^[\d\s.,!?，。？！、:：；"'"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
@@ -502,6 +540,7 @@ export {
   hasChinese,
   isOnlyEmojiOrWhitespace,
   isStickerOnlyText,
+  isUniversalAck,
   isSymbolOrNum,
   normalizeTextForLangDetect,
   detectLang,

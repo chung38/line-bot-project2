@@ -44,6 +44,7 @@ import {
   resolveTargetLangs,
   summarizeTranslationOutputs,
   isStickerOnlyText,
+  isUniversalAck,
 } from "../services/translate.js";
 
 const webhookLimiter = rateLimit({
@@ -90,6 +91,16 @@ const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
 const SPEAKER_LABEL_MODE = ["auto", "always", "never"].includes(process.env.SPEAKER_LABEL_MODE)
   ? process.env.SPEAKER_LABEL_MODE
   : "auto";
+
+/*
+  純粹的 OK 類回應（ok / OK / Oke / okay…）要不要略過翻譯，預設開啟。
+
+  OK 在中文、泰文、越南文、印尼文的日常對話裡都是直接照用的，翻譯沒有意義：
+  浪費額度、多打幾次 OpenAI，而且機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音。
+
+  設 SKIP_ACK_MESSAGES=false 可以關掉，回到每則都翻的行為。
+*/
+const SKIP_ACK_MESSAGES = process.env.SKIP_ACK_MESSAGES !== "false";
 
 // reservation 是 handleEvent 事先用 reserveGroupTranslation() 預扣下來的額度。
 // 這個函式負責在結束時「結清」：有翻出東西就補記字元數，沒有就把預扣的次數退回去。
@@ -849,6 +860,20 @@ if (event.type === "message" && event.message?.type === "text" && event.source?.
     */
     if (isStickerOnlyText(rawText)) {
       console.log("🙂 顏文字訊息，略過翻譯");
+      return null;
+    }
+
+    /*
+      純粹的 OK 類回應不翻譯（見 isUniversalAck 的說明）。
+
+      OK 在這套支援的五種語言裡都是直接照用的，翻了只是浪費額度、多打幾次
+      OpenAI，還讓機器人回一則純噪音——原訊息大家本來就看得懂。
+
+      跟顏文字一樣擋在預扣額度之前：使用者不該為一則我們拒絕處理的訊息被扣額度。
+      設 SKIP_ACK_MESSAGES=false 可以關掉這個行為。
+    */
+    if (SKIP_ACK_MESSAGES && isUniversalAck(rawText)) {
+      console.log("👌 OK 類回應，略過翻譯");
       return null;
     }
 

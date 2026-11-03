@@ -651,3 +651,40 @@ test("語音有引用時只拿掉名字，逐字稿一定要留著", async () =>
   assert.match(replied, /明天早上八點到現場集合/, "逐字稿不可以跟著名字一起被拿掉");
   assert.doesNotMatch(replied, /【/, "但名字要省略");
 });
+
+// ── OK 類回應不翻譯、也不扣額度 ────────────────────────────
+//
+// 額度是「一則訊息 = 1 次」，跟內容多短無關，所以一句 OK 跟一整段規格書
+// 扣一樣多。擋在預扣之前才有意義——使用者不該為一則我們拒絕處理的訊息付錢。
+
+test("純 OK 回應：不翻譯、不回覆、不扣額度", async () => {
+  const { fake, line } = reset({
+    translateWith: async () => {
+      throw new Error("OK 類回應不該呼叫 OpenAI");
+    },
+  });
+  seedActiveGroup(fake);
+
+  for (const text of ["OK", "Ok", "oke", "okay", "OK!"]) {
+    await handleEvent(textEvent(text));
+  }
+  await settle();
+
+  assert.ok(!usageOf(fake), "被擋下來的訊息不該產生任何用量紀錄");
+  assert.equal(
+    line.calls.replies.length + line.calls.pushes.length,
+    0,
+    "機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音，原訊息大家本來就看得懂"
+  );
+});
+
+test("OK 後面還有內容時照常翻譯、照常計費", async () => {
+  const { fake, line } = reset();
+  seedActiveGroup(fake);
+
+  await handleEvent(textEvent("Ok 明天見"));
+  await settle();
+
+  assert.equal(usageOf(fake).translationCount, 1, "有實際內容就要照常處理");
+  assert.equal(line.calls.replies.length, 1);
+});
