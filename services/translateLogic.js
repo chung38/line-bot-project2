@@ -488,9 +488,27 @@ function analyzeChineseDominance(text = "") {
   const chineseRatio = chineseLen / totalMeaningfulLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
 
+  /*
+    第三個條件：有中文、而且整句沒有任何其他語言的「詞」。
+
+    前兩個條件都靠比例或字數，兩種常見訊息因此漏判，中文原文又被翻一次中文：
+
+      「好」「是」「對」「收」 —— 單字回覆，一個中文字湊不到門檻。
+                               群組裡最高頻的訊息就是這一類。
+      「冷媒507 ×25K」        —— 中文 + 型號數字，比例天生就低（0.22），
+                               而且譯回中文時還會把台灣用語「冷媒」
+                               換成中國用語「製冷劑」。
+
+    一個中文字就成立是安全的：這條同時要求沒有泰文、沒有越南文聲調，
+    也沒有任何連續兩個以上的英文字母。能同時滿足的實際上只有中文訊息。
+    單獨的英文字母（K、X）是單位或代號不算詞，所以門檻設在兩個字母。
+  */
+  const latinWordCount = (normalized.match(/[A-Za-z]{2,}/g) || []).length;
+
   const isChineseDominant =
     (chineseLen >= 2 && chineseRatio >= 0.45) ||
-    (chineseLen >= 4 && foreignLen === 0);
+    (chineseLen >= 4 && foreignLen === 0) ||
+    (chineseLen >= 1 && thaiLen === 0 && viCharLen === 0 && latinWordCount === 0);
 
   return { chineseLen, thaiLen, viCharLen, latinLen, chineseRatio, foreignLen, isChineseDominant };
 }

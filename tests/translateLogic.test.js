@@ -504,3 +504,88 @@ test("isUniversalAck：空值", () => {
   assert.equal(isUniversalAck(null), false);
   assert.equal(isUniversalAck(undefined), false);
 });
+
+// ── 中文訊息不可以再被翻成中文 ─────────────────────────────
+//
+// 真實事故：使用者打「好」，機器人回了「🇹🇼：好」——跟他剛打的字一模一樣，
+// 旁邊才是真正要的印尼文／英文／越南文。
+//
+// 原因是 isChineseDominant 的條件都靠比例或字數，單字訊息湊不到門檻，
+// 於是 zh-TW 被加進目標語言。群組裡最高頻的訊息正好就是這一類單字回覆。
+
+test("單字中文回覆不補 zh-TW", () => {
+  const langSet = ["zh-TW", "id", "en", "vi"];
+  for (const text of ["好", "是", "對", "行", "收", "嗯", "好。", "好!", "好👍"]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang: "zh-TW" });
+    assert.ok(
+      !targets.includes("zh-TW"),
+      `「${text}」是中文，不該再翻成中文回貼（得到 ${JSON.stringify(targets)}）`
+    );
+    assert.deepEqual(targets.sort(), ["en", "id", "vi"], `「${text}」其他語言仍要照翻`);
+  }
+});
+
+test("中文加型號數字仍算中文來源", () => {
+  // 比例天生就低（「冷媒507 ×25K」只有 2 個中文字、佔比 0.22），
+  // 翻回中文還會把台灣用語「冷媒」換成中國用語「製冷劑」
+  const langSet = ["zh-TW", "id", "vi"];
+  for (const text of ["冷媒507 ×25K", "2米", "3箱", "電壓380", "高壓調到18"]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang: "zh-TW" });
+    assert.ok(
+      !targets.includes("zh-TW"),
+      `「${text}」是中文，不該再翻成中文（得到 ${JSON.stringify(targets)}）`
+    );
+  }
+});
+
+test("已知限制：中文夾帶英文單位時仍會被多翻一次中文", () => {
+  /*
+    latinWordCount 用「連續兩個以上英文字母」當作「有外語詞」的證據，
+    kg / cm / mm / ml / pcs 這些單位符號因此被算成詞，第三個條件不成立。
+
+    這不是這次改動造成的，兩個 bot 從一開始就這樣。寫成測試是為了記錄
+    現況：哪天把單位符號排除掉，這個測試會失敗，提醒人回來更新它。
+  */
+  const targets = resolveTargetLangs({
+    text: "R410a 加 2kg 不對",
+    langSet: ["zh-TW", "id", "vi"],
+    sourceLang: "zh-TW",
+  });
+  assert.ok(targets.includes("zh-TW"), "目前的行為（並不理想）");
+});
+
+test("放寬到一個中文字不能誤傷外文訊息", () => {
+  /*
+    放寬的是「有中文、且整句沒有其他語言的詞」這一條。外文訊息一定有
+    拉丁詞、泰文或越南文聲調，所以不受影響——這點必須守住，
+    誤判成中文來源的後果是**不會翻成中文**，台籍幹部看不懂。
+  */
+  const langSet = ["zh-TW", "id", "en", "vi", "th"];
+  for (const [text, sourceLang] of [
+    ["Sudah", "id"],
+    ["Mobil sdh di depan segera keluar", "id"],
+    ["Vâng ạ", "vi"],
+    ["ขอโทษครับ", "th"],
+    ["Please check the machine tomorrow", "en"],
+  ]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang });
+    assert.ok(
+      targets.includes("zh-TW"),
+      `「${text}」是外文，一定要翻成中文（得到 ${JSON.stringify(targets)}）`
+    );
+    assert.ok(
+      !targets.includes(sourceLang),
+      `「${text}」不該再翻回 ${sourceLang}`
+    );
+  }
+});
+
+test("中文夾雜外文詞時，那個外語仍要翻", () => {
+  // 「明天請 Pakat 06:30 上班」的 Pakat 是泰文姓名，泰文仍然必須輸出
+  const targets = resolveTargetLangs({
+    text: "明天請 Pakat 06:30 上班",
+    langSet: ["zh-TW", "th"],
+    sourceLang: "zh-TW",
+  });
+  assert.ok(targets.includes("th"), "泰文必須照翻");
+});
