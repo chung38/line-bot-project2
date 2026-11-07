@@ -538,20 +538,42 @@ test("中文加型號數字仍算中文來源", () => {
   }
 });
 
-test("已知限制：中文夾帶英文單位時仍會被多翻一次中文", () => {
+test("中文夾帶英文單位仍算中文來源", () => {
   /*
-    latinWordCount 用「連續兩個以上英文字母」當作「有外語詞」的證據，
-    kg / cm / mm / ml / pcs 這些單位符號因此被算成詞，第三個條件不成立。
-
-    這不是這次改動造成的，兩個 bot 從一開始就這樣。寫成測試是為了記錄
-    現況：哪天把單位符號排除掉，這個測試會失敗，提醒人回來更新它。
+    kg / cm / ml / pcs / V 是單位符號，不是外語詞。沒有排除掉的話，
+    一個 kg 就足以讓「句子裡沒有外語」這條不成立，中文原文又被翻一次中文
+    ——而中文加單位（加2kg、3cm、500ml、380V）在這些群組裡到處都是。
   */
-  const targets = resolveTargetLangs({
-    text: "R410a 加 2kg 不對",
-    langSet: ["zh-TW", "id", "vi"],
-    sourceLang: "zh-TW",
-  });
-  assert.ok(targets.includes("zh-TW"), "目前的行為（並不理想）");
+  const langSet = ["zh-TW", "id", "vi"];
+  for (const text of [
+    "R410a 加 2kg 不對",
+    "加 2kg",
+    "管子長 500ml",
+    "電壓 380V 不穩",
+    "要 3 pcs",
+    "銅管 7/8 x 8m",
+  ]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang: "zh-TW" });
+    assert.ok(
+      !targets.includes("zh-TW"),
+      `「${text}」是中文，不該再翻成中文（得到 ${JSON.stringify(targets)}）`
+    );
+  }
+});
+
+test("只有數字前綴的才算單位，真正的英文詞仍要翻成中文", () => {
+  /*
+    這是上一條的守門測試。誤判成「中文來源」的後果是不會翻成中文，
+    台籍幹部就看不懂——所以只要句子裡有真正的英文詞就必須照常補 zh-TW。
+  */
+  const langSet = ["zh-TW", "id", "vi"];
+  for (const text of ["Check 3 pcs 好", "好 2 boxes ready", "收到 please check"]) {
+    const targets = resolveTargetLangs({ text, langSet, sourceLang: "zh-TW" });
+    assert.ok(
+      targets.includes("zh-TW"),
+      `「${text}」含真正的英文詞，仍要翻成中文（得到 ${JSON.stringify(targets)}）`
+    );
+  }
 });
 
 test("放寬到一個中文字不能誤傷外文訊息", () => {
